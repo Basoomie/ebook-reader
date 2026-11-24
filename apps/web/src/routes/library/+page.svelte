@@ -22,6 +22,7 @@
   import LibraryConnect from '$lib/components/library/library-connect.svelte';
   import LibraryGroupCard from '$lib/components/library/library-group-card.svelte';
   import LibraryDisplayMenu from '$lib/components/library/library-display-menu.svelte';
+  import LibraryGroupByMenu from '$lib/components/library/library-group-by-menu.svelte';
   import LibraryOpenOverlay from '$lib/components/library/library-open-overlay.svelte';
   import LibrarySortMenu from '$lib/components/library/library-sort-menu.svelte';
   import SelectDownloadMenu from '$lib/components/library/select-download-menu.svelte';
@@ -82,7 +83,13 @@
     type CoverRules
   } from '$lib/library/cover-blur';
   import { coverGrid } from '$lib/library/cover-size';
-  import { authorHref, formatGroupChars, groupCount, plural } from '$lib/library/format';
+  import {
+    authorHref,
+    formatGroupChars,
+    groupCount,
+    groupTitle,
+    plural
+  } from '$lib/library/format';
   import {
     defaultSort,
     formatSort,
@@ -121,6 +128,8 @@
     withAll
   } from '$lib/library/selection';
   import {
+    collectionGroupsAs$,
+    collectionSectionsBy$,
     libraryAutoLoad$,
     libraryCoverBlur$,
     libraryCoverSize$,
@@ -180,6 +189,10 @@
    * WP8b: ?collection=<id> shows one collection (a built-in, a saved search or a list)
    * across all libraries; the search box filters inside it. A list shows its own order
    * (from the local mirror, so moves show at once) and can be reordered.
+   *
+   * 2026-11-24: a collection shows its books' series, authors and tags too
+   * (?collection=<id>&tab=series[&group=<name>]), counted inside the collection: as the
+   * Library's tabs, or as sections under headings (Settings › Library › Look).
    */
 
   type Tab = 'all' | 'series' | 'authors' | 'tags';
@@ -195,6 +208,9 @@
     tag: 'Back to Tags'
   };
   const FIELD_OF: Record<GroupBy, string> = { series: 'series', author: 'author', tag: 'tag' };
+  const TAB_OF: Record<GroupBy, Tab> = { series: 'series', author: 'authors', tag: 'tags' };
+  /** Sections: books shown under each heading before "See all". */
+  const SECTION_BOOKS = 12;
   const HEADER_RULE_LABEL: Record<BlurRuleTarget, string> = {
     tag: 'Blur covers with this tag',
     author: "Blur this author's covers",
@@ -283,6 +299,9 @@
   let listConsumed = 0;
   let reorderMode = false;
   let savingOrder = false;
+  /** Sections (2026-11-24): the books under each heading (key: groupKey). */
+  let sectionBooks = new Map<string, CatalogBook[] | 'loading' | 'error'>();
+  let sectionsController: AbortController | undefined;
   let staleNote = false;
   let listController: AbortController | undefined;
 
@@ -347,7 +366,10 @@
   $: collectionGone = collectionId !== null && collectionsLoaded && !builtin && !userCollection;
   $: canReorder = isList && !appliedQuery && books.length > 1 && sortValue.key === 'list';
   $: if (!canReorder && reorderMode && !savingOrder) reorderMode = false;
-  $: showingGroups = collectionId === null && tabInfo.by !== null && group === null;
+  $: showingGroups = tabInfo.by !== null && group === null;
+  /** A collection shows its series, authors and tags as tabs, or as sections (Group by). */
+  $: collectionSections = collectionId !== null && $collectionGroupsAs$ === 'sections';
+  $: collectionTabs = collectionId !== null && !collectionSections;
   $: chips = activeChips(queryInput);
   $: chipsDisabled = !parseQuery(queryInput).ok;
   $: grid = $libraryView$ !== 'list';
@@ -356,20 +378,18 @@
   // WP19a: load the next page near the end of the list (else a "Load more" button).
   $: autoLoad = browser && $libraryAutoLoad$ && canLoadWhenVisible();
   // WP19b: the page header's label and title.
-  $: headerJp =
-    collectionId !== null
+  $: headerJp = group
+    ? { series: '叢書', author: '著者', tag: '分類' }[group.by]
+    : collectionId !== null
       ? '書架'
-      : group
-        ? { series: '叢書', author: '著者', tag: '分類' }[group.by]
-        : '蔵書一覧';
-  $: headerTitle =
-    collectionId !== null
+      : '蔵書一覧';
+  $: headerTitle = group
+    ? (group.name ?? 'No series')
+    : collectionId !== null
       ? collectionGone
         ? 'Collection'
         : (collectionName ?? '')
-      : group
-        ? (group.name ?? 'No series')
-        : 'Library';
+      : 'Library';
   $: parsedApplied = parseQuery(appliedQuery);
   $: usesChars = parsedApplied.ok && parsedApplied.query.terms.some((t) => t.type === 'chars');
   $: uncounted = enabledLibraries
@@ -384,8 +404,11 @@
     group && group.name !== null ? { target: group.by as BlurRuleTarget, name: group.name } : null;
   // WP7b: "Pin to Home" for an open collection, series, author or tag ("No series" can't be).
   let pinTarget: PinTarget | null = null;
-  $: pinTarget =
-    collectionId !== null
+  $: pinTarget = group
+    ? group.name !== null
+      ? { type: group.by, ref: group.name }
+      : null
+    : collectionId !== null
       ? collectionGone
         ? null
         : builtin
@@ -393,9 +416,7 @@
           : userCollection
             ? { type: 'collection', ref: userCollection.id }
             : null
-      : group && group.name !== null
-        ? { type: group.by, ref: group.name }
-        : null;
+      : null;
   $: pinnedHere = pinTarget ? isPinnedToHome($homeRows$, pinTarget) : false;
 
   function togglePin() {
@@ -588,12 +609,15 @@
     collectionsTimer = setTimeout(async () => {
       if (destroyed) return;
       const wasList = isList;
+      const filterBefore = JSON.stringify(collectionFilter());
       await loadCollections();
       if (collectionId === null) return;
       // WP19a: a collection that arrived after the page opened (pulled from another
-      // device) only now says whether it is a list, which decides its sorts.
+      // device) only now says whether it is a list, which decides its sorts. A smart
+      // collection that arrived, or whose search changed, lists other books (2026-11-24).
       const context = contextNow();
-      if (context !== sortContext) {
+      const filterChanged = JSON.stringify(collectionFilter()) !== filterBefore;
+      if (context !== sortContext || filterChanged) {
         sortContext = context;
         sortValue =
           parseSort(addressSort(), context) ??
@@ -761,10 +785,21 @@
         scope: null
       };
     }
+    const filter = collectionFilter();
+    if (!filter) return null;
+    return { query: { q, ...filter, group: group ?? undefined }, scope: filter.scope ?? null };
+  }
+
+  /**
+   * The open collection's books as list filters: a built-in's or smart collection's search,
+   * or a manual collection's id (null: no collection, or not known yet).
+   */
+  function collectionFilter(): { scope?: string; collection?: string } | null {
+    if (collectionId === null) return null;
     const scope = builtinCollection(collectionId)?.query ?? smartQuery();
-    if (scope) return { query: { q, scope }, scope };
+    if (scope) return { scope };
     const c = collectionList.find((x) => x.id === collectionId);
-    return c?.type === 'manual' ? { query: { q, collection: c.id }, scope: null } : null;
+    return c?.type === 'manual' ? { collection: c.id } : null;
   }
 
   /**
@@ -1157,11 +1192,16 @@
     const nextCollection = params.get('collection') || null;
     if (nextCollection !== collectionId) reorderMode = false;
     collectionId = nextCollection;
-    tab = collectionId ? 'all' : requested.id;
+    // Sections open a collection grouped as last picked on this device.
+    const remembered = $collectionSectionsBy$;
+    tab =
+      collectionId && !params.has('tab') && $collectionGroupsAs$ === 'sections' && remembered
+        ? TAB_OF[remembered]
+        : requested.id;
     group = null;
     // A collection's definition comes from the local mirror.
     if (collectionId && !collectionsLoaded) await loadCollections();
-    if (!collectionId && requested.by) {
+    if (requested.by && tab === requested.id) {
       if (requested.by === 'series' && params.get('none') === '1')
         group = { by: 'series', name: null };
       else if (params.get('group'))
@@ -1211,13 +1251,14 @@
    * updated yet in the tick the URL changed).
    */
   function contextNow(): SortContext {
+    const by = TABS.find((t) => t.id === tab)?.by ?? null;
+    if (by && group === null) return 'groups';
+    if (group?.by === 'series' && group.name !== null) return 'series';
+    if (group) return 'books';
     if (collectionId !== null) {
       const c = collectionList.find((x) => x.id === collectionId);
       return c?.type === 'manual' ? 'list' : 'books';
     }
-    const by = TABS.find((t) => t.id === tab)?.by ?? null;
-    if (by && group === null) return 'groups';
-    if (group?.by === 'series' && group.name !== null) return 'series';
     return 'books';
   }
 
@@ -1263,15 +1304,14 @@
   function sideCountKeys() {
     const by = TABS.find((t) => t.id === tab)?.by ?? null;
     const openGroup = by ? group : null;
-    const tabsKey = JSON.stringify([appliedLibrary, appliedQuery]);
-    // In a collection the chips count inside it (its own search or list).
-    const list = collectionId !== null ? currentListQuery() : null;
-    return {
-      by,
-      openGroup,
-      tabsKey,
-      chipsKey: JSON.stringify([tabsKey, by, openGroup, collectionId, list?.query ?? null])
-    };
+    // In a collection the tabs and chips count inside it (its own search or list).
+    const tabsKey = JSON.stringify([
+      appliedLibrary,
+      appliedQuery,
+      collectionId,
+      collectionFilter()
+    ]);
+    return { by, openGroup, tabsKey, chipsKey: JSON.stringify([tabsKey, by, openGroup]) };
   }
 
   /**
@@ -1294,13 +1334,18 @@
   async function loadSideCounts() {
     const a = source();
     if (!a || !parseQuery(appliedQuery).ok) return;
-    if (collectionId !== null) {
-      await loadCollectionChipCounts(a);
-      return;
-    }
-    const library = appliedLibrary || undefined;
+    const filter = collectionFilter();
+    if (collectionId !== null && !filter) return;
+    // A collection spans every library; the Library follows the picked one.
+    const base = filter ?? { library: appliedLibrary || undefined };
     const q = appliedQuery || undefined;
     const { by, openGroup, tabsKey, chipsKey } = sideCountKeys();
+    // Sections show no tabs, so they need no tab numbers.
+    if (collectionId !== null && $collectionGroupsAs$ === 'sections' && tabCountsKey !== tabsKey) {
+      tabCountsKey = tabsKey;
+      tabCounts = {};
+      tabCountsPending = false;
+    }
     if (tabsKey === tabCountsKey && chipsKey === chipCountsKey) return;
     // Aborting a load whose tab numbers haven't arrived means asking for them again.
     const loadTabs = tabsKey !== tabCountsKey || tabCountsPending;
@@ -1317,11 +1362,11 @@
     }
     const current = () => sideCountsController === controller;
     const groupTotal = (groupBy: GroupBy, query: string | undefined) =>
-      a.groups({ by: groupBy, q: query, library, limit: 1 }, options).then((r) => r.total);
+      a.groups({ by: groupBy, q: query, ...base, limit: 1 }, options).then((r) => r.total);
 
     const tabsDone = loadTabs
       ? Promise.all([
-          a.count({ q, library }, options),
+          a.count({ q, ...base }, options),
           ...(['series', 'author', 'tag'] as GroupBy[]).map((g) => groupTotal(g, q))
         ]).then(
           ([all, series, authors, tags]) => {
@@ -1343,7 +1388,7 @@
         const n =
           by && !openGroup
             ? await groupTotal(by, chipQuery)
-            : await a.count({ q: chipQuery, library, group: openGroup ?? undefined }, options);
+            : await a.count({ q: chipQuery, ...base, group: openGroup ?? undefined }, options);
         return [c.id, n] as const;
       })
     ).then(
@@ -1358,35 +1403,6 @@
       }
     );
     await Promise.all([tabsDone, chipsDone]);
-  }
-
-  /**
-   * In a collection there are no tabs; each chip counts the collection's books with that
-   * chip as the only one on (a built-in's or smart collection's search, or the list).
-   */
-  async function loadCollectionChipCounts(a: LibraryApi | OfflineCatalog) {
-    const list = currentListQuery();
-    const { chipsKey } = sideCountKeys();
-    if (!list || chipsKey === chipCountsKey) return;
-    sideCountsController?.abort();
-    const controller = new AbortController();
-    sideCountsController = controller;
-    chipCountsKey = chipsKey;
-    chipCounts = new Map();
-    const current = () => sideCountsController === controller;
-    try {
-      const entries = await Promise.all(
-        CHIPS.map(async (c) => {
-          const q = chipOnlyQuery(appliedQuery, c.id) ?? undefined;
-          const n = await a.count({ ...list.query, q }, { signal: controller.signal });
-          return [c.id, n] as const;
-        })
-      );
-      if (current()) chipCounts = new Map(entries);
-    } catch {
-      // No numbers on the chips; asked again with the next search.
-      if (current()) chipCountsKey = null;
-    }
   }
 
   function onStatesChangedForCounts() {
@@ -1416,8 +1432,8 @@
         collectionId !== null
           ? {
               q: appliedQuery || undefined,
-              scope: scope ?? undefined,
-              collection: scope ? undefined : collectionId
+              ...(collectionFilter() ?? (scope ? { scope } : { collection: collectionId })),
+              group: group ?? undefined
             }
           : {
               q: appliedQuery || undefined,
@@ -1471,20 +1487,29 @@
         if (controller.signal.aborted) return;
       }
       if (reset) void loadCount(scope);
-      if (collectionId !== null) {
+      if (reset) resetSections();
+      // From the URL state itself: reactive values ($:) are not updated yet when the URL
+      // changed in this tick.
+      const by = TABS.find((t) => t.id === tab)?.by ?? null;
+      if (collectionId !== null && by === null && group === null) {
         await loadCollectionPage(reset, scope, minBooks, controller.signal);
         if (reset && listController === controller) void loadSideCounts();
         return;
       }
+      // A collection's series, authors and tags count only its books.
+      const filter = collectionFilter();
+      if (collectionId !== null && !filter) {
+        books = [];
+        groups = [];
+        nextCursor = null;
+        return;
+      }
       const common = {
         q: appliedQuery || undefined,
-        library: appliedLibrary || undefined,
+        ...(filter ?? { library: appliedLibrary || undefined }),
         cursor: reset ? undefined : (nextCursor ?? undefined)
       };
       const options = { signal: controller.signal };
-      // From the URL state itself: reactive values ($:) are not updated yet when the URL
-      // changed in this tick.
-      const by = TABS.find((t) => t.id === tab)?.by ?? null;
       if (by && group === null) {
         const result = await a.groups(
           { by, ...common, sort: serverSort(sortValue, 'groups') },
@@ -1494,6 +1519,10 @@
         books = [];
         nextCursor = result.nextCursor;
         if (reset) resultCount = result.total ?? null;
+        // Without IntersectionObserver every heading loads its books at once.
+        if (collectionId !== null && $collectionGroupsAs$ === 'sections' && !canLoadWhenVisible()) {
+          result.groups.forEach((g) => void loadSection(g));
+        }
       } else {
         if (reset) void loadGroupInfo(controller.signal);
         const result = await a.books(
@@ -1619,12 +1648,15 @@
     groupInfo = null;
     const a = source();
     if (!a || !group || group.name === null || group.name.includes('"')) return;
+    // Inside a collection: its books of this group only.
+    const filter = collectionFilter();
+    if (collectionId !== null && !filter) return;
     try {
       const result = await a.groups(
         {
           by: group.by,
           q: `${FIELD_OF[group.by]}:="${group.name}"`,
-          library: appliedLibrary || undefined,
+          ...(filter ?? { library: appliedLibrary || undefined }),
           limit: 1
         },
         { signal }
@@ -1634,6 +1666,96 @@
     } catch {
       // The header shows just the name.
     }
+  }
+
+  function resetSections() {
+    sectionsController?.abort();
+    sectionsController = new AbortController();
+    sectionBooks = new Map();
+  }
+
+  /** Sections: the first books under one heading (inside the collection, with the search). */
+  async function loadSection(g: CatalogGroup) {
+    const key = groupKey(g);
+    const a = source();
+    const filter = collectionFilter();
+    if (!a || !filter || sectionBooks.has(key)) return;
+    const controller = sectionsController ?? (sectionsController = new AbortController());
+    sectionBooks = new Map(sectionBooks).set(key, 'loading');
+    try {
+      const result = await a.books(
+        {
+          q: appliedQuery || undefined,
+          ...filter,
+          group: { by: g.by, name: g.name },
+          limit: SECTION_BOOKS
+        },
+        { signal: controller.signal }
+      );
+      if (!controller.signal.aborted) sectionBooks = new Map(sectionBooks).set(key, result.books);
+    } catch {
+      if (!controller.signal.aborted) sectionBooks = new Map(sectionBooks).set(key, 'error');
+    }
+  }
+
+  function retrySection(g: CatalogGroup) {
+    const next = new Map(sectionBooks);
+    next.delete(groupKey(g));
+    sectionBooks = next;
+    void loadSection(g);
+  }
+
+  /** A section's books, or [] while loading or after a failure. */
+  function sectionList(entry: CatalogBook[] | 'loading' | 'error' | undefined): CatalogBook[] {
+    return Array.isArray(entry) ? entry : [];
+  }
+
+  /** "12 volumes · 3/12 read" under a heading. */
+  function sectionInfo(g: CatalogGroup, s: Map<string, BookState>): string {
+    return [groupCount(g), g.bookIds ? `${seriesReadCount(g.bookIds, s)}/${g.bookCount} read` : '']
+      .filter(Boolean)
+      .join(' · ');
+  }
+
+  /** The props of a book card or row in a section (the main list passes them one by one). */
+  function sectionBookProps(
+    book: CatalogBook,
+    s: Map<string, BookState>,
+    pos: Map<string, LocalRecord[]>,
+    shown: Set<string>,
+    ctx: CoverBlurContext,
+    here: Set<string>,
+    audioHere: Set<string>,
+    withInfo: boolean
+  ) {
+    const state = s.get(book.id);
+    const records = pos.get(book.id) ?? [];
+    return {
+      book,
+      thumbnailUrl: book.thumbnail && api ? api.absolute(book.thumbnail) : '',
+      state,
+      progress: bookProgressLabel(book.id, state, records, book.charCount),
+      progressFraction: bookProgressFraction(book.id, state, records, book.charCount),
+      infoLine: withInfo,
+      blurred: bookBlurred(book, ctx, s, shown),
+      onDevice: here.has(book.id),
+      audioOnDevice: audioHere.has(book.id),
+      authorLink
+    };
+  }
+
+  /** Sections: a new Group by (remembered on this device). */
+  function onGroupBy(by: GroupBy | null) {
+    $collectionSectionsBy$ = by ?? '';
+    goto(
+      urlFor({
+        tab: by ? TAB_OF[by] : 'all',
+        q: appliedQuery,
+        lib: appliedLibrary,
+        collection: collectionId
+      }),
+      { keepFocus: true, noScroll: true }
+    );
   }
 
   function describe(error: unknown): string {
@@ -1692,6 +1814,11 @@
           target.group.name === group.name);
     if (target.collection) {
       params.set('collection', target.collection);
+      if (target.tab !== 'all') params.set('tab', target.tab);
+      if (target.group) {
+        if (target.group.name === null) params.set('none', '1');
+        else params.set('group', target.group.name);
+      }
       if (target.q) params.set('q', target.q);
       if (target.sort) params.set('sort', target.sort);
       if (keepFromHome) params.set('from', 'home');
@@ -1761,7 +1888,13 @@
   }
 
   function groupHref(g: CatalogGroup) {
-    return urlFor({ tab, group: { by: g.by, name: g.name }, q: appliedQuery, lib: appliedLibrary });
+    return urlFor({
+      tab,
+      group: { by: g.by, name: g.name },
+      q: appliedQuery,
+      lib: appliedLibrary,
+      collection: collectionId
+    });
   }
 
   /** WP19a: an author's name on a card leads to that author (in the picked library). */
@@ -1966,7 +2099,7 @@
     <CataloguePageHeader
       jp={headerJp}
       title={headerTitle}
-      titleTestid={collectionId !== null && !collectionGone ? 'collection-title' : ''}
+      titleTestid={collectionId !== null && !collectionGone && !group ? 'collection-title' : ''}
     >
       <span slot="meta" class="flex items-baseline gap-2" aria-live="polite">
         {#if !loadError && resultCount !== null}
@@ -1980,7 +2113,17 @@
         {/if}
       </span>
       <svelte:fragment slot="back">
-        {#if fromHome && (collectionId !== null || group)}
+        {#if collectionId !== null && group}
+          <!-- A series, author or tag inside a collection: back to the collection. -->
+          <a
+            class="c-link inline-flex min-h-[2.75rem] items-center"
+            href={urlFor({ tab, q: appliedQuery, lib: appliedLibrary, collection: collectionId })}
+            data-testid="back-collection"
+            data-sveltekit-noscroll
+          >
+            ← {collectionName ?? 'Collection'}
+          </a>
+        {:else if fromHome && (collectionId !== null || group)}
           <a
             class="c-link inline-flex min-h-[2.75rem] items-center"
             href="{pagePath}/home"
@@ -2004,7 +2147,7 @@
         {/if}
       </svelte:fragment>
       <svelte:fragment slot="sub">
-        {#if collectionId !== null}
+        {#if collectionId !== null && !group}
           <div
             class="flex flex-wrap items-center gap-x-4 gap-y-2 pt-1"
             data-testid="collection-header"
@@ -2023,6 +2166,65 @@
                   Manual · {plural(listIds.length, 'book', 'books')}
                 {/if}
               </p>
+              <!-- The collection's own actions (soft, like a series page's). Pin and Blur are toggles
+                 that look on; Reorder turns into a filled Done while its mode is on. -->
+              <div class="flex flex-wrap gap-2" data-testid="collection-actions">
+                {#if pinTarget}
+                  <button
+                    class="c-btn c-btn-secondary c-btn-sm px-3 text-sm"
+                    aria-pressed={pinnedHere}
+                    data-testid="pin-home"
+                    on:click={togglePin}
+                  >
+                    <Fa icon={faThumbtack} />
+                    {pinnedHere ? 'Pinned to Home' : 'Pin to Home'}
+                  </button>
+                {/if}
+                {#if collectionId !== null && collectionName}
+                  <button
+                    class="c-btn c-btn-secondary c-btn-sm px-3 text-sm"
+                    aria-pressed={hasCoverRule(coverRules, 'collection', collectionId)}
+                    data-testid="cover-rule-collection"
+                    on:click={() =>
+                      collectionId !== null &&
+                      editCoverRule('collection', collectionId, collectionName ?? '')}
+                  >
+                    <Fa
+                      icon={hasCoverRule(coverRules, 'collection', collectionId)
+                        ? faCheck
+                        : faEyeSlash}
+                    />
+                    Blur covers
+                  </button>
+                {/if}
+                {#if userCollection}
+                  {#if isList && tab === 'all'}
+                    <button
+                      class="c-btn {reorderMode
+                        ? 'c-btn-primary'
+                        : 'c-btn-secondary'} c-btn-sm px-3 text-sm"
+                      disabled={!canReorder || selectMode}
+                      title={appliedQuery ? 'Clear the search to reorder' : undefined}
+                      data-testid="reorder-mode"
+                      on:click={() => (reorderMode = !reorderMode)}
+                    >
+                      <Fa icon={reorderMode ? faCheck : faArrowsUpDown} />
+                      {reorderMode ? 'Done' : 'Reorder'}
+                    </button>
+                  {/if}
+                  <button
+                    class="c-btn c-btn-secondary c-btn-sm px-3 text-sm"
+                    title={userCollection.type === 'smart'
+                      ? 'Rename, change the search or delete'
+                      : 'Rename or delete'}
+                    data-testid="collection-header-menu"
+                    on:click={editCollection}
+                  >
+                    <Fa icon={faPen} />
+                    Edit
+                  </button>
+                {/if}
+              </div>
             {/if}
           </div>
         {:else if group}
@@ -2041,6 +2243,16 @@
               </p>
             {:else if group.name === null}
               <p class="text-sm text-c-muted">Books that are not part of a series.</p>
+            {/if}
+            {#if collectionId !== null}
+              <p class="text-sm text-c-muted" data-testid="group-in-collection">
+                In {collectionName ?? 'this collection'} ·
+                <a
+                  class="c-link"
+                  href={urlFor({ tab, group, q: '', lib: '' })}
+                  data-testid="group-whole-library">See all in the Library</a
+                >
+              </p>
             {/if}
             {#if pinTarget || headerRule || seriesEditName}
               <div class="flex flex-wrap gap-2">
@@ -2151,7 +2363,7 @@
       </div>
     </CataloguePageHeader>
 
-    {#if group && group.by === 'series' && group.name !== null && groupInfo?.bookIds}
+    {#if collectionId === null && group && group.by === 'series' && group.name !== null && groupInfo?.bookIds}
       <!-- Keyed: another series starts collapsed. -->
       {#key group.name}
         <!-- Session 5: "▸ Story so far" beside "▸ Highlights", both closed; their panels open
@@ -2183,7 +2395,7 @@
       class="flex flex-wrap items-end justify-between gap-3 border-b pb-3"
       style="border-color: var(--c-gold)"
     >
-      {#if collectionId === null}
+      {#if collectionId === null || (collectionTabs && !collectionGone)}
         <nav class="c-strip -mx-1 flex max-w-full gap-1 px-1" aria-label="Browse by">
           {#each TABS as t (t.id)}
             <a
@@ -2191,7 +2403,12 @@
               tab
                 ? 'border-c-seal font-bold text-c-ink'
                 : 'border-transparent text-c-muted hover:text-c-ink'}"
-              href={urlFor({ tab: t.id, q: appliedQuery, lib: appliedLibrary })}
+              href={urlFor({
+                tab: t.id,
+                q: appliedQuery,
+                lib: appliedLibrary,
+                collection: collectionId
+              })}
               aria-current={t.id === tab ? 'page' : undefined}
               data-testid="tab-{t.id}"
               data-sveltekit-noscroll
@@ -2207,67 +2424,13 @@
             </a>
           {/each}
         </nav>
-      {:else if !collectionGone}
-        <!-- The collection's own actions (soft); Sort, Display and Select on the right are
-             quiet view controls. Pin and Blur are toggles that look on; Reorder and Select turn
-             into a filled Done while their mode is on. -->
-        <div class="flex flex-wrap gap-2" data-testid="collection-actions">
-          {#if pinTarget}
-            <button
-              class="c-btn c-btn-secondary px-3"
-              aria-pressed={pinnedHere}
-              data-testid="pin-home"
-              on:click={togglePin}
-            >
-              <Fa icon={faThumbtack} />
-              {pinnedHere ? 'Pinned to Home' : 'Pin to Home'}
-            </button>
-          {/if}
-          {#if collectionId !== null && collectionName}
-            <button
-              class="c-btn c-btn-secondary px-3"
-              aria-pressed={hasCoverRule(coverRules, 'collection', collectionId)}
-              data-testid="cover-rule-collection"
-              on:click={() =>
-                collectionId !== null &&
-                editCoverRule('collection', collectionId, collectionName ?? '')}
-            >
-              <Fa
-                icon={hasCoverRule(coverRules, 'collection', collectionId) ? faCheck : faEyeSlash}
-              />
-              Blur covers
-            </button>
-          {/if}
-          {#if userCollection}
-            {#if isList}
-              <button
-                class="c-btn {reorderMode ? 'c-btn-primary' : 'c-btn-secondary'} px-3"
-                disabled={!canReorder || selectMode}
-                title={appliedQuery ? 'Clear the search to reorder' : undefined}
-                data-testid="reorder-mode"
-                on:click={() => (reorderMode = !reorderMode)}
-              >
-                <Fa icon={reorderMode ? faCheck : faArrowsUpDown} />
-                {reorderMode ? 'Done' : 'Reorder'}
-              </button>
-            {/if}
-            <button
-              class="c-btn c-btn-secondary px-3"
-              title={userCollection.type === 'smart'
-                ? 'Rename, change the search or delete'
-                : 'Rename or delete'}
-              data-testid="collection-header-menu"
-              on:click={editCollection}
-            >
-              <Fa icon={faPen} />
-              Edit
-            </button>
-          {/if}
-        </div>
       {:else}
         <span />
       {/if}
       <div class="flex flex-wrap items-center gap-2 text-sm sm:ml-auto sm:justify-end">
+        {#if collectionSections && !collectionGone && !group && !reorderMode}
+          <LibraryGroupByMenu value={tabInfo.by} on:change={(ev) => onGroupBy(ev.detail)} />
+        {/if}
         {#if !reorderMode}
           <LibrarySortMenu
             context={sortContext}
@@ -2378,7 +2541,99 @@
       </p>
     {/if}
 
-    {#if showingGroups}
+    {#if showingGroups && collectionSections}
+      {#if groups.length}
+        <div class="flex flex-col gap-8 pt-2" data-testid="group-sections">
+          {#each groups as g (groupKey(g))}
+            <section class="flex flex-col gap-3" data-testid="group-section">
+              <div
+                class="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 border-b pb-2"
+                style="border-color: var(--c-line)"
+                use:loadWhenVisible={{
+                  enabled: !sectionBooks.has(groupKey(g)),
+                  onVisible: () => void loadSection(g)
+                }}
+              >
+                <h2 class="min-w-0 break-words text-lg font-bold">
+                  <a class="hover:underline" href={groupHref(g)} data-testid="group-section-title"
+                    >{groupTitle(g)}</a
+                  >
+                  <span class="ml-2 text-sm font-normal text-c-muted">{sectionInfo(g, states)}</span
+                  >
+                </h2>
+                {#if g.bookCount > sectionList(sectionBooks.get(groupKey(g))).length}
+                  <a class="c-link text-sm" href={groupHref(g)} data-testid="group-section-all"
+                    >See all {g.bookCount.toLocaleString('en')}</a
+                  >
+                {/if}
+              </div>
+              {#if sectionBooks.get(groupKey(g)) === 'error'}
+                <p class="flex flex-wrap items-center gap-3 text-sm" role="alert">
+                  <span class="font-medium">Couldn't load these books.</span>
+                  <button
+                    class="c-btn c-btn-secondary c-btn-sm px-3"
+                    on:click={() => retrySection(g)}>Retry</button
+                  >
+                </p>
+              {:else if !Array.isArray(sectionBooks.get(groupKey(g)))}
+                <p class="text-sm text-c-muted" data-testid="group-section-loading">Loading…</p>
+              {:else}
+                <ul
+                  class={grid ? gridLayout.classes : ''}
+                  style={grid && gridLayout.style ? gridLayout.style : undefined}
+                  data-testid="group-section-books"
+                >
+                  {#each sectionList(sectionBooks.get(groupKey(g))) as book (book.id)}
+                    {#if grid}
+                      <LibraryBookCard
+                        {...sectionBookProps(
+                          book,
+                          states,
+                          positions,
+                          revealed,
+                          blurCtx,
+                          onDevice,
+                          audioOnDevice,
+                          infoLine
+                        )}
+                        on:open={(ev) => open(ev.detail)}
+                        on:reveal={(ev) => reveal(ev.detail.id)}
+                        on:state={(ev) => openBookState(ev.detail)}
+                        on:collect={(ev) => openAddToCollection(ev.detail)}
+                        on:remove={(ev) => removeFromDevice(ev.detail)}
+                      />
+                    {:else}
+                      <LibraryBookRow
+                        {...sectionBookProps(
+                          book,
+                          states,
+                          positions,
+                          revealed,
+                          blurCtx,
+                          onDevice,
+                          audioOnDevice,
+                          infoLine
+                        )}
+                        libraryName={enabledLibraries.length > 1
+                          ? (libraryNames.get(book.libraryId) ?? '')
+                          : ''}
+                        on:open={(ev) => open(ev.detail)}
+                        on:reveal={(ev) => reveal(ev.detail.id)}
+                        on:state={(ev) => openBookState(ev.detail)}
+                        on:collect={(ev) => openAddToCollection(ev.detail)}
+                        on:remove={(ev) => removeFromDevice(ev.detail)}
+                      />
+                    {/if}
+                  {/each}
+                </ul>
+              {/if}
+            </section>
+          {/each}
+        </div>
+      {:else if !loading && !loadError}
+        <p class="py-8 text-c-muted">{emptyText}</p>
+      {/if}
+    {:else if showingGroups}
       {#if groups.length}
         <ul
           class={grid ? gridLayout.classes : ''}

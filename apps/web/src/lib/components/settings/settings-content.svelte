@@ -63,7 +63,8 @@
     bookIllustrationsPosition$,
     libraryBulkDownloadMode$,
     libraryDownloadConfirmGb$,
-    libraryLook$
+    libraryLook$,
+    collectionGroupsAs$
   } from '$lib/library/settings';
   import { readAloudAheadSeconds$, readAloudLookupResume$ } from '$lib/read-aloud/settings';
   import { customFontNames$ } from '$lib/fonts/server-fonts-browser';
@@ -331,6 +332,12 @@
     { id: 'auto', text: 'Like the book' },
     { id: 'light', text: 'Light' },
     { id: 'dark', text: 'Dark' }
+  ];
+
+  // 2026-11-24: how a collection shows its books' series, authors and tags.
+  const optionsForCollectionGroupsAs: ToggleOption<string>[] = [
+    { id: 'tabs', text: 'Tabs' },
+    { id: 'sections', text: 'Sections' }
   ];
 
   // Season 2 §6: where the book page shows the book's illustrations.
@@ -1004,6 +1011,14 @@
           options={optionsForLibraryLook}
           bind:value={$libraryLook$}
           labelledby={labelId}
+        />
+      </SettingRow>
+      <SettingRow id="collection-groups-as" let:labelId>
+        <SettingChoice
+          options={optionsForCollectionGroupsAs}
+          bind:value={$collectionGroupsAs$}
+          labelledby={labelId}
+          testid="collection-groups-as"
         />
       </SettingRow>
     </SettingsGroup>

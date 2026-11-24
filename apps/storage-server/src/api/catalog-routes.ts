@@ -274,6 +274,9 @@ export function createCatalogRouter(db: Database.Database, catalog: CatalogOptio
               cursor: queryString(req.query.cursor),
               includeMissing: queryBool(req.query.includeMissing),
               countSpec: countSpec(),
+              // A collection's books only (smart: its search; manual: its id).
+              scope: queryString(req.query.scope),
+              collection: collectionId(req),
             }),
           ),
         );

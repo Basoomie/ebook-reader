@@ -482,6 +482,14 @@ export const SETTINGS_CATALOG: CatalogSetting[] = [
     keywords: 'dark'
   },
   {
+    id: 'collection-groups-as',
+    section: 'library-appearance',
+    title: 'Series, authors and tags in a collection',
+    description:
+      'Tabs: All, Series, Authors and Tags under the collection’s name, like the Library. Sections: one list of books under headings, picked with Group by.',
+    keywords: 'collection group by series authors tags tabs sections headings'
+  },
+  {
     id: 'wake-lock',
     section: 'reader-theme',
     title: 'Keep the screen on while reading',

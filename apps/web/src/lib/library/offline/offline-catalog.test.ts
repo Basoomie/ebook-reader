@@ -414,6 +414,26 @@ describe('OfflineCatalog', () => {
     expect(paged.nextCursor).not.toBeNull();
   });
 
+  it("a collection's groups count only its books (2026-11-24)", async () => {
+    // Manual: o and s1 (gone is missing).
+    const series = await catalog.groups({ by: 'series', collection: 'list1' });
+    expect(series.groups.map((g) => [g.name, g.bookCount])).toEqual([
+      ['月と灯台', 1],
+      [null, 1]
+    ]);
+    expect(series.groups[0]).toMatchObject({ bookIds: ['s1'], cover: { bookId: 's1' } });
+    expect(
+      (await catalog.groups({ by: 'author', collection: 'list1' })).groups.map((g) => [
+        g.name,
+        g.bookCount
+      ])
+    ).toEqual([['A', 2]]);
+    // Smart: status:completed is s1 only.
+    const smart = await catalog.groups({ by: 'author', scope: 'status:completed' });
+    expect(smart.groups.map((g) => [g.name, g.bookCount])).toEqual([['A', 1]]);
+    expect((await catalog.groups({ by: 'tag', scope: 'status:completed' })).total).toBe(0);
+  });
+
   it('collection cards: built-ins, smart and manual, with errors per card', async () => {
     const { cards } = await catalog.collectionCards();
     const byId = new Map(cards.map((c) => [c.id, c]));

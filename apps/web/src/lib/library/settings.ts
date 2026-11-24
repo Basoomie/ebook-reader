@@ -54,6 +54,21 @@ export const librarySort$ = writableStringLocalStorageSubject()('librarySort', '
 export const libraryGroupSort$ = writableStringLocalStorageSubject()('libraryGroupSort', '');
 
 /**
+ * How a collection shows its books' series, authors and tags (2026-11-24): 'tabs' (All /
+ * Series / Authors / Tags, like the Library) or 'sections' (one list under headings, picked
+ * with Group by). Per device.
+ */
+export const collectionGroupsAs$ = writableStringLocalStorageSubject<'tabs' | 'sections'>()(
+  'collectionGroupsAs',
+  'tabs'
+);
+
+/** Sections mode: the last Group by picked in a collection ('' = none). Per device. */
+export const collectionSectionsBy$ = writableStringLocalStorageSubject<
+  '' | 'series' | 'author' | 'tag'
+>()('collectionSectionsBy', '');
+
+/**
  * Notes at scale (2026-11-21): the last sort picked on the Notes page, per view ("title-asc";
  * '' = recently changed / newest highlight first). A series filter still opens in series
  * order. See lib/notes/notes-view.ts.

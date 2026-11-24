@@ -22,6 +22,7 @@ import { parseOrThrow, usesRegex } from './query-parser';
 import {
   BookSummary,
   CatalogUser,
+  collectionMemberSql,
   DEFAULT_PAGE_SIZE,
   decodeCursor,
   encodeCursor,
@@ -109,6 +110,13 @@ export interface ListGroupsOptions {
   cursor?: string;
   includeMissing?: boolean;
   countSpec?: string | null;
+  /**
+   * A collection's books only (2026-11-24, "Series, authors and tags in a collection"): a
+   * smart collection's saved search and/or a manual collection's id. The cards then count,
+   * total and show only those books.
+   */
+  scope?: string;
+  collection?: string;
 }
 
 export interface GroupRow {
@@ -274,13 +282,13 @@ export function planGroups(
   user: CatalogUser,
   opts: ListGroupsOptions,
 ): PlannedQuery<GroupPage> {
-  const limit = Math.min(Math.max(1, opts.limit ?? DEFAULT_PAGE_SIZE), MAX_PAGE_SIZE);
   const parsed = parseOrThrow(opts.query);
+  const scope = opts.scope ? parseOrThrow(opts.scope) : null;
+  if (opts.collection || (scope && scope.terms.length > 0)) {
+    return planScopedGroups(db, user, opts, parsed, scope);
+  }
   const g = GROUPING[opts.by];
   const spec = opts.countSpec ?? null;
-  const sort = opts.sort ?? DEFAULT_GROUP_SORT;
-  const compare = groupComparator(sort);
-  const cursor = opts.cursor ? decodeGroupCursor(opts.cursor) : null;
 
   // The groups with a matching book (only this part can contain a pattern).
   let sql = 'SELECT NULL AS gid WHERE 0';
@@ -308,32 +316,342 @@ export function planGroups(
     regex: usesRegex(parsed),
     finish(raw) {
       const hits = new Set((raw as { gid: number | null }[]).map((r) => r.gid));
-      let all = aggregateGroups(db, opts).filter(
+      const all = aggregateGroups(db, opts).filter(
         (r) => (opts.by === 'series' || r.gid !== null) && (!filtered || hits.has(r.gid)),
       );
-      // The cached rows are in the default order; other sorts sort a copy.
-      if (sort.key !== DEFAULT_GROUP_SORT.key || sort.dir !== DEFAULT_GROUP_SORT.dir) {
-        all = [...all].sort(compare);
-      }
-      let start = 0;
-      if (cursor) {
-        const probe = { gid: 0, name: cursor.name, newest: cursor.newest, n: cursor.n } as GroupRow;
-        start = all.findIndex((r) => compare(r, probe) > 0);
-        if (start === -1) start = all.length;
-      }
-      const page = all.slice(start, start + limit);
-      const last = page[page.length - 1];
-      const nextCursor =
-        start + limit < all.length && last && last.name !== null
-          ? encodeCursor([last.newest, last.n, last.name])
-          : null;
-      return {
-        groups: describeGroups(db, user, opts, page, spec),
-        nextCursor,
-        total: all.length,
-      };
+      return pageGroups(opts, all, (page) => describeGroups(db, user, opts, page, spec));
     },
   };
+}
+
+/** One page of groups in the asked sort (`rows` is in the default order). */
+function pageGroups(
+  opts: ListGroupsOptions,
+  rows: GroupRow[],
+  describe: (page: GroupRow[]) => GroupCard[],
+): GroupPage {
+  const limit = Math.min(Math.max(1, opts.limit ?? DEFAULT_PAGE_SIZE), MAX_PAGE_SIZE);
+  const sort = opts.sort ?? DEFAULT_GROUP_SORT;
+  const compare = groupComparator(sort);
+  const cursor = opts.cursor ? decodeGroupCursor(opts.cursor) : null;
+  let all = rows;
+  // The cached rows are in the default order; other sorts sort a copy.
+  if (sort.key !== DEFAULT_GROUP_SORT.key || sort.dir !== DEFAULT_GROUP_SORT.dir) {
+    all = [...all].sort(compare);
+  }
+  let start = 0;
+  if (cursor) {
+    const probe = { gid: 0, name: cursor.name, newest: cursor.newest, n: cursor.n } as GroupRow;
+    start = all.findIndex((r) => compare(r, probe) > 0);
+    if (start === -1) start = all.length;
+  }
+  const page = all.slice(start, start + limit);
+  const last = page[page.length - 1];
+  const nextCursor =
+    start + limit < all.length && last && last.name !== null
+      ? encodeCursor([last.newest, last.n, last.name])
+      : null;
+  return { groups: describe(page), nextCursor, total: all.length };
+}
+
+/** A book of a collection, in one of its groups (scoped lists). */
+interface Member {
+  id: string;
+  seriesId: number | null;
+  seriesIndex: number | null;
+  addedAt: number;
+}
+
+interface ScopedData {
+  /** The listed groups (those with a book matching the search), in the default order. */
+  rows: GroupRow[];
+  members: Map<number | null, Member[]>;
+}
+
+/** Scoped group lists per user, device and filters, until the catalog or a record changes. */
+const scopedCache = new WeakMap<
+  Database.Database,
+  Map<string, { changes: string; data: ScopedData }>
+>();
+const SCOPED_CACHE_SIZE = 20;
+
+/**
+ * Groups of a collection's books (2026-11-24): every number, series list and collage
+ * counts only the books inside the collection. One query lists the collection's books
+ * (and whether each matches the typed search, and which group names match), so a pattern
+ * in the collection's search or the typed one runs in the search worker; the links to
+ * authors and tags are walked here, as aggregateGroups does.
+ */
+function planScopedGroups(
+  db: Database.Database,
+  user: CatalogUser,
+  opts: ListGroupsOptions,
+  parsed: ReturnType<typeof parseOrThrow>,
+  scope: ReturnType<typeof parseOrThrow> | null,
+): PlannedQuery<GroupPage> {
+  const spec = opts.countSpec ?? null;
+  const g = GROUPING[opts.by];
+  const describe = (data: ScopedData) => (page: GroupRow[]) =>
+    describeScoped(db, user, opts, page, data.members, spec);
+  const key = JSON.stringify([
+    user.id,
+    user.deviceId ?? null,
+    opts.by,
+    opts.libraryId ?? '',
+    !!opts.includeMissing,
+    spec,
+    opts.scope ?? '',
+    opts.collection ?? '',
+    opts.query ?? '',
+  ]);
+  const changes = userVersion(db, user.id);
+  let cache = scopedCache.get(db);
+  if (!cache) {
+    cache = new Map();
+    scopedCache.set(db, cache);
+  }
+  const store = cache;
+  const hit = store.get(key);
+  if (hit && hit.changes === changes) {
+    store.delete(key);
+    store.set(key, hit);
+    return {
+      sql: 'SELECT NULL WHERE 0',
+      params: [],
+      regex: false,
+      finish: () => pageGroups(opts, hit.data.rows, describe(hit.data)),
+    };
+  }
+
+  const filtered = parsed.terms.length > 0;
+  // Whether each book matches the typed search (book terms only).
+  let hitSql = '1';
+  let hitParams: unknown[] = [];
+  // In a grouped tab, terms on the grouping field also pick the groups by name.
+  let names = { sql: '', params: [] as unknown[] };
+  if (filtered) {
+    const conds = querySql(parsed, user.id, undefined, user.deviceId ?? null);
+    if (conds.length > 0) {
+      hitSql = `CASE WHEN ${conds.map((c) => `(${c.sql})`).join(' AND ')} THEN 1 ELSE 0 END`;
+      hitParams = conds.flatMap((c) => c.params);
+    }
+    names = joinConds(groupNameSql(parsed, opts.by, 'gn.name'));
+  }
+  const inScope: SqlCondition[] = [...visibilitySql(opts)];
+  if (opts.collection) inScope.push(collectionMemberSql(user.id, opts.collection));
+  if (scope) inScope.push(...querySql(scope, user.id, db, user.deviceId ?? null));
+  const where = joinConds(inScope);
+  // One row per book of the collection (kind 0), then the groups whose name matches
+  // (kind 1). The book-to-author/tag links are walked here in finish(): joining them in
+  // SQL (320k rows for tags on a 66k-book collection) took 1.3 s on the live library.
+  const nameRows = names.sql
+    ? `UNION ALL SELECT 1, NULL, gn.id, NULL, NULL, NULL, NULL, NULL FROM ${g.table} gn ${names.sql}`
+    : '';
+  return {
+    sql: `SELECT 0 AS kind, b.id AS id, b.series_id AS sid, b.series_index AS sidx,
+                 b.added_at AS added, b.char_count AS chars, ${COUNT_STATE} AS cs, ${hitSql} AS hit
+            ${SQL_BOOK_FROM}
+            LEFT JOIN char_counts c ON c.book_id = b.id
+            ${where.sql}
+          ${nameRows}`,
+    params: [spec, spec, ...hitParams, ...where.params, ...names.params],
+    regex: usesRegex(parsed) || (scope !== null && usesRegex(scope)),
+    finish(raw) {
+      const data = scopedData(db, opts, raw as ScopedRaw[], filtered, !!names.sql);
+      store.delete(key);
+      store.set(key, { changes, data });
+      if (store.size > SCOPED_CACHE_SIZE) store.delete(store.keys().next().value as string);
+      return pageGroups(opts, data.rows, describe(data));
+    },
+  };
+}
+
+interface ScopedRaw {
+  kind: 0 | 1;
+  id: string | null;
+  /** kind 1: the id of a group whose name matches the search. */
+  sid: number | null;
+  sidx: number | null;
+  added: number;
+  chars: number | null;
+  cs: string;
+  hit: number;
+}
+
+function scopedData(
+  db: Database.Database,
+  opts: ListGroupsOptions,
+  raw: ScopedRaw[],
+  filtered: boolean,
+  byName: boolean,
+): ScopedData {
+  const books = new Map<string, ScopedRaw>();
+  const namedHits = new Set<number | null>();
+  for (const r of raw) {
+    if (r.kind === 1) namedHits.add(r.sid);
+    else books.set(r.id as string, r);
+  }
+  const byGroup = new Map<number | null, GroupRow>();
+  const members = new Map<number | null, Member[]>();
+  const hits = new Set<number | null>();
+  const addTo = (gid: number | null, r: ScopedRaw) => {
+    let row = byGroup.get(gid);
+    let list = members.get(gid);
+    if (!row || !list) {
+      row = { gid, name: null, n: 0, newest: 0, total: 0, counted: 0, pending: 0, failed: 0 };
+      list = [];
+      byGroup.set(gid, row);
+      members.set(gid, list);
+    }
+    row.n += 1;
+    if (r.added > row.newest) row.newest = r.added;
+    row.total = (row.total ?? 0) + (r.chars ?? 0);
+    if (r.cs === 'c') row.counted += 1;
+    else if (r.cs === 'p') row.pending += 1;
+    else row.failed += 1;
+    list.push({ id: r.id as string, seriesId: r.sid, seriesIndex: r.sidx, addedAt: r.added });
+    // A group is listed when one of its books matches (and, with a name term, its name).
+    if (r.hit && (!byName || gid === null || namedHits.has(gid))) hits.add(gid);
+  };
+  if (opts.by === 'series') {
+    for (const r of books.values()) addTo(r.sid, r);
+  } else {
+    const link =
+      opts.by === 'author'
+        ? 'SELECT book_id, author_id FROM book_authors'
+        : 'SELECT book_id, tag_id FROM book_tags';
+    for (const [bookId, gid] of db.prepare(link).raw().iterate() as IterableIterator<
+      [string, number]
+    >) {
+      const r = books.get(bookId);
+      if (r) addTo(gid, r);
+    }
+  }
+  const ids = [...byGroup.keys()].filter((gid): gid is number => gid !== null);
+  const names = new Map<number, string>();
+  const table = GROUPING[opts.by].table;
+  for (let i = 0; i < ids.length; i += 500) {
+    const chunk = ids.slice(i, i + 500);
+    for (const [id, name] of db
+      .prepare(`SELECT id, name FROM ${table} WHERE id IN (${chunk.map(() => '?').join(',')})`)
+      .raw()
+      .all(...chunk) as [number, string][]) {
+      names.set(id, name);
+    }
+  }
+  const rows = [...byGroup.values()].filter(
+    (r) => (opts.by === 'series' || r.gid !== null) && (!filtered || hits.has(r.gid)),
+  );
+  for (const row of rows) row.name = row.gid === null ? null : (names.get(row.gid) ?? null);
+  rows.sort(compareGroups);
+  return { rows, members };
+}
+
+function baseCard(by: GroupBy, r: GroupRow): GroupCard {
+  return {
+    by,
+    name: r.name,
+    bookCount: r.n,
+    newestAddedAt: r.newest,
+    chars: { total: r.total ?? 0, counted: r.counted, pending: r.pending, failed: r.failed },
+  };
+}
+
+const byText = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+
+/** Series order: IFNULL(series_index, missing), added_at, id (as the unscoped queries). */
+function memberOrder(missing: number) {
+  return (a: Member, b: Member) =>
+    (a.seriesIndex ?? missing) - (b.seriesIndex ?? missing) ||
+    a.addedAt - b.addedAt ||
+    byText(a.id, b.id);
+}
+
+/** Cards of a scoped page: series volumes and collages from the collection's books only. */
+function describeScoped(
+  db: Database.Database,
+  user: CatalogUser,
+  opts: ListGroupsOptions,
+  rows: GroupRow[],
+  members: Map<number | null, Member[]>,
+  spec: string | null,
+): GroupCard[] {
+  const cards = rows.map((r) => baseCard(opts.by, r));
+  const lists: string[][] = [];
+  const wanted = new Set<string>();
+  let opened: Map<string, number> | null = null;
+  for (const r of rows) {
+    const list = members.get(r.gid) ?? [];
+    let ids: string[];
+    if (opts.by === 'series' && r.gid !== null) {
+      ids = [...list].sort(memberOrder(-1)).map((m) => m.id);
+      if (ids.length) wanted.add(ids[0]);
+    } else {
+      opened ??= openedAt(db, user.id);
+      ids = collageOf(list, opened);
+      ids.forEach((id) => wanted.add(id));
+    }
+    lists.push(ids);
+  }
+  const summaries = summariesByIds(db, user, [...wanted], spec);
+  rows.forEach((r, i) => {
+    if (opts.by === 'series' && r.gid !== null) {
+      cards[i].bookIds = lists[i];
+      cards[i].cover = lists[i].length ? tileOf(summaries.get(lists[i][0])) : null;
+    } else {
+      cards[i].tiles = lists[i]
+        .map((id) => tileOf(summaries.get(id)))
+        .filter((t): t is GroupTile => t !== null);
+    }
+  });
+  return cards;
+}
+
+/** When you last read each book (live position records). */
+function openedAt(db: Database.Database, userId: string): Map<string, number> {
+  return new Map(
+    db
+      .prepare(
+        `SELECT book_id, MAX(updated_at) FROM sync_records
+          WHERE user_id = ? AND kind = 'position' AND deleted_at IS NULL AND book_id IS NOT NULL
+          GROUP BY book_id`,
+      )
+      .raw()
+      .all(userId) as [string, number][],
+  );
+}
+
+/** pickCollage's order over a scoped group's books: opened, first volumes, newest. */
+function collageOf(list: Member[], opened: Map<string, number>): string[] {
+  const picked: string[] = [];
+  const seriesShown = new Set<number>();
+  const add = (m: Member) => {
+    if (picked.length >= TILE_COUNT || picked.includes(m.id)) return;
+    picked.push(m.id);
+    if (m.seriesId !== null) seriesShown.add(m.seriesId);
+  };
+  // 1. Books you have opened, most recent first.
+  list
+    .filter((m) => opened.has(m.id))
+    .sort((a, b) => (opened.get(b.id) ?? 0) - (opened.get(a.id) ?? 0))
+    .slice(0, TILE_COUNT)
+    .forEach(add);
+  if (picked.length >= TILE_COUNT) return picked;
+  const newest = [...list]
+    .sort((a, b) => b.addedAt - a.addedAt || byText(b.id, a.id))
+    .slice(0, TILE_SCAN);
+  // 2. One lowest-index volume per series (among the group's books), newest series first.
+  const firstOrder = memberOrder(1e18);
+  for (const m of newest) {
+    if (picked.length >= TILE_COUNT) break;
+    if (m.seriesId === null || seriesShown.has(m.seriesId)) continue;
+    const first = list.filter((x) => x.seriesId === m.seriesId).sort(firstOrder)[0];
+    seriesShown.add(m.seriesId);
+    if (first) add(first);
+  }
+  // 3. The newest books.
+  for (const m of newest) add(m);
+  return picked;
 }
 
 /** [newest, count, name]; the pre-WP19 [newest, name] still works (newest-first order). */
@@ -363,13 +681,7 @@ function describeGroups(
   spec: string | null,
 ): GroupCard[] {
   const visible = visibilitySql(opts);
-  const cards: GroupCard[] = rows.map((r) => ({
-    by: opts.by,
-    name: r.name,
-    bookCount: r.n,
-    newestAddedAt: r.newest,
-    chars: { total: r.total ?? 0, counted: r.counted, pending: r.pending, failed: r.failed },
-  }));
+  const cards: GroupCard[] = rows.map((r) => baseCard(opts.by, r));
 
   const wanted = new Set<string>();
   const seriesMembers = new Map<number, string[]>();

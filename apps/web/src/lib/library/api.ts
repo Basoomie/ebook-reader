@@ -246,6 +246,23 @@ export interface BookListQuery {
   collection?: string;
 }
 
+/** The filters of a group list (groups()). */
+export interface GroupListQuery {
+  by: GroupBy;
+  q?: string;
+  /**
+   * A collection's books only (2026-11-24): a smart or built-in collection's search, or
+   * a manual collection's id. The cards then count and show only those books.
+   */
+  scope?: string;
+  collection?: string;
+  library?: string;
+  cursor?: string;
+  limit?: number;
+  /** WP19a; absent = recently added first. */
+  sort?: ServerSort<string>;
+}
+
 function listParams(query: BookListQuery): URLSearchParams {
   const params = new URLSearchParams();
   if (query.q) params.set('q', query.q);
@@ -579,20 +596,11 @@ export class LibraryApi {
   }
 
   /** Browse tabs (WP7a): one card per series, author or tag with a matching book. */
-  async groups(
-    query: {
-      by: GroupBy;
-      q?: string;
-      library?: string;
-      cursor?: string;
-      limit?: number;
-      /** WP19a; absent = recently added first. */
-      sort?: ServerSort<string>;
-    },
-    options?: RequestOptions
-  ): Promise<CatalogGroupPage> {
+  async groups(query: GroupListQuery, options?: RequestOptions): Promise<CatalogGroupPage> {
     const params = new URLSearchParams({ by: query.by });
     if (query.q) params.set('q', query.q);
+    if (query.scope) params.set('scope', query.scope);
+    if (query.collection) params.set('collection', query.collection);
     if (query.library) params.set('library', query.library);
     if (query.sort) {
       params.set('sort', query.sort.key);

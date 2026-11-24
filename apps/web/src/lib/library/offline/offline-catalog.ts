@@ -6,7 +6,12 @@
 
 import { BUILTIN_COLLECTIONS } from '$lib/collections/builtins';
 import type { Collection, CollectionItem } from '$lib/collections/collections';
-import { LibraryApiError, type BookListQuery, type RequestOptions } from '$lib/library/api';
+import {
+  LibraryApiError,
+  type BookListQuery,
+  type GroupListQuery,
+  type RequestOptions
+} from '$lib/library/api';
 import { parseQuery, type ParsedQuery, type TextField } from '$lib/library/query/parse';
 import type { BookSortKey, GroupSortKey, ServerSort } from '$lib/library/sort';
 import type {
@@ -338,22 +343,19 @@ export class OfflineCatalog {
     return book;
   }
 
-  async groups(
-    query: {
-      by: GroupBy;
-      q?: string;
-      library?: string;
-      cursor?: string;
-      limit?: number;
-      sort?: ServerSort<string>;
-    },
-    options?: RequestOptions
-  ): Promise<CatalogGroupPage> {
+  async groups(query: GroupListQuery, options?: RequestOptions): Promise<CatalogGroupPage> {
     const data = await this.data();
     const parsed = parseOrThrow(query.q);
     const ctx = this.context(data);
     const field = FIELD[query.by];
-    const visible = this.visible(data, { library: query.library });
+    // A collection's books only (2026-11-24): every number counts only those books.
+    const scoped = query.scope ? parseOrThrow(query.scope) : null;
+    const inCollection = query.collection
+      ? new Set((data.items.get(query.collection) ?? []).map((i) => i.bookId))
+      : null;
+    const visible = this.visible(data, { library: query.library }).filter(
+      (b) => (!inCollection || inCollection.has(b.id)) && (!scoped || matchesQuery(b, scoped, ctx))
+    );
 
     const members = new Map<string | null, CatalogBookDetail[]>();
     for (const b of visible) {
