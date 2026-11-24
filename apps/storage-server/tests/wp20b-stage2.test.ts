@@ -847,6 +847,22 @@ describe('stage 2: metadata and covers from the files', () => {
     expect(after.review_reason).toBe(SPLIT_WORD_REASON);
   });
 
+  it("running the analysis again after stage 2's own writes keeps the gate's verdict (no title pause)", async () => {
+    await setMode('analyse');
+    expect(listFieldPauses(env.cleanupDb, 2)).toEqual([]);
+    await setMode('on');
+    await runAll(worker());
+    expect(calibreRecord(env.lib, ids.B2)!.title).toBe('正しい題名');
+    // The gate compares the file with what stage 2 replaced, not with its own write.
+    env.service.reanalyse(2);
+    for (let i = 0; i < 300 && getStage(env.cleanupDb, 2).state !== 'ready'; i++) {
+      await env.service.tick();
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    expect(getStage(env.cleanupDb, 2).state).toBe('ready');
+    expect(listFieldPauses(env.cleanupDb, 2)).toEqual([]);
+  });
+
   it("a value stage 4 wrote and Calibre still holds is Calibre's own: review, never automatic", async () => {
     // B2 is metadata-processed (the Google run): its title and author would be taken from the
     // file. Stage 4 wrote both since; Calibre still holds them.

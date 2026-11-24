@@ -98,6 +98,12 @@ export interface Stage2Score {
 
 export interface ScoredBook {
   id: string;
+  /**
+   * Calibre's value before stage 2 changed it, when stage 2 wrote this field: the gate compares
+   * the file with what the rules replace, as on the first run (after stage 2's own writes
+   * Calibre's value is the file's, and a re-run would measure the file against itself).
+   */
+  before?: { title?: string; authors?: string[] };
   gold: GoldLabel;
   cal: CalibreFacts;
   file: FileFacts;
@@ -123,7 +129,7 @@ export function scoreStage2(books: Iterable<ScoredBook>): Stage2Score {
       if (titleRight(value, g)) t.applied += 1;
       else if (grp !== 'conflict')
         s.misses.push({ id: b.id, field: 'title', group: grp, value, label: g.t });
-      if (titleRight(cleanTitleV3(cal.title), g)) t.calibre += 1;
+      if (titleRight(cleanTitleV3(b.before?.title ?? cal.title), g)) t.calibre += 1;
       if (titleRight(cleanTitleV3(file.title ?? ''), g)) t.file += 1;
       if (proposals.some((p) => p.field === 'title' && p.class === 'review')) t.review += 1;
     }
@@ -135,7 +141,7 @@ export function scoreStage2(books: Iterable<ScoredBook>): Stage2Score {
       if (authorsRight(value, g)) a.applied += 1;
       else if (grp !== 'conflict')
         s.misses.push({ id: b.id, field: 'authors', group: grp, value, label: g.au });
-      if (authorsRight(cal.authors, g)) a.calibre += 1;
+      if (authorsRight(b.before?.authors ?? cal.authors, g)) a.calibre += 1;
       const first = file.creators
         .filter((c) => c.role === null || c.role === 'aut')
         .map((c) => c.name);

@@ -276,6 +276,34 @@ export class Stage2Analysis {
     return out;
   }
 
+  /**
+   * Calibre's title and authors before stage 2 first changed them (its earliest applied change's
+   * old value), for the gate; not for a field a later stage owns (that book is scored as
+   * Calibre's own value).
+   */
+  private beforeStage2(
+    libraryId: string,
+    uuid: string,
+    owned: readonly Stage2Field[] | undefined,
+  ): { title?: string; authors?: string[] } | undefined {
+    const first = this.deps.cleanup.prepare(
+      `SELECT old_json FROM proposed_changes INDEXED BY proposed_changes_book
+       WHERE library_id = ? AND calibre_uuid = ? AND stage = 2 AND field = ? AND state = 'applied'
+       ORDER BY id LIMIT 1`,
+    );
+    const out: { title?: string; authors?: string[] } = {};
+    for (const field of ['title', 'authors'] as const) {
+      if (owned?.includes(field)) continue;
+      const r = first.get(libraryId, uuid, field) as { old_json: string | null } | undefined;
+      if (!r?.old_json) continue;
+      const v = JSON.parse(r.old_json) as unknown;
+      if (field === 'title' && typeof v === 'string') out.title = v;
+      if (field === 'authors' && Array.isArray(v))
+        out.authors = v.filter((x) => typeof x === 'string');
+    }
+    return out.title !== undefined || out.authors !== undefined ? out : undefined;
+  }
+
   /** Calibre's facts of a book for the rules, with the fields later stages own. */
   private calFacts(libraryId: string, book: Stage2Book, ev: FileEvidence) {
     return {
@@ -741,12 +769,14 @@ export class Stage2Analysis {
         missing += 1;
         continue;
       }
+      const cal = this.calFacts(p.libraryId, book, ev);
       out.push({
         id: goldId,
         gold: gold[goldId],
-        cal: this.calFacts(p.libraryId, book, ev),
+        cal,
         file: ev.file,
         proposals: this.proposalsFor(book, ev, settings, spelling),
+        before: this.beforeStage2(p.libraryId, book.uuid, cal.owned),
       });
     }
     return { books: out, missing, error: null };
