@@ -151,6 +151,15 @@ export interface PhaseCount {
 
 /** The compare phase's stages (each resumable from the catalog). */
 export type CompareStage = 'library' | 'identical' | 'text' | 'pairs' | 'measure' | 'decide';
+/** The compare step's parts in the order they run (the card shows "part N of 6"). */
+export const COMPARE_STAGES: CompareStage[] = [
+  'library',
+  'identical',
+  'text',
+  'pairs',
+  'measure',
+  'decide',
+];
 
 /** What the compare phase keeps in a new file's catalog row (facts_json). */
 export interface CompareFacts {

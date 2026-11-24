@@ -21,6 +21,8 @@ export interface ArrivalsBar {
   bytesDone: number | null;
   bytesTotal: number | null;
   secondsLeft: number | null;
+  /** The compare step's part (six in turn, each counted on its own); null in other steps. */
+  part?: { index: number; count: number; stage: string } | null;
 }
 
 export interface ArrivalsReport {
@@ -99,7 +101,7 @@ export const ARRIVALS_HINTS: Record<ArrivalsMode, string> = {
   off: 'New books are not looked at.',
   analyse:
     'Preview: each day the source folders are checked and every new book is compared with the library; books added in Calibre get their proposals. Nothing is added or written.',
-  on: 'On: new EPUBs that are not copies of library books are added to Calibre, and the new books go through stages 1-5 (their changes written). A folder adds only after its first run’s Preview and your “Add these”.'
+  on: 'On: new EPUBs that are not copies of library books are added to Calibre, and the new books go through stages 1-5 (their changes written). A folder adds only after its first run (a Preview) has finished.'
 };
 
 /** The steps of a run as the card names them. */
@@ -124,6 +126,16 @@ export const PHASE_LABELS: Record<string, string> = {
   check: 'Checking what was written against Calibre',
   report: 'Writing the report',
   done: 'Done'
+};
+
+/** The compare step's parts as the card names them. */
+export const COMPARE_PART_LABELS: Record<string, string> = {
+  library: 'reading library books stage 3 has not read',
+  identical: 'looking for identical files',
+  text: 'reading the new books and measuring them against the library',
+  pairs: 'finding books with the same text',
+  measure: 'measuring the pairs with the same text',
+  decide: 'deciding each book'
 };
 
 /** Outcomes of a file in plain words (the lists' names and the summary). */
@@ -151,7 +163,12 @@ export function arrivalsBar(s: ArrivalsStatus | null): ProgressBar | null {
   const run = s?.run;
   if (!run) return null;
   const b = run.bar;
-  const label = `Step ${b.index + 1} of ${b.phases}: ${PHASE_LABELS[b.phase] ?? b.phase}`;
+  const step = `Step ${b.index + 1} of ${b.phases}: ${PHASE_LABELS[b.phase] ?? b.phase}`;
+  // The compare step runs six parts, each counted from its own start: say which one this is.
+  const part = b.part ?? null;
+  const label = part
+    ? `${step}, part ${part.index + 1} of ${part.count}: ${COMPARE_PART_LABELS[part.stage] ?? part.stage}`
+    : step;
   const total = b.bytesTotal ?? b.total;
   const done = b.bytesTotal !== null ? (b.bytesDone ?? 0) : b.done;
   // With nothing counted yet the bar shows how far the run is through its steps.
@@ -160,7 +177,14 @@ export function arrivalsBar(s: ArrivalsStatus | null): ProgressBar | null {
   return {
     label: total > 0 && b.bytesTotal === null ? `${label} (${n(b.done)} of ${n(b.total)})` : label,
     fraction,
-    eta: b.secondsLeft !== null ? etaText(b.secondsLeft * 1000) : null
+    // After measuring, only deciding is left (minutes): the time left is the whole step's. Before
+    // it, the later parts' size is not known yet, so it is this part's.
+    eta:
+      b.secondsLeft === null
+        ? null
+        : part && part.stage !== 'measure' && part.stage !== 'decide'
+          ? `${etaText(b.secondsLeft * 1000)} in this part`
+          : etaText(b.secondsLeft * 1000)
   };
 }
 

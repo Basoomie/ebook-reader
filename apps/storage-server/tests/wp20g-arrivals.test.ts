@@ -20,7 +20,9 @@ import { clockNow } from '../src/cleanup/audio/arrivals-schedule';
 import { ArrivalBatches } from '../src/cleanup/arrivals/add-batches';
 import { entrySkip } from '../src/cleanup/arrivals/archives';
 import { classifyName, settled, sniffFormat, walkSource } from '../src/cleanup/arrivals/catalog';
+import { qualityOfFile } from '../src/cleanup/arrivals/compare';
 import { inPool, type CompareFacts } from '../src/cleanup/arrivals/run';
+import type { SourcePacer } from '../src/cleanup/arrivals/sources-fs';
 import { stage2Pass } from '../src/cleanup/arrivals/stage-passes';
 import { ArrivalStage5, emptyStage5Pass } from '../src/cleanup/arrivals/stage5-pass';
 import { runBar } from '../src/cleanup/arrivals/views';
@@ -198,6 +200,41 @@ describe('wp20g: files and formats', () => {
     );
     expect(bar.secondsLeft).toBe(180);
     expect(bar.done).toBe(10);
+    expect(bar.part).toBeNull();
+    // The compare step: the part it is in, counted from that part's start.
+    const cmp = runBar(
+      {
+        phase: 'compare',
+        phaseStartedAt: now - 3_600_000,
+        phaseStartDone: 0,
+        cmp: { stage: 'measure', cursor: 0, startedAt: now - 60_000, startDone: 100 },
+        counts: { compare: { done: 160, total: 1_000 } },
+      } as never,
+      now,
+    );
+    expect(cmp.part).toEqual({ index: 4, count: 6, stage: 'measure' });
+    expect(cmp.secondsLeft).toBe(840);
+  });
+
+  it('reads a copy’s quality without hashing it (no rule uses the hash; it read every file twice)', async () => {
+    const file = path.join(tmp(), 'q.epub');
+    fs.writeFileSync(file, makeTextEpub({ title: 'Q', chapters: chaptersOf(41) }));
+    let taken = 0;
+    const pacer = { take: async (b: number) => void (taken += b) } as unknown as SourcePacer;
+    const q = await qualityOfFile(file, {
+      calibreId: -1,
+      chars: 1,
+      ruby: 0,
+      tocEntries: 0,
+      customTags: 0,
+      addedAt: 0,
+      pacer,
+    });
+    expect(q).not.toBeNull();
+    expect(q!.sha256).toBeNull();
+    // Only the entries read for the cover, layout and pictures count (about the file once); the
+    // hash read the whole file again (about twice the file).
+    expect(taken).toBeLessThan(fs.statSync(file).size * 1.5);
   });
 });
 
