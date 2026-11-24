@@ -350,6 +350,34 @@ describe('More Bookmeter coverage: pure parts', () => {
       measured: true,
     });
   });
+
+  it("times the write from its recent batches' pace, none before a batch finished", () => {
+    const p = emptyBmProgress(1, LIB);
+    p.phase = 'write';
+    const x = {
+      ai: { queued: 0, sent: 0, answered: 0, blocked: 0, invalid: 0, failed: 0 },
+      openSearches: 0,
+      openQ1: 0,
+      openStores: 0,
+      intervalSeconds: 5,
+    };
+    // Before the proposals are made again: no bar.
+    expect(bookmeterBar(p, T0, x)).toBeNull();
+    expect(bookmeterBar(p, T0, { ...x, write: { done: 0, total: 27267, pace: null } })).toEqual({
+      phase: 'write',
+      done: 0,
+      total: 27267,
+      leftMs: null,
+      measured: false,
+    });
+    // 1,500 written in 3 batches over 270 s: the 25,767 left at 0.18 s each.
+    expect(
+      bookmeterBar(p, T0, {
+        ...x,
+        write: { done: 1500, total: 27267, pace: { ms: 270_000, items: 1500 } },
+      }),
+    ).toMatchObject({ leftMs: (270_000 / 1500) * 25767, measured: true });
+  });
 });
 
 describe('More Bookmeter coverage: the pass', () => {
@@ -807,6 +835,27 @@ describe('More Bookmeter coverage: the pass', () => {
     const [c] = q.claim(tick()).requests;
     q.report(c.id, c.leaseToken, answer('{}'), clock);
     expect(db.prepare('SELECT ready FROM bookmeter_more_waiters').get()).toEqual({ ready: 1 });
+  });
+
+  it("measures the write's pace from its last 5 finished batches", () => {
+    expect(pass().writePace([])).toBeNull();
+    const add = db.prepare(
+      `INSERT INTO batches (id, stage, library_id, kind, state, item_count, created_at, finished_at, updated_at)
+       VALUES (?, 4, ?, 'apply', ?, 500, ?, ?, 0)`,
+    );
+    const ids: string[] = [];
+    // Batch 0 long before a restart; then one batch every 100 s; the last one still applying.
+    add.run('w0', LIB, 'applied', 0, 50_000);
+    ids.push('w0');
+    for (let i = 1; i <= 6; i++) {
+      add.run(`w${i}`, LIB, 'applied', 10_000_000 + (i - 1) * 100_000, 10_000_000 + i * 100_000);
+      ids.push(`w${i}`);
+    }
+    add.run('w7', LIB, 'claimed', 10_600_000, null);
+    ids.push('w7');
+    expect(pass().writePace(ids.slice(0, 1))).toEqual({ ms: 50_000, items: 500 });
+    // w2-w6: from w2's planning to w6's end.
+    expect(pass().writePace(ids)).toEqual({ ms: 500_000, items: 2500 });
   });
 
   it('reads its polled counts by index (no scan of a table that grows with the pass)', () => {
