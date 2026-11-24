@@ -1093,11 +1093,20 @@ export class CleanupService {
       p.phase === 'signals' && p.pairs
         ? { label: 'pairs', done: p.done, total: p.pairs, startedAt: p.phaseStartedAt }
         : p.phase === 'write' && st.mode === 'on' && written + toWrite > 0
-          ? { label: 'books', done: written, total: written + toWrite, startedAt: p.phaseStartedAt }
+          ? {
+              label: 'books',
+              done: written,
+              total: written + toWrite,
+              // The pace of this write: from its first batch, books written since (WP20 lessons
+              // 4; the phase may have waited in Preview for hours before On).
+              startedAt: p.write.startedAt ?? null,
+              base: p.write.writtenAtStart ?? 0,
+            }
           : null;
+    const base = bar && 'base' in bar ? (bar.base ?? 0) : 0;
     const left =
-      bar && bar.startedAt && bar.done > 0 && bar.done < bar.total
-        ? Math.round(((now - bar.startedAt) / bar.done) * (bar.total - bar.done))
+      bar && bar.startedAt && bar.done - base > 0 && bar.done < bar.total
+        ? Math.round(((now - bar.startedAt) / (bar.done - base)) * (bar.total - bar.done))
         : null;
     return {
       mode: st.mode,
