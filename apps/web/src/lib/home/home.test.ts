@@ -122,9 +122,8 @@ describe('Home rows', () => {
   });
 
   it('counts the list each row\'s "See all" opens', () => {
-    expect(rowCountQuery({ type: 'continue', hidden: false })).toEqual({
-      scope: 'status:reading'
-    });
+    // Continue reading is counted from its own list (more than the books marked Reading).
+    expect(rowCountQuery({ type: 'continue', hidden: false })).toBeNull();
     expect(rowCountQuery({ type: 'recent', hidden: false })).toEqual({});
     expect(rowCountQuery({ type: 'builtin', ref: 'favorites', hidden: false })).toEqual({
       scope: 'favorite:yes'

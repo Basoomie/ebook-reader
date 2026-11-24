@@ -313,8 +313,9 @@
   }
 
   /**
-   * A row's books. `whole`: they are the entire list its "See all" opens (a books() page
-   * with nothing after it), so their number is the count and none needs asking for.
+   * A row's books. `whole`: they are the entire list the row counts (a books() page with
+   * nothing after it, or every book you are partway through), so their number is the
+   * count and none needs asking for.
    */
   async function fetchRow(
     row: HomeRowEntry,
@@ -329,8 +330,11 @@
       whole: false
     });
     switch (row.type) {
-      case 'continue':
-        return picked(continueReadingIds(states, positions, rowLength));
+      case 'continue': {
+        const ids = continueReadingIds(states, positions, Infinity);
+        const r = await picked(ids.slice(0, rowLength));
+        return { books: r.books, whole: ids.length <= rowLength };
+      }
       case 'recent':
         return page({});
       case 'builtin': {
@@ -351,24 +355,38 @@
   }
 
   /**
-   * The number beside a row's "See all": how many books the list it opens has. Counting
-   * can take a moment on a big library, so the row never waits for it; on a failure the
-   * row keeps the number it had (or shows none).
+   * The number beside a row's title: how many books its whole list has. Counting can take
+   * a moment on a big library, so the row never waits for it; on a failure the row keeps
+   * the number it had (or shows none).
    */
   async function loadCount(row: HomeRowEntry, a: LibraryApi | OfflineCatalog) {
     const key = rowKey(row);
     const collection =
       row.type === 'collection' ? collectionList.find((c) => c.id === row.ref) : null;
     const query = rowCountQuery(row, collection);
-    if (!query) return;
+    if (!query && row.type !== 'continue') return;
     const asked = (countAsked.get(key) ?? 0) + 1;
     countAsked.set(key, asked);
     try {
-      const n = await a.count(query);
+      const n = query ? await a.count(query) : await continueReadingCount(a);
       if (!destroyed && countAsked.get(key) === asked) setCount(key, n);
     } catch (error) {
       logger.warn(`Home: could not count "${key}": ${(error as Error)?.message ?? error}`);
     }
+  }
+
+  /**
+   * Continue reading's whole list: every book you are partway through (this device's
+   * mirror), without the ones the library no longer has or hides, as the row shows them.
+   */
+  async function continueReadingCount(a: LibraryApi | OfflineCatalog): Promise<number> {
+    const ids = continueReadingIds(states, positions, Infinity);
+    let n = 0;
+    // The lookup takes at most 200 ids.
+    for (let i = 0; i < ids.length; i += 200) {
+      n += (await a.lookup(ids.slice(i, i + 200))).books.length;
+    }
+    return n;
   }
 
   function setCount(key: string, n: number) {

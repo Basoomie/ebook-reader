@@ -154,10 +154,11 @@ export function rowHref(row: HomeRow, base: string): string | null {
 }
 
 /**
- * The list a row's "See all" opens, as a book count (the number shown with "See all"), so
- * the number is what the full list shows: Continue reading counts the Reading collection,
- * Recently added the whole library. Null when there is nothing to count (a deleted
- * collection, a smart collection without a search).
+ * A row's whole list as a server book count (the number beside the row's title), so the
+ * number is what "See all" shows: Recently added counts the whole library. Null for
+ * Continue reading, which is counted from its own list (every book you are partway
+ * through, from this device's mirror: more than the books marked Reading), and when there
+ * is nothing to count (a deleted collection, a smart collection without a search).
  */
 export function rowCountQuery(
   row: HomeRow,
@@ -165,7 +166,7 @@ export function rowCountQuery(
 ): BookListQuery | null {
   switch (row.type) {
     case 'continue':
-      return { scope: builtinCollection('reading')!.query };
+      return null;
     case 'recent':
       return {};
     case 'builtin': {
