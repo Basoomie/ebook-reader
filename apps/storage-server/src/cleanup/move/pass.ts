@@ -47,6 +47,8 @@ import {
 } from './state';
 
 export const MOVE_SPOT_SIZE = 30;
+/** Proposals inserted per step of the select phase (the server answers between steps). */
+const SELECT_CHUNK = 200;
 /** The spot check passes with every book marked and at most this many wrong (the user: none). */
 export const MOVE_SPOT_MAX_WRONG = 0;
 
@@ -131,6 +133,7 @@ export class MovePass {
         )
         .run(p.libraryId, moveAnalysisId(p.run));
     this.db.prepare('DELETE FROM calibre_move_spot').run();
+    this.selecting = null;
     resumeMove(this.db);
     saveMoveProgress(this.db, emptyMoveProgress(p.run + 1, p.libraryId, p.targetId));
   }
@@ -285,19 +288,36 @@ export class MovePass {
     return out;
   }
 
+  /**
+   * The decisions of the select step under way, proposed a chunk per step: inserting 1,730
+   * proposals into the live-size cleanup.db took 1.1 s in one transaction on the PC (stop 1), too
+   * long to hold the server (lessons 3); a chunk is a fraction of that. A restart reads again
+   * (the reads take ~150 ms) and the never-again check skips what was already proposed.
+   */
+  private selecting: { run: number; decisions: MoveDecision[]; mtime: number; at: number } | null =
+    null;
+
   private selectStep(p: MoveProgress, lib: string, target: string): MoveStep {
-    const { decisions, snapshotMtimeMs } = this.decide(lib);
-    if (snapshotMtimeMs === null) {
-      p.write.waiting = "The reader's copy of the library isn't there yet";
-      return 'idle';
+    if (!this.selecting || this.selecting.run !== p.run) {
+      const { decisions, snapshotMtimeMs } = this.decide(lib);
+      if (snapshotMtimeMs === null) {
+        p.write.waiting = "The reader's copy of the library isn't there yet";
+        return 'idle';
+      }
+      this.selecting = { run: p.run, decisions, mtime: snapshotMtimeMs, at: 0 };
+      p.counts.tagged = decisions.length;
     }
-    const r = this.propose(lib, target, moveAnalysisId(p.run), decisions);
-    p.snapshotMtimeMs = snapshotMtimeMs;
-    p.counts.tagged = decisions.length;
+    const s = this.selecting;
+    const chunk = s.decisions.slice(s.at, s.at + SELECT_CHUNK);
+    const r = this.propose(lib, target, moveAnalysisId(p.run), chunk);
+    s.at += chunk.length;
     p.counts.auto += r.auto;
     for (const [k, n] of Object.entries(r.held)) p.counts.held[k] = (p.counts.held[k] ?? 0) + n;
     p.counts.withData += r.withData;
+    if (s.at < s.decisions.length) return 'more';
+    p.snapshotMtimeMs = s.mtime;
     p.counts.alreadyMoved = this.movedCount(lib);
+    this.selecting = null;
     this.next(p, 'spot');
     return 'more';
   }
