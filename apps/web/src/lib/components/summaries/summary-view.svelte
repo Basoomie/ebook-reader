@@ -302,7 +302,12 @@
     {:else}
       <ul
         class:cards={section.key === 'characters' && !editing}
-        class:rows={section.key !== 'characters' || editing}
+        class:rows={(section.key !== 'characters' &&
+          section.key !== 'terms' &&
+          section.key !== 'threads') ||
+          editing}
+        class:glossary={section.key === 'terms'}
+        class:threads={section.key === 'threads'}
       >
         {#each flat as it (it.ref)}
           <li
@@ -426,5 +431,74 @@
   }
   .overview {
     white-space: pre-line;
+  }
+  /* Terms: the name in a left column, the definition beside it, a hairline between entries. */
+  .glossary > li {
+    display: grid;
+    grid-template-columns: minmax(7rem, 11rem) minmax(0, 1fr);
+    column-gap: 1.25rem;
+    padding: 0.75rem 0;
+    border-top: var(--c-border-width) solid var(--c-line);
+  }
+  .glossary > li:first-child {
+    border-top: none;
+  }
+  .glossary > li > :global(h3) {
+    grid-column: 1;
+    grid-row: 1 / span 20;
+  }
+  .glossary > li > :global(:not(h3)) {
+    grid-column: 2;
+  }
+  .glossary > li > :global(p) {
+    margin-top: 0;
+  }
+  @media (max-width: 40rem) {
+    .glossary > li {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .glossary > li > :global(h3),
+    .glossary > li > :global(:not(h3)) {
+      grid-column: 1;
+      grid-row: auto;
+    }
+    .glossary > li > :global(p) {
+      margin-top: 0.25rem;
+    }
+  }
+  /* Open threads: one numbered card each. */
+  .threads {
+    counter-reset: thread;
+  }
+  .threads > li {
+    counter-increment: thread;
+    display: grid;
+    grid-template-columns: 1.75rem minmax(0, 1fr);
+    column-gap: 0.75rem;
+    margin-bottom: 0.5rem;
+    padding: 0.75rem 0.875rem;
+    border-radius: 10px;
+    background: var(--c-raised);
+    border: var(--c-border-width) solid var(--c-line);
+  }
+  .threads > li::before {
+    content: counter(thread);
+    grid-column: 1;
+    grid-row: 1 / span 20;
+    align-self: start;
+    margin-top: 0.15rem;
+    width: 1.5rem;
+    height: 1.5rem;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.75rem;
+    font-weight: 500;
+    background: var(--c-line);
+    color: var(--c-muted, inherit);
+  }
+  .threads > li > :global(*) {
+    grid-column: 2;
   }
 </style>
