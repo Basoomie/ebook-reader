@@ -4,3 +4,5 @@ build/
 apps/storage-server/vendor/
 # Vendored ttu-whispersync keeps its upstream style (WP19).
 apps/web/src/lib/whispersync/
+# Saved Natively pages: the level parser reads them byte for byte (2026-11-24).
+apps/storage-server/tests/fixtures/natively/
