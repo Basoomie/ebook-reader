@@ -489,8 +489,10 @@ export class AiRunner {
         }
         // Batches the provider keeps refusing: wait before the next (batch-health.ts), or with
         // the fallback ask this run's questions one call each.
-        const hold = modeOf(s, m.model) === 'batch' ? this.core.batchHold(m.model, runId) : null;
-        const batchMode = modeOf(s, m.model) === 'batch' && !hold?.direct;
+        // A stage that asks for direct calls (session 4b) never uses the model's batches.
+        const batchModel = modeOf(s, m.model) === 'batch' && !spec.request?.direct;
+        const hold = batchModel ? this.core.batchHold(m.model, runId) : null;
+        const batchMode = batchModel && !hold?.direct;
         // Questions a stalled batch gave back are always asked directly.
         const d = await this.sendDirect(
           spec,

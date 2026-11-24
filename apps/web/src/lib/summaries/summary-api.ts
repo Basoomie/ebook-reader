@@ -100,6 +100,25 @@ export interface BookSummaryRecord {
   outcome: 'made' | 'failed' | 'no_text' | null;
   /** "No text to summarize", or why every setup failed. */
   note: string | null;
+  /**
+   * Session 4b: the book description's translations made from its text as it is now, each
+   * language with a digest (devices keep a copy of each; absent: none).
+   */
+  descriptions?: Record<string, string>;
+}
+
+/** A book's description in a language (session 4b). */
+export interface DescriptionView {
+  /** The book's language (the description's original). */
+  bookLang: string;
+  /** The description now (as the catalog gives it), or null. */
+  source: string | null;
+  lang: string | null;
+  /** none: never asked, or the description changed since. */
+  state: 'none' | 'queued' | 'done' | 'failed';
+  error: string | null;
+  /** The translation of the description as it is now: one text per paragraph, lines kept. */
+  translation: { paragraphs: string[]; model: string | null; madeAt: number | null } | null;
 }
 
 export type SummaryPhase = 'reading' | 'checking' | 'writing' | 'translating';
@@ -230,6 +249,18 @@ export class SummaryApi {
 
   translate(bookId: string, lang: string): Promise<void> {
     return this.request('POST', `/summaries/${encodeURIComponent(bookId)}/translate`, { lang });
+  }
+
+  // ---- session 4b: the description in a language ----
+
+  description(bookId: string, lang?: string): Promise<DescriptionView> {
+    const q = lang ? `?lang=${encodeURIComponent(lang)}` : '';
+    return this.request('GET', `${this.book(bookId)}/description${q}`);
+  }
+
+  /** A language chosen: translated unless today's text has one (state done) or is on its way. */
+  translateDescription(bookId: string, lang: string): Promise<DescriptionView> {
+    return this.request('POST', `${this.book(bookId)}/description/translate`, { lang });
   }
 
   // ---- session 4: the book page's actions ----

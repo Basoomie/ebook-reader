@@ -220,6 +220,10 @@ export const SETTINGS_REGISTRY: Record<string, SettingSpec> = {
   summaryCharacterLayout: d('String'),
   summaryRelationshipLayout: d('String'),
   summaryViewLang: l('String'),
+  // Session 4b: the automatic-summaries switch (every device; the server reads it too) and the
+  // description's own last language (this device only).
+  summaryAutoOnFirstCompletion: g('Boolean'),
+  descriptionViewLang: l('String'),
 
   // --- lib/calibre-edit/settings.ts (per device: Calibre metadata editing, Settings > Library) ---
   bookEditAs: d('String'),

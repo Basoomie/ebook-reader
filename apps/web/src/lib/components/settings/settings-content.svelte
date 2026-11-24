@@ -28,6 +28,7 @@
   import SummaryLanguageSettings from '$lib/components/settings/summary-language-settings.svelte';
   import SummaryModelSettings from '$lib/components/settings/summary-model-settings.svelte';
   import {
+    summaryAutoOnFirstCompletion$,
     summaryCharacterLayout$,
     summaryRelationshipLayout$,
     summarySpoilerBlur$
@@ -1055,6 +1056,14 @@
     </SettingsGroup>
     <!-- Book summaries session 4: after Book page. -->
     <SettingsGroup id="library-summaries">
+      <!-- Session 4b: the automatic summaries switch, first in the group. -->
+      <SettingRow id="summary-auto" settingKey="summaryAutoOnFirstCompletion" let:labelId>
+        <SettingSwitch
+          bind:checked={$summaryAutoOnFirstCompletion$}
+          labelledby={labelId}
+          testid="summary-auto"
+        />
+      </SettingRow>
       <SettingRow id="summary-languages" settingKey="summaryLanguages" layout="stack">
         <SummaryLanguageSettings />
       </SettingRow>

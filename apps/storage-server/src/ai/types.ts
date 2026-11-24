@@ -62,6 +62,11 @@ export interface AiRequestOptions {
    * estimate then follows this stage's own answers (not the model's answers of every stage).
    */
   expectedOutputTokens?: number;
+  /**
+   * Always one direct call each, whatever the model's mode in Settings > AI (book summaries
+   * session 4b: a book description is translated while the user waits). Absent = the mode.
+   */
+  direct?: boolean;
 }
 
 /** A model's stored answer for an item. */

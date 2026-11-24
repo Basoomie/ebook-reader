@@ -17,7 +17,9 @@ import {
   SUMMARY_SKIP_KIND,
   recordSummary,
   SummaryCache,
+  syncDescriptions,
   syncSummaries,
+  type CachedDescription,
   type CachedSummary
 } from './summary-cache';
 
@@ -60,6 +62,9 @@ function sync(records: LocalRecord[]): Promise<void> {
       if (!a) return;
       const r = await syncSummaries(mine, a, getCache());
       for (const e of r.errors.slice(0, 3)) logger.warn(`Summaries: ${e}`);
+      // Session 4b: the descriptions' translations named by the same records.
+      const d = await syncDescriptions(mine, a, getCache());
+      for (const e of d.errors.slice(0, 3)) logger.warn(`Summaries: description ${e}`);
     } catch (err) {
       logger.warn(`Summaries: ${(err as Error)?.message ?? err}`);
     }
@@ -84,6 +89,38 @@ export async function getSummary(bookId: string, lang: string): Promise<CachedSu
   } catch {
     return null;
   }
+}
+
+/** The device's copy of a book description's translation (session 4b), if it has one. */
+export async function getDescriptionTranslation(
+  bookId: string,
+  lang: string
+): Promise<CachedDescription | null> {
+  try {
+    return (await getCache().getDescription(bookId, lang)) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Keeps a translation the page just got from the server (before its record arrives). The
+ * record's digest replaces this copy at the next sync. Never throws.
+ */
+export async function keepDescriptionTranslation(
+  entry: Omit<CachedDescription, 'digest' | 'savedAt'>
+): Promise<void> {
+  try {
+    const have = await getCache().getDescription(entry.bookId, entry.lang);
+    if (have && have.source === entry.source && same(have.paragraphs, entry.paragraphs)) return;
+    await getCache().putDescription({ ...entry, digest: '', savedAt: Date.now() });
+  } catch {
+    /* the page shows it anyway; the next sync keeps it */
+  }
+}
+
+function same(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((x, i) => x === b[i]);
 }
 
 /** The last cost per 100,000 characters the server gave (for an estimate offline). */

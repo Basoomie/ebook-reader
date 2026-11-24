@@ -109,6 +109,8 @@ interface StandIn {
   refuse: Set<string>;
   /** Models whose list the provider no longer offers (a wait: model missing). */
   missing: Set<string>;
+  /** Description translations answered with a line left out (session 4b), counted down. */
+  descBad?: number;
 }
 
 function answer(input: CallInput): unknown {
@@ -218,6 +220,20 @@ function answer(input: CallInput): unknown {
   throw new Error(`unexpected ${name}`);
 }
 
+/** The description's paragraphs and lines, each line as "EN <line>" (session 4b). */
+function describeAnswer(input: CallInput, s: StandIn): unknown {
+  const paragraphs = input.user
+    .split(/^PARAGRAPH \d+ \(\d+ lines?\):\n/m)
+    .slice(1)
+    .map((b) => b.replace(/\n+$/, '').split('\n'));
+  const out = paragraphs.map((p) => ({ lines: p.map((l) => `EN ${l}`) }));
+  if (s.descBad) {
+    s.descBad--;
+    out[out.length - 1].lines.pop();
+  }
+  return { paragraphs: out };
+}
+
 function standIn(s: StandIn): (p: 'anthropic' | 'openai') => ProviderClient {
   return (provider) => ({
     provider,
@@ -228,7 +244,7 @@ function standIn(s: StandIn): (p: 'anthropic' | 'openai') => ProviderClient {
       const usage = { input: 2000, output: 500, cacheRead: 0, cacheWrite: 0 };
       if (s.refuse.has(`${input.model}|${schema}`) || s.refuse.has(`${input.model}|*`))
         return { kind: 'blocked', detail: 'refusal', text: null, usage };
-      const json = answer(input);
+      const json = schema === 'description' ? describeAnswer(input, s) : answer(input);
       return { kind: 'answered', text: JSON.stringify(json), json, usage };
     },
     submitBatch: async () => {
@@ -1230,5 +1246,217 @@ describe('Flex and the stall limit per provider (shared AI layer)', () => {
       .prepare(`SELECT attempts FROM ai_requests WHERE item_key = 'three'`)
       .get() as { attempts: number };
     expect(tries.attempts).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// session 4b
+
+const autoSetting = (on: boolean) => ({
+  kind: 'setting',
+  id: 'global:summaryAutoOnFirstCompletion',
+  data: { value: on ? '1' : '0' },
+});
+
+describe('session 4b: "Make a summary when a book is first completed"', () => {
+  it('off: a first completion is marked and never makes one, not after switching on again or a restart', async () => {
+    const e = setup();
+    await register(e);
+    await push(e, [autoSetting(false)]);
+    await push(e, complete(e.books.solo));
+    await drain(e);
+    expect(jobs(e)).toHaveLength(0);
+    expect(
+      e.sdb
+        .prepare('SELECT first_completion FROM summary_books WHERE book_id = ?')
+        .get(e.books.solo),
+    ).toEqual({ first_completion: 'skipped' });
+    // Switched on again: the same book read again and completed, then a restart.
+    await push(e, [autoSetting(true)]);
+    await push(e, [{ kind: 'read-through', id: `${e.books.solo}:2`, data: finished(2) }]);
+    await push(e, complete(e.books.solo, 3));
+    e.restart();
+    await drain(e);
+    expect(jobs(e)).toHaveLength(0);
+    expect(e.stand.calls).toHaveLength(0);
+    // A book first completed while it is on gets one, as before.
+    await push(e, complete(e.books.v1));
+    expect(jobs(e)).toMatchObject([{ book_id: e.books.v1, kind: 'auto' }]);
+    // By hand from the book page while it is off: still made.
+    await push(e, [autoSetting(false)]);
+    const r = await request(e.app).post(`/api/v1/summaries/${e.books.solo}/regenerate`).set(e.auth);
+    expect(r.status).toBe(202);
+    expect(jobs(e).map((j) => j.kind)).toEqual(['auto', 'regenerate']);
+  });
+
+  it('a completion made offline while it was off and undone in the same push stays without one', async () => {
+    const e = setup();
+    await register(e);
+    // The device wrote the skip record when it completed the book (the switch off there), then
+    // undid it; the server's switch is on.
+    await push(e, [
+      { kind: 'summary-skip', id: e.books.solo, data: {} },
+      ...complete(e.books.solo),
+      { kind: 'book-status', id: e.books.solo, data: { status: 'reading', auto: false } },
+      { kind: 'read-through', id: `${e.books.solo}:1`, deletedAt: e.clock.t + 1000 },
+    ]);
+    // Later completed with the switch on: the skip record still holds.
+    await push(e, complete(e.books.solo, 2));
+    await drain(e);
+    expect(jobs(e)).toHaveLength(0);
+  });
+});
+
+const DESC = '<div><p>港町の灯台守。<br/>第三巻。</p><p>書き下ろし短編を収録。</p></div>';
+
+async function drainDescriptions(e: Env, max = 200) {
+  for (let i = 0; i < max; i++) {
+    await e.svc.pass();
+    await new Promise((r) => setTimeout(r, 5));
+    const open = e.sdb
+      .prepare(`SELECT COUNT(*) AS n FROM description_translations WHERE state = 'queued'`)
+      .get() as { n: number };
+    if (!open.n) return;
+  }
+}
+
+describe('session 4b: book descriptions translated like summaries', () => {
+  const descEnv = () => {
+    const e = setup({
+      before: (main, ids) =>
+        main.prepare('UPDATE books SET description = ? WHERE id = ?').run(DESC, ids.solo),
+    });
+    // The translator is set to batches: a description is still one direct call.
+    e.core.updateSettings({ modes: { [SONNET]: 'batch', [SOL]: 'direct', [OPUS]: 'direct' } });
+    return e;
+  };
+  const descCalls = (e: Env) => e.stand.calls.filter((c) => c.schema === 'description');
+  const record = (e: Env) =>
+    e.sync.getRecord(listUsers(e.main)[0].id, 'book-summary', e.books.solo)?.data as
+      | { descriptions?: Record<string, string> }
+      | undefined;
+
+  it('translated on first choice, paragraphs and lines kept, one direct call charged to summaries', async () => {
+    const e = descEnv();
+    await register(e);
+    const url = `/api/v1/summaries/${e.books.solo}/description`;
+    let r = await request(e.app).get(`${url}?lang=en`).set(e.auth);
+    expect(r.body).toMatchObject({ bookLang: 'ja', source: DESC, lang: 'en', state: 'none' });
+    r = await request(e.app).post(`${url}/translate`).set(e.auth).send({ lang: 'en' });
+    expect(r.status).toBe(202);
+    expect(r.body.state).toBe('queued');
+    await drainDescriptions(e);
+    r = await request(e.app).get(`${url}?lang=en`).set(e.auth);
+    expect(r.body.state).toBe('done');
+    expect(r.body.translation.paragraphs).toEqual([
+      'EN 港町の灯台守。\nEN 第三巻。',
+      'EN 書き下ろし短編を収録。',
+    ]);
+    expect(descCalls(e)).toHaveLength(1);
+    expect(descCalls(e)[0].model).toBe(SONNET);
+    const spend = e.main
+      .prepare(`SELECT feature, stage, mode FROM ai_spend WHERE stage = 'sum.translate-desc'`)
+      .all();
+    expect(spend).toEqual([{ feature: 'summaries', stage: 'sum.translate-desc', mode: 'direct' }]);
+    // Every device's record names it, so devices keep a copy.
+    expect(Object.keys(record(e)?.descriptions ?? {})).toEqual(['en']);
+    // Chosen again (another device): nothing asked.
+    r = await request(e.app).post(`${url}/translate`).set(e.auth).send({ lang: 'en' });
+    expect(r.status).toBe(200);
+    expect(descCalls(e)).toHaveLength(1);
+    // The original language, a bad code, a book without a description.
+    r = await request(e.app).post(`${url}/translate`).set(e.auth).send({ lang: 'ja' });
+    expect(r.body.error.code).toBe('original');
+    r = await request(e.app).post(`${url}/translate`).set(e.auth).send({ lang: 'x y' });
+    expect(r.status).toBe(400);
+    r = await request(e.app)
+      .post(`/api/v1/summaries/${e.books.v1}/description/translate`)
+      .set(e.auth)
+      .send({ lang: 'en' });
+    expect(r.body.error.code).toBe('no_description');
+  });
+
+  it('a changed description: the old translation is never given, and it is translated again', async () => {
+    const e = descEnv();
+    await register(e);
+    const url = `/api/v1/summaries/${e.books.solo}/description`;
+    await request(e.app).post(`${url}/translate`).set(e.auth).send({ lang: 'en' });
+    await drainDescriptions(e);
+    // The cleanup changed it in Calibre; the ingest updated the catalog.
+    e.main
+      .prepare('UPDATE books SET description = ? WHERE id = ?')
+      .run('<p>新しい紹介文。</p>', e.books.solo);
+    let r = await request(e.app).get(`${url}?lang=en`).set(e.auth);
+    expect(r.body).toMatchObject({ state: 'none', translation: null });
+    // The sweep drops it from the record (devices drop their copy).
+    e.svc.publishStale();
+    expect(record(e)?.descriptions).toBeUndefined();
+    r = await request(e.app).post(`${url}/translate`).set(e.auth).send({ lang: 'en' });
+    expect(r.status).toBe(202);
+    await drainDescriptions(e);
+    r = await request(e.app).get(`${url}?lang=en`).set(e.auth);
+    expect(r.body.translation.paragraphs).toEqual(['EN 新しい紹介文。']);
+    expect(descCalls(e)).toHaveLength(2);
+    expect(Object.keys(record(e)?.descriptions ?? {})).toEqual(['en']);
+  });
+
+  it('an answer that loses a line is asked once more, then fails with the reason', async () => {
+    const e = descEnv();
+    await register(e);
+    const url = `/api/v1/summaries/${e.books.solo}/description`;
+    e.stand.descBad = 1;
+    await request(e.app).post(`${url}/translate`).set(e.auth).send({ lang: 'en' });
+    await drainDescriptions(e);
+    let r = await request(e.app).get(`${url}?lang=en`).set(e.auth);
+    expect(r.body.state).toBe('done');
+    expect(descCalls(e)).toHaveLength(2);
+    // Into French: both answers lose a line.
+    e.stand.descBad = 2;
+    await request(e.app).post(`${url}/translate`).set(e.auth).send({ lang: 'fr' });
+    await drainDescriptions(e);
+    r = await request(e.app).get(`${url}?lang=fr`).set(e.auth);
+    expect(r.body).toMatchObject({
+      state: 'failed',
+      error: 'the translation did not keep the paragraphs and lines',
+      translation: null,
+    });
+    expect(Object.keys(record(e)?.descriptions ?? {})).toEqual(['en']);
+    expect(descCalls(e)).toHaveLength(4);
+  });
+
+  it('a restart before the answer: asked once', async () => {
+    const e = descEnv();
+    await register(e);
+    const url = `/api/v1/summaries/${e.books.solo}/description`;
+    await request(e.app).post(`${url}/translate`).set(e.auth).send({ lang: 'en' });
+    e.restart();
+    await drainDescriptions(e);
+    e.restart();
+    await drainDescriptions(e);
+    const r = await request(e.app).get(`${url}?lang=en`).set(e.auth);
+    expect(r.body.state).toBe('done');
+    expect(descCalls(e)).toHaveLength(1);
+  });
+
+  it('the server splits a description into paragraphs and lines as the book page does', async () => {
+    // The same code as the web app's (its file can't be imported here without SvelteKit's
+    // generated config): compared as text from the first line of code.
+    const fs = await import('fs');
+    const code = (p: string) => {
+      const s = fs.readFileSync(path.join(__dirname, p), 'utf8').replace(/\r\n/g, '\n');
+      // The two packages' formatters differ only in trailing commas and line breaks.
+      return s
+        .slice(s.indexOf('const NAMED'))
+        .replace(/,(\s*[)\]}])/g, '$1')
+        .replace(/\s+/g, '');
+    };
+    expect(code('../src/summaries/description.ts')).toBe(
+      code('../../web/src/lib/library/description.ts'),
+    );
+    const server = await import('../src/summaries/description');
+    expect(server.descriptionParagraphs(DESC)).toEqual([
+      '港町の灯台守。\n第三巻。',
+      '書き下ろし短編を収録。',
+    ]);
   });
 });

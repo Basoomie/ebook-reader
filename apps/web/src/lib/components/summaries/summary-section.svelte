@@ -37,6 +37,7 @@
   import { isUnreachable } from '$lib/library/offline/offline-source';
   import { getSyncEngine } from '$lib/sync/sync-service';
   import {
+    summaryAutoOnFirstCompletion$,
     summaryCharacterLayout$,
     summaryLanguages$,
     summaryRelationshipLayout$,
@@ -406,7 +407,9 @@
     {/if}
     {#if states.includes('none')}
       <p class="mt-4 text-c-muted" data-testid="summary-none">
-        No summary yet. One is made when you first complete the book, or add one below.
+        {$summaryAutoOnFirstCompletion$
+          ? 'No summary yet. One is made when you first complete the book, or add one below.'
+          : 'No summary yet. Add one below.'}
       </p>
     {/if}
     {#if states.includes('offline_none')}

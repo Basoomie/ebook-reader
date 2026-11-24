@@ -23,6 +23,7 @@ import type { AiStageSpec } from '../ai/types';
 import { waitText, type AiWait } from '../ai/waits';
 import type { BookScript } from '../audio/book-script';
 import { LINKS } from '../notifications/messages';
+import { globalBoolean } from '../sync/global-setting';
 import type { SyncChange, SyncStore } from '../sync/store';
 import {
   ask,
@@ -43,7 +44,9 @@ import {
   type RouteSetup,
   type SummarySettings,
 } from './settings';
+import { descriptionParagraphs } from './description';
 import {
+  DESCRIPTION_SPEC,
   EXTRACT_CHAPTER_SPEC,
   EXTRACT_SPEC,
   LABEL_SPEC,
@@ -53,6 +56,7 @@ import {
   SUPPORT_SPEC,
   TRANSLATE_SPEC,
   WRITE_SPEC,
+  type DescriptionAnswer,
   type ModelRole,
 } from './specs';
 import {
@@ -78,6 +82,7 @@ export const JOB_SPECS = [
   WRITE_SPEC,
   TRANSLATE_SPEC,
   LABEL_SPEC,
+  DESCRIPTION_SPEC,
 ] as AiStageSpec<unknown, ModelRole>[];
 
 /**
@@ -115,6 +120,12 @@ export function labelPlan(
 }
 
 export const BOOK_SUMMARY_KIND = 'book-summary';
+/**
+ * The global setting "Make a summary when a book is first completed" (session 4b; the web's
+ * `summaryAutoOnFirstCompletion$`, on by default). Off: a first completion is marked
+ * `skipped`, so it never makes a summary later (the device also writes a summary-skip).
+ */
+export const AUTO_SETTING_KEY = 'summaryAutoOnFirstCompletion';
 export const SUMMARY_SKIP_KIND = 'summary-skip';
 /** The pseudo-device that writes the "book-summary" records (user_seeds). */
 export const SUMMARIES_DEVICE_SEED = 'summaries-device';
@@ -215,6 +226,37 @@ interface BookRow {
   language: string | null;
   languages: string | null;
 }
+
+/** A book's description in a language (session 4b), as the book page asks for it. */
+export interface DescriptionView {
+  /** The book's language (the description's original). */
+  bookLang: string;
+  /** The description now (Calibre's HTML, as the catalog gives it), or null. */
+  source: string | null;
+  /** The language asked for, when it isn't the original. */
+  lang: string | null;
+  /** queued/failed: being translated or not translated; none: never asked (or the text changed). */
+  state: 'none' | 'queued' | 'done' | 'failed';
+  error: string | null;
+  /** The translation of the description as it is now (never of an older text). */
+  translation: { paragraphs: string[]; model: string | null; madeAt: number | null } | null;
+}
+
+interface DescriptionRow {
+  book_id: string;
+  lang: string;
+  source_digest: string;
+  paragraphs_json: string | null;
+  state: 'queued' | 'done' | 'failed';
+  model: string | null;
+  error: string | null;
+  cost_usd: number | null;
+  requested_at: number;
+  made_at: number | null;
+}
+
+const LANG_RE = /^[a-z]{2,3}(-[A-Za-z]{2,4})?$/;
+const baseLang = (l: string) => l.toLowerCase().split('-')[0];
 
 /** One running set of questions (a job's setup, or a translation). */
 class RunHandle {
@@ -329,7 +371,8 @@ export class SummaryService {
     try {
       const ids = this.db
         .prepare(
-          `SELECT book_id FROM summaries UNION SELECT book_id FROM summary_books WHERE outcome IS NOT NULL`,
+          `SELECT book_id FROM summaries UNION SELECT book_id FROM summary_books WHERE outcome IS NOT NULL
+           UNION SELECT book_id FROM description_translations WHERE state = 'done'`,
         )
         .all() as { book_id: string }[];
       for (const { book_id } of ids) this.publish(book_id);
@@ -481,10 +524,14 @@ export class SummaryService {
         `SELECT 1 FROM sync_records WHERE user_id = ? AND kind = ? AND id = ? AND deleted_at IS NULL`,
       )
       .get(userId, SUMMARY_SKIP_KIND, bookId);
+    const off = !globalBoolean(this.main, userId, AUTO_SETTING_KEY, true);
     const b = this.book(bookId);
     const has = this.store.currentMeta(bookId);
     const noText = b?.char_count === 0;
-    const what = skip ? 'skipped' : has ? 'had_summary' : noText ? 'no_text' : 'auto';
+    // Switched off (or the device said so): marked once, so it never makes one later.
+    const what = skip || off ? 'skipped' : has ? 'had_summary' : noText ? 'no_text' : 'auto';
+    if (off && !skip)
+      this.deps.log?.(`Summaries: ${bookId} completed while automatic summaries are switched off`);
     this.db
       .prepare(
         `INSERT INTO summary_books (book_id, first_completion, completed_at) VALUES (?, ?, ?)
@@ -596,6 +643,7 @@ export class SummaryService {
       if (this.now() - this.lastSweep >= 10 * 60_000) this.publishStale();
       this.startJobs();
       this.startLabels();
+      this.startDescriptions();
       await this.pump();
     } catch (err) {
       this.deps.log?.(`Summaries: ${(err as Error).message}`);
@@ -1069,8 +1117,10 @@ export class SummaryService {
         langs,
       };
     }
+    const descriptions = this.descriptionDigests(bookId);
     return {
       summary,
+      ...(descriptions ? { descriptions } : {}),
       making: job?.state ?? null,
       // Session 4's progress: the running job's step and when it started.
       phase: job?.state === 'running' ? (this.phases.get(job.id) ?? 'reading') : null,
@@ -1276,6 +1326,235 @@ export class SummaryService {
         endedAt: j.ended_at,
       };
     });
+  }
+
+  // ------------------------------------------------------------------------------------------
+  // book descriptions, translated like summaries (session 4b)
+
+  /** The book's description now (raw), or null when it has none to show. */
+  private description(bookId: string): string | null {
+    const r = this.main.prepare('SELECT description FROM books WHERE id = ?').get(bookId) as
+      | { description: string | null }
+      | undefined;
+    const d = r?.description ?? null;
+    return d && descriptionParagraphs(d).length ? d : null;
+  }
+
+  private descriptionRow(bookId: string, lang: string): DescriptionRow | null {
+    return (
+      (this.db
+        .prepare('SELECT * FROM description_translations WHERE book_id = ? AND lang = ?')
+        .get(bookId, lang) as DescriptionRow | undefined) ?? null
+    );
+  }
+
+  /** The digests the devices keep their copies by: only translations of the text as it is now. */
+  private descriptionDigests(bookId: string): Record<string, string> | null {
+    const rows = this.db
+      .prepare(`SELECT * FROM description_translations WHERE book_id = ? AND state = 'done'`)
+      .all(bookId) as DescriptionRow[];
+    if (!rows.length) return null;
+    const now = this.description(bookId);
+    const current = now === null ? null : digest(now);
+    const out: Record<string, string> = {};
+    for (const r of rows)
+      if (r.source_digest === current) out[r.lang] = digest([r.source_digest, r.paragraphs_json]);
+    return Object.keys(out).length ? out : null;
+  }
+
+  /** The description in a language: the translation only when it was made from today's text. */
+  descriptionView(bookId: string, lang?: unknown): DescriptionView {
+    const b = this.book(bookId);
+    if (!b) throw new EditError(404, 'unknown_book', 'No such book');
+    const bookLang = this.bookLang(b);
+    const source = this.description(bookId);
+    const want =
+      typeof lang === 'string' && LANG_RE.test(lang) && baseLang(lang) !== baseLang(bookLang)
+        ? lang
+        : null;
+    const out: DescriptionView = {
+      bookLang,
+      source,
+      lang: want,
+      state: 'none',
+      error: null,
+      translation: null,
+    };
+    if (!want || source === null) return out;
+    const r = this.descriptionRow(bookId, want);
+    if (!r || r.source_digest !== digest(source)) return out;
+    out.state = r.state;
+    out.error = r.state === 'failed' ? r.error : null;
+    if (r.state === 'done' && r.paragraphs_json)
+      out.translation = {
+        paragraphs: JSON.parse(r.paragraphs_json) as string[],
+        model: r.model,
+        madeAt: r.made_at,
+      };
+    return out;
+  }
+
+  /**
+   * A language chosen for the description: translated now unless a translation of today's text
+   * is there (or on its way). A failed one is asked again.
+   */
+  translateDescription(bookId: string, lang: unknown): DescriptionView {
+    if (typeof lang !== 'string' || !LANG_RE.test(lang))
+      throw new EditError(400, 'invalid', 'lang must be a language code like en or ja');
+    const b = this.book(bookId);
+    if (!b) throw new EditError(404, 'unknown_book', 'No such book');
+    if (baseLang(lang) === baseLang(this.bookLang(b)))
+      throw new EditError(400, 'original', 'That is the description’s own language');
+    const source = this.description(bookId);
+    if (source === null) throw new EditError(404, 'no_description', 'This book has no description');
+    const d = digest(source);
+    const r = this.descriptionRow(bookId, lang);
+    if (r && r.source_digest === d && r.state !== 'failed')
+      return this.descriptionView(bookId, lang);
+    this.db
+      .prepare(
+        `INSERT INTO description_translations (book_id, lang, source_digest, state, requested_at)
+         VALUES (?, ?, ?, 'queued', ?)
+         ON CONFLICT(book_id, lang) DO UPDATE SET source_digest = excluded.source_digest,
+           state = 'queued', error = NULL, requested_at = excluded.requested_at`,
+      )
+      .run(bookId, lang, d, this.now());
+    return this.descriptionView(bookId, lang);
+  }
+
+  /** The description translations running now (book|lang). */
+  private readonly describing = new Map<string, Promise<void>>();
+
+  private startDescriptions(): void {
+    const queued = this.db
+      .prepare(
+        `SELECT * FROM description_translations WHERE state = 'queued' ORDER BY requested_at`,
+      )
+      .all() as DescriptionRow[];
+    for (const r of queued) {
+      const k = `${r.book_id}|${r.lang}`;
+      if (this.describing.has(k)) continue;
+      const p = this.runDescription(r)
+        .catch((err) => {
+          this.deps.log?.(`Summaries: the description of ${r.book_id}: ${(err as Error).message}`);
+          if (!this.stopping) this.failDescription(r, (err as Error).message, null);
+        })
+        .finally(() => this.describing.delete(k));
+      this.describing.set(k, p);
+    }
+  }
+
+  private failDescription(r: DescriptionRow, why: string, cost: number | null): void {
+    this.db
+      .prepare(
+        `UPDATE description_translations SET state = 'failed', error = ?, cost_usd = ?
+         WHERE book_id = ? AND lang = ? AND state = 'queued'`,
+      )
+      .run(why.slice(0, 500), cost, r.book_id, r.lang);
+  }
+
+  /**
+   * Translates one description with the translator (one direct call: the spec says so). The
+   * answer must keep every paragraph and line; one that doesn't is asked once more, then the
+   * translation fails with the reason. Asked by the text's digest, so a restart asks nothing
+   * twice and a changed description is a new question.
+   */
+  private async runDescription(row: DescriptionRow): Promise<void> {
+    const b = this.book(row.book_id);
+    const source = this.description(row.book_id);
+    if (!b || source === null) {
+      this.db
+        .prepare('DELETE FROM description_translations WHERE book_id = ? AND lang = ?')
+        .run(row.book_id, row.lang);
+      return;
+    }
+    const d = digest(source);
+    if (d !== row.source_digest)
+      this.db
+        .prepare(
+          'UPDATE description_translations SET source_digest = ? WHERE book_id = ? AND lang = ?',
+        )
+        .run(d, row.book_id, row.lang);
+    const paragraphs = descriptionParagraphs(source).map((p) => p.split('\n'));
+    const s = this.settings();
+    const runId = `sumdesc:${row.book_id}:${row.lang}`;
+    this.deps.runner.askAgain(DESCRIPTION_SPEC.stage, runId);
+    const h = this.openRun(runId);
+    const asked: Asked[] = [];
+    const deps: EngineDeps = {
+      runner: this.deps.runner,
+      pump: h,
+      runId,
+      onAsk: (a) => asked.push(a),
+    };
+    const cost = () => askedMetrics(this.db, asked).costUsd;
+    try {
+      let why = '';
+      for (const suffix of ['', '|try2']) {
+        const key = `desc:${row.book_id}|${row.lang}|${d}${suffix}`;
+        const a = await ask(deps, DESCRIPTION_SPEC, s.translator, key, {
+          from: this.bookLang(b),
+          to: row.lang,
+          title: b.title,
+          paragraphs,
+        });
+        if (a.state === 'blocked') {
+          why = `${a.model} refused to translate it`;
+          break;
+        }
+        if (a.state !== 'answered' || !a.answer) {
+          why = `no usable answer from ${a.model} (${a.state})`;
+          break;
+        }
+        const got = (a.answer as unknown as DescriptionAnswer).paragraphs;
+        const same =
+          got.length === paragraphs.length &&
+          got.every((p, i) => p.length === paragraphs[i].length);
+        if (!same) {
+          why = 'the translation did not keep the paragraphs and lines';
+          continue;
+        }
+        const now = this.description(row.book_id);
+        if (now === null || digest(now) !== d) {
+          // The description changed while it was being translated: asked again for the new text.
+          this.db
+            .prepare(
+              `UPDATE description_translations SET source_digest = ?, requested_at = ?
+               WHERE book_id = ? AND lang = ?`,
+            )
+            .run(now === null ? '' : digest(now), this.now(), row.book_id, row.lang);
+          return;
+        }
+        this.db
+          .prepare(
+            `UPDATE description_translations SET state = 'done', paragraphs_json = ?, model = ?,
+               error = NULL, cost_usd = ?, made_at = ? WHERE book_id = ? AND lang = ?`,
+          )
+          .run(
+            JSON.stringify(got.map((p) => p.join('\n'))),
+            a.model,
+            cost(),
+            this.now(),
+            row.book_id,
+            row.lang,
+          );
+        this.publish(row.book_id);
+        this.deps.log?.(
+          `Summaries: the description of ${b.title} translated to ${row.lang} ($${cost().toFixed(4)})`,
+        );
+        return;
+      }
+      this.failDescription(row, why, cost());
+    } catch (err) {
+      if (this.stopping && !h.abandoned) return;
+      const why = h.abandoned
+        ? `nothing could be sent for ${s.fallbackAfterMinutes} min: ${h.wait ? waitText(h.wait) : 'waiting'}`
+        : (err as Error).message;
+      if (h.abandoned) this.deps.runner.withdraw(runId);
+      this.failDescription(row, why, cost());
+    } finally {
+      this.closeRun(h);
+    }
   }
 
   /** Every model the summaries use (for Settings > AI). */

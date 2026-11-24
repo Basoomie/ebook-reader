@@ -908,14 +908,22 @@ export const SETTINGS_CATALOG: CatalogSetting[] = [
     description: '0: never ask.',
     keywords: 'size confirm gb warning'
   },
-  // Library › Summaries (book summaries session 4)
+  // Library › Summaries (book summaries session 4; the switch and descriptions: session 4b)
+  {
+    id: 'summary-auto',
+    section: 'library-summaries',
+    title: 'Make a summary when a book is first completed',
+    description:
+      'Off: completing a book makes no summary, and turning this back on makes none for the books completed meanwhile. You can still make one from the book page.',
+    keywords: 'automatic auto completed complete finish generate ai cost'
+  },
   {
     id: 'summary-languages',
     section: 'library-summaries',
     title: 'Summary languages',
     description:
-      'A button for each on a book’s summary, beside its own language. A language is translated the first time you choose it, then kept for offline reading.',
-    keywords: 'language translation translate english japanese'
+      'A button for each on a book’s summary and description, beside its own language. A language is translated the first time you choose it, then kept for offline reading.',
+    keywords: 'language translation translate english japanese description'
   },
   {
     id: 'summary-spoiler-blur',
