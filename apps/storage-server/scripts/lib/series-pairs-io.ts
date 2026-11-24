@@ -16,7 +16,7 @@ export interface PairRow extends NamePair {
   signals: PairSignals;
   answer: PairAnswer;
   rule: string | null;
-  held?: 'collision' | null;
+  held?: 'collision' | 'mixed' | null;
   shortSide: PairBook[];
   longSide: PairBook[];
 }

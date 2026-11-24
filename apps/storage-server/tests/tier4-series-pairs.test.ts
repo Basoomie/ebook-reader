@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 import { seriesPairsOf } from '../src/cleanup/edits/series';
 import {
   CANDIDATE_RULES,
+  amazonSeriesKey,
   PROPOSED_RULE_IDS,
   answerPair,
   commonName,
@@ -100,7 +101,8 @@ describe('commonName', () => {
       '本好きの下剋上 〜司書になるためには手段を選んでいられません〜',
       '本好きの下剋上',
     ],
-    ['（マ）シリーズ', '(マ)シリーズビーンズ文庫版', '（マ）'],
+    ['（マ）シリーズ', '(マ)シリーズビーンズ文庫版', '（マ）シリーズ'],
+    ['Trinitasシリーズ', 'Trinitasシリーズ ドリーム・ライフ~夢の異世界生活~', 'Trinitasシリーズ'],
     ['寄せ集めたファンタジ', '寄せ集めたファンタジー', '寄せ集めたファンタジー'],
   ])('%s / %s → %s', (short, long, name) => {
     expect(commonName(short, long).name).toBe(name);
@@ -218,6 +220,20 @@ describe('pairSignals', () => {
     expect(s.collisionsWithin).toBe(1);
     expect(s.collisions).toBe(0);
     expect(s.collisionExamples).toEqual([]);
+  });
+
+  it('counts a book added to a number that already holds two books', () => {
+    const p = pairOf('無責任', '無責任シリーズ', 1, 2);
+    const s = pairSignals(
+      p,
+      [book(1, '無責任三国志3 炎のトリコロール', 3, { authors: ['吉岡平'] })],
+      [
+        book(2, '無責任キッズ3 燃えてキサラ', 3, { authors: ['吉岡平'] }),
+        book(3, '宇宙一の無責任男シリーズ外伝3 緋き獅子', 3, { authors: ['吉岡平'] }),
+      ],
+    );
+    expect(s.collisionsWithin).toBe(1);
+    expect(s.collisions).toBe(1);
   });
 
   it('holds a merge that adds a clash for review', () => {
@@ -353,6 +369,79 @@ describe('the proposed rules', () => {
       rule: 'store-same',
       held: 'collision',
     });
+  });
+});
+
+describe('names filed under more than one store series', () => {
+  const proposed = PROPOSED_RULE_IDS.map((id) => CANDIDATE_RULES.find((r) => r.id === id)!);
+
+  it('reads Amazon series lines with their place or repeated name as one series', () => {
+    expect(amazonSeriesKey('全9巻中第3巻   物語の黒幕に転生して')).toBe(
+      amazonSeriesKey('物語の黒幕に転生して'),
+    );
+    expect(amazonSeriesKey('シリーズ: 懲役警察 B side diary   懲役警察 B side diary')).toBe(
+      amazonSeriesKey('懲役警察 B side diary'),
+    );
+  });
+
+  it('holds a merge into a name that holds two store series', () => {
+    const p = pairOf('Trinitasシリーズ', 'Trinitasシリーズ ドリーム・ライフ~夢の異世界生活~');
+    const s = pairSignals(
+      p,
+      [
+        book(1, 'ドリーム・ライフ 〜夢の異世界生活〜', 1, {
+          authors: ['愛山雄町'],
+          ranobedbSeries: { id: '5588', name: 'Trinitasシリーズ ドリーム・ライフ~夢の異世界生活~' },
+        }),
+        book(2, 'トリニータス・ムンドゥス〜聖騎士レイの物語〜', 2, {
+          authors: ['愛山雄町'],
+          ranobedbSeries: {
+            id: '5641',
+            name: 'Trinitasシリーズ トリニータス・ムンドゥス~聖騎士レイの物語~',
+          },
+        }),
+      ],
+      [
+        book(3, 'Trinitasシリーズ ドリーム・ライフ～夢の異世界生活～3', 3, {
+          authors: ['愛山雄町'],
+          ranobedbSeries: { id: '5588', name: 'Trinitasシリーズ ドリーム・ライフ~夢の異世界生活~' },
+        }),
+      ],
+    );
+    expect(s.mixed).toBe('short');
+    expect(answerPair(p, s, proposed)).toEqual({
+      answer: 'review',
+      rule: 'store-same',
+      held: 'mixed',
+    });
+  });
+
+  it('does not count one Amazon series written two ways as two', () => {
+    const p = pairOf(
+      '物語の黒幕に転生して',
+      '物語の黒幕に転生して ~進化する魔剣とゲーム知識ですべてをねじ伏せる~',
+    );
+    const s = pairSignals(
+      p,
+      [
+        book(1, '物語の黒幕に転生して2', 2, {
+          authors: ['結城涼'],
+          amazonSeries: '物語の黒幕に転生して',
+        }),
+        book(2, '物語の黒幕に転生して3', 3, {
+          authors: ['結城涼'],
+          amazonSeries: '全9巻中第3巻   物語の黒幕に転生して',
+        }),
+      ],
+      [
+        book(3, '物語の黒幕に転生して', 1, {
+          authors: ['結城涼'],
+          amazonSeries: '物語の黒幕に転生して',
+        }),
+      ],
+    );
+    expect(s.mixed).toBeNull();
+    expect(answerPair(p, s, proposed).answer).toBe('merge');
   });
 });
 

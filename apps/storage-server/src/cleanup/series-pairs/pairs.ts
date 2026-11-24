@@ -128,21 +128,16 @@ export function pairGroup(short: string, long: string): { group: PairGroup; adde
 
 /**
  * The name a merge keeps (the user, 2026-11-23: "the name without シリーズ or the subtitle (The
- * common name)"): the short name as written, without a trailing シリーズ, a trailing 〜subtitle〜
- * or a separator left at its end (「デューン・」). A short name that is the long one cut before
- * its long vowel mark (寄せ集めたファンタジ / 寄せ集めたファンタジー) keeps the long name: `cut` says so.
+ * common name)"): the short name as written, which is the long one without the シリーズ or
+ * 〜subtitle〜 it adds, minus a separator left at its end (「デューン・」). A シリーズ that is part
+ * of the short name itself stays (（マ）シリーズ, Trinitasシリーズ: stop 2). A short name that is
+ * the long one cut before its long vowel mark (寄せ集めたファンタジ / 寄せ集めたファンタジー) keeps
+ * the long name: `cut` says so.
  */
 export function commonName(short: string, long: string): { name: string; cut: boolean } {
   const added = codepoints(seriesKey(long)).slice(codepoints(seriesKey(short)).length);
   if (added.length === 1 && added[0] === 'ー') return { name: long.trim(), cut: true };
-  let n = short.trim();
-  for (let i = 0; i < 3; i++) {
-    const before = n;
-    n = n.replace(/\s*シリーズ$/u, '');
-    n = n.replace(/\s*[~～〜][^~～〜]+[~～〜]$/u, '');
-    n = n.replace(/[\s\u3000・:：\-‐]+$/u, '');
-    if (n === before) break;
-  }
+  const n = short.trim().replace(/[\s\u3000・:：\-‐]+$/u, '');
   return { name: n || short.trim(), cut: false };
 }
 
@@ -170,8 +165,10 @@ export type StoreVerdict = 'same' | 'different' | 'none';
 
 export interface PairSignals {
   /**
-   * Numbers two different main books would share under one name that neither name has on its
-   * own (copies of a volume aside): what a merge adds. A merge that adds any goes to review.
+   * Numbers where a main book of each name sits and the two are different books (copies of one
+   * volume aside): a merge would put two books on one number. A merge with any goes to review.
+   * Counted per pair of books, not as new clashing numbers (stop 2: 無責任 already holds several
+   * books on #3, so adding 無責任三国志3 there made no new clashing number but one more book).
    */
   collisions: number;
   /** Numbers already shared inside one of the two names (the series' own numbering). */
@@ -194,6 +191,27 @@ export interface PairSignals {
   storeNamesOther: boolean;
   /** The spin-off, extra or set word in the added text. */
   spinoff: string | null;
+  /**
+   * A name whose books the stores file under more than one series (Trinitasシリーズ holds
+   * ドリーム・ライフ and トリニータス・ムンドゥス; シャーロック・ホームズ an edition and a
+   * pastiche): a merge into it or from it is not made automatically.
+   */
+  mixed: 'short' | 'long' | 'both' | null;
+}
+
+/**
+ * Amazon's series line as one key: 「全9巻中第3巻   X」 and 「シリーズ: X   X」 are X (the stored
+ * line carries the place and repeats the name).
+ */
+export function amazonSeriesKey(line: string): string {
+  const parts = nfkc(line)
+    .split(/\s{3,}/u)
+    .map((x) => x.trim())
+    .filter(Boolean);
+  const last = (parts[parts.length - 1] ?? '')
+    .replace(/^シリーズ[:：]\s*/u, '')
+    .replace(/^全\d+[冊巻]中第?\d+(?:巻|番目の本)\s*/u, '');
+  return seriesKey(last);
 }
 
 const authorKey = (a: string) =>
@@ -250,18 +268,21 @@ export function pairSignals(pair: NamePair, short: PairBook[], long: PairBook[])
   const amz = (bs: PairBook[]) =>
     new Set(
       bs
-        .map((b) => (b.amazonSeries ? seriesKey(b.amazonSeries) : ''))
+        .map((b) => (b.amazonSeries ? amazonSeriesKey(b.amazonSeries) : ''))
         .filter((x) => x.length >= MIN_KEY),
     );
   const storeKeys = (b: PairBook) =>
     [b.amazonSeries, b.ranobedbSeries?.name]
       .filter((x): x is string => !!x)
-      .map((x) => seriesKey(x));
+      .map((x, i) => (i === 0 && b.amazonSeries ? amazonSeriesKey(x) : seriesKey(x)));
   const storeNamesOther =
     short.some((b) => storeKeys(b).includes(longKey)) ||
     long.some((b) => storeKeys(b).includes(shortKey));
+  const spans = (bs: PairBook[]) => ids(bs).size > 1 || amz(bs).size > 1;
+  const mixedShort = spans(short);
+  const mixedLong = spans(long);
   return {
-    collisions: Math.max(0, count([...short, ...long]) - within),
+    collisions: crossClashes(short.map(asSeries), long.map(asSeries)),
     collisionsWithin: within,
     collisionExamples: collisionExamples(union, new Set(short.map((b) => b.uuid))),
     bothHaveOne:
@@ -273,7 +294,34 @@ export function pairSignals(pair: NamePair, short: PairBook[], long: PairBook[])
     amazon: compare(amz(short), amz(long)),
     storeNamesOther,
     spinoff: spinoffWord(pair.added),
+    mixed: mixedShort && mixedLong ? 'both' : mixedShort ? 'short' : mixedLong ? 'long' : null,
   };
+}
+
+/** Numbers where a main book of each side and the other side's are different books. */
+function crossClashes(short: SeriesBook[], long: SeriesBook[]): number {
+  const main = (b: SeriesBook) =>
+    (b.kind === 'full' || b.kind === 'special edition') && b.index !== null;
+  const at = (bs: SeriesBook[]) => {
+    const m = new Map<number, SeriesBook[]>();
+    for (const b of bs.filter(main)) m.set(b.index!, [...(m.get(b.index!) ?? []), b]);
+    return m;
+  };
+  const longAt = at(long);
+  let n = 0;
+  for (const [i, ss] of at(short)) {
+    const ls = longAt.get(i);
+    if (!ls) continue;
+    const clash = ss.some((a) =>
+      ls.some((b) => {
+        const c = emptyChecks();
+        addSeriesChecks(c, [a, b], []);
+        return c.collisions > 0;
+      }),
+    );
+    if (clash) n++;
+  }
+  return n;
 }
 
 /**
@@ -383,17 +431,19 @@ export const PROPOSED_RULE_IDS = [
 /**
  * The answer of a list of rules, and the rule that gave it. A merge that would put two different
  * books on one number goes to review whatever the rule (decided: a merge never makes duplicate
- * volume numbers).
+ * volume numbers), and so does a merge where either name's books are filed under more than one
+ * store series (stop 2: every automatic merge read; those four were the only doubtful ones).
  */
 export function answerPair(
   p: NamePair,
   s: PairSignals,
   rules: PairRule[] = CANDIDATE_RULES,
-): { answer: PairAnswer; rule: string | null; held?: 'collision' } {
+): { answer: PairAnswer; rule: string | null; held?: 'collision' | 'mixed' } {
   for (const r of rules) {
     const a = r.says(p, s);
     if (a === 'merge' && s.collisions > 0)
       return { answer: 'review', rule: r.id, held: 'collision' };
+    if (a === 'merge' && s.mixed) return { answer: 'review', rule: r.id, held: 'mixed' };
     if (a) return { answer: a, rule: r.id };
   }
   return { answer: 'review', rule: null };
