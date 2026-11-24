@@ -34,8 +34,7 @@
     summaryLanguages$,
     summaryRecapAuto$,
     summaryRelationshipLayout$,
-    summarySpoilerBlur$,
-    summaryViewLang$
+    summarySpoilerBlur$
   } from '$lib/summaries/settings';
   import type { RecapResponse, SeriesRecapRecord, SummaryApi } from '$lib/summaries/summary-api';
   import { failedNote, languageChoices, startLanguage } from '$lib/summaries/summary-page';
@@ -85,8 +84,7 @@
   $: serverDown = offline || fromDevice;
   $: recapLang = recap?.lang ?? record?.recap?.lang ?? 'ja';
   $: choices = languageChoices(recapLang, $summaryLanguages$);
-  $: if (!lang || !choices.some((c) => c.lang === lang))
-    lang = startLanguage($summaryViewLang$, choices);
+  $: if (!lang || !choices.some((c) => c.lang === lang)) lang = startLanguage('', choices);
   $: states = recapState({
     hasRecap: !!recap,
     record,
@@ -228,7 +226,6 @@
 
   function chooseLanguage(l: string) {
     lang = l;
-    summaryViewLang$.next(l === recapLang ? '' : l);
     void load();
   }
 

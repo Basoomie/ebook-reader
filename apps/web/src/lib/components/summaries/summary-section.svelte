@@ -42,8 +42,7 @@
     summaryCharacterLayout$,
     summaryLanguages$,
     summaryRelationshipLayout$,
-    summarySpoilerBlur$,
-    summaryViewLang$
+    summarySpoilerBlur$
   } from '$lib/summaries/settings';
   import type {
     BookSummaryRecord,
@@ -103,8 +102,7 @@
   $: serverDown = offline || fromDevice;
   $: bookLang = record?.summary?.lang ?? view?.lang ?? 'ja';
   $: choices = languageChoices(bookLang, $summaryLanguages$);
-  $: if (!lang || !choices.some((c) => c.lang === lang))
-    lang = startLanguage($summaryViewLang$, choices);
+  $: if (!lang || !choices.some((c) => c.lang === lang)) lang = startLanguage('', choices);
   $: states = sectionState({ hasSummary: !!view, record, offline: serverDown });
   $: hidden = !!view && !revealed && !editing && summaryHidden($summarySpoilerBlur$, status);
   $: progress = record ? makingProgress(record, now, job) : null;
@@ -232,7 +230,6 @@
 
   function chooseLanguage(l: string) {
     lang = l;
-    summaryViewLang$.next(l === bookLang ? '' : l);
     void load();
   }
 

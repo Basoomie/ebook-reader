@@ -23,7 +23,7 @@
   import LanguagePicker from './language-picker.svelte';
   import { isUnreachable } from '$lib/library/offline/offline-source';
   import { getSyncEngine } from '$lib/sync/sync-service';
-  import { descriptionViewLang$, summaryLanguages$ } from '$lib/summaries/settings';
+  import { summaryLanguages$ } from '$lib/summaries/settings';
   import type { DescriptionView, SummaryApi } from '$lib/summaries/summary-api';
   import type { CachedDescription } from '$lib/summaries/summary-cache';
   import { descriptionBookLang, shownDescription } from '$lib/summaries/description-page';
@@ -64,7 +64,7 @@
   $: bookLang = server?.bookLang ?? descriptionBookLang(libraryLanguage, languages);
   $: choices = off ? [] : languageChoices(bookLang, $summaryLanguages$);
   $: if (choices.length && (!lang || !choices.some((c) => c.lang === lang)))
-    lang = startLanguage($descriptionViewLang$, choices);
+    lang = startLanguage('', choices);
   $: shown = shownDescription({
     original: paragraphs,
     description,
@@ -151,7 +151,6 @@
       void retry(l);
     }
     lang = l;
-    descriptionViewLang$.next(l === bookLang ? '' : l);
   }
 
   async function retry(l: string) {
