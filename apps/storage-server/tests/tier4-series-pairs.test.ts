@@ -5,6 +5,8 @@
 import { describe, expect, it } from 'vitest';
 import { seriesPairsOf } from '../src/cleanup/edits/series';
 import {
+  CANDIDATE_RULES,
+  PROPOSED_RULE_IDS,
   answerPair,
   commonName,
   libraryPairs,
@@ -297,6 +299,60 @@ describe('answerPair', () => {
     ];
     const p = pairOf('A1', 'A1 B');
     expect(answerPair(p, pairSignals(p, [], []), rules)).toEqual({ answer: 'separate', rule: 'b' });
+  });
+});
+
+describe('the proposed rules', () => {
+  const proposed = PROPOSED_RULE_IDS.map((id) => CANDIDATE_RULES.find((r) => r.id === id)!);
+
+  it('names only rules that exist', () => {
+    expect(proposed.every(Boolean)).toBe(true);
+  });
+
+  it('keeps an omnibus of the series in it, and separates a spin-off', () => {
+    const omni = pairOf('懲役警察 B side diary', '懲役警察 B Side Diary(合本版)');
+    const so = pairSignals(
+      omni,
+      [
+        book(1, '懲役警察 B side diary 幻の追跡者', 1, {
+          authors: ['さかいみつる'],
+          amazonSeries: '懲役警察 B Side Diary（合本版）',
+        }),
+      ],
+      [
+        book(2, '懲役警察 B Side Diary（合本版）1巻', 1.9, {
+          kind: 'omnibus',
+          authors: ['さかいみつる'],
+          amazonSeries: '懲役警察 B Side Diary（合本版）',
+        }),
+      ],
+    );
+    expect(answerPair(omni, so, proposed).answer).toBe('merge');
+    const spin = pairOf('スパイ教室', 'スパイ教室 短編集');
+    const ss = pairSignals(
+      spin,
+      [book(1, 'スパイ教室01', 1, { authors: ['竹町'] })],
+      [book(2, 'スパイ教室 短編集01', 1, { authors: ['竹町'] })],
+    );
+    expect(answerPair(spin, ss, proposed)).toEqual({
+      answer: 'separate',
+      rule: 'spinoff-not-omnibus',
+    });
+  });
+
+  it('never separates for a clash: one series with a misnumbered book goes to review', () => {
+    const p = pairOf('ネロ・ウルフ', 'ネロ・ウルフ中編シリーズ');
+    const s = pairSignals(
+      p,
+      [book(1, '赤い箱', 2, { authors: ['レックス・スタウト'], amazonSeries: 'ネロ・ウルフ' })],
+      [book(2, '死の招待', 2, { authors: ['レックス・スタウト'], amazonSeries: 'ネロ・ウルフ' })],
+    );
+    expect(s.collisions).toBe(1);
+    expect(answerPair(p, s, proposed)).toEqual({
+      answer: 'review',
+      rule: 'store-same',
+      held: 'collision',
+    });
   });
 });
 

@@ -18,6 +18,8 @@ import path from 'path';
 import { SNAPSHOT_DIRNAME } from '../src/calibre/indexer';
 import { getStage } from '../src/cleanup/stages';
 import { Stage4Analysis, type Stage4Progress } from '../src/cleanup/stage4/analysis';
+import { decideStage4 } from '../src/cleanup/stage4/stage4-rules';
+import { bwIdentified } from '../src/cleanup/stage4/bw-standin';
 import { readStage2Snapshot } from '../src/cleanup/stage2-snapshot';
 import { readStage4Extras } from '../src/cleanup/stage4/snapshot4';
 import {
@@ -57,6 +59,11 @@ const analysis = new Stage4Analysis({
   queue: null as never,
 });
 analysis.loadSnapshot(lib);
+// The stage's own private helpers, read-only (as bookmeter-coverage-extract.ts).
+const priv = analysis as unknown as {
+  book(uuid: string): object | null;
+  record(book: object, ref: object, ev: object): Parameters<typeof decideStage4>[0];
+};
 
 // The series as Calibre holds them now.
 const booksOf = new Map<string, number[]>();
@@ -91,17 +98,25 @@ function pairBook(calibreId: number): PairBook {
   const name = ex?.series ?? null;
   const index = ex?.seriesIndex ?? null;
   const sb = analysis.seriesBook(p, b.uuid, { name, index, title: b.title, proposedSeries: true });
-  const ev = analysis.loadOnline(lib, b.uuid);
-  const product = ev?.amazon.product ?? null;
-  const rdb = ev?.ranobedb.series ?? null;
-  const rdbId = ev?.ranobedb.book?.series?.id;
+  const ev0 = analysis.loadOnline(lib, b.uuid);
+  const ref = analysis.loadRef(lib, b.uuid)?.file ?? null;
+  const sbook = priv.book(b.uuid);
+  // Only the records stage 4 accepted as this book (a rejected search result is another book:
+  // 亜由美 第一部's saved BOOK☆WALKER page is a magazine issue stage 4 turned down).
+  const rec = ev0 && ref && sbook ? priv.record(sbook, ref, ev0) : null;
+  const trace = rec ? decideStage4(rec).trace : null;
+  const ev = ev0;
+  const product = trace?.amazonIdentified ? (ev?.amazon.product ?? null) : null;
+  const rdb = trace?.ranobedbIdentified ? (ev?.ranobedb.series ?? null) : null;
+  const rdbId = trace?.ranobedbIdentified ? ev?.ranobedb.book?.series?.id : undefined;
+  const bwUrl = rec && bwIdentified(rec) ? (ev?.bookwalker.detail?.url ?? null) : null;
   const links: PairBook['links'] = [];
-  const asin = b.identifiers.amazon_jp ?? b.identifiers.amazon ?? product?.asin ?? null;
+  const asin =
+    b.identifiers.amazon_jp ?? b.identifiers.amazon ?? (product?.asin as string | null) ?? null;
   if (asin) links.push({ site: 'amazon', url: `https://www.amazon.co.jp/dp/${asin}` });
   if (b.identifiers.bookwalker)
     links.push({ site: 'bookwalker', url: `https://bookwalker.jp/de${b.identifiers.bookwalker}/` });
-  else if (ev?.bookwalker.detail?.url)
-    links.push({ site: 'bookwalker', url: ev.bookwalker.detail.url });
+  else if (bwUrl) links.push({ site: 'bookwalker', url: bwUrl });
   if (rdbId !== undefined && rdbId !== null)
     links.push({ site: 'ranobedb', url: `https://ranobedb.org/series/${String(rdbId)}` });
   if (b.identifiers.bookmeter)

@@ -329,6 +329,12 @@ export const CANDIDATE_RULES: PairRule[] = [
     says: (_p, s) => (s.spinoff ? 'separate' : null),
   },
   {
+    // An omnibus or set of the series' own books belongs to it (the series order's N.9): the
+    // sample's 懲役警察 B Side Diary(合本版) is the short stories' 合本版.
+    id: 'spinoff-not-omnibus',
+    says: (_p, s) => (s.spinoff && !OMNIBUS_WORD.test(s.spinoff) ? 'separate' : null),
+  },
+  {
     id: 'store-same',
     says: (_p, s) =>
       (s.ranobedb === 'same' || s.amazon === 'same' || s.storeNamesOther) &&
@@ -351,6 +357,27 @@ export const CANDIDATE_RULES: PairRule[] = [
     id: 'subtitle',
     says: (p, s) => (p.group === 'subtitle' && s.longWithShortAuthor >= 1 ? 'merge' : null),
   },
+];
+
+/** Words that mark an omnibus or a set of the series' own books, not a spin-off. */
+const OMNIBUS_WORD = /合本|セット|全\d+巻/u;
+
+/**
+ * The rules proposed from the 80-pair sample (stop 1, 2026-11-23; 0 wrong there): separate
+ * where RanobeDB lists the names as different series, where no author is shared, or where the
+ * long name adds a spin-off word (not an omnibus or set word); merge where the stores name one
+ * series, or the names differ only by シリーズ or a 〜subtitle〜. A clash is not taken as proof
+ * of two series (はにとらっ! and ネロ・ウルフ are one series with a misnumbered book): a merge
+ * that adds one goes to review, like every pair no rule decides.
+ */
+export const PROPOSED_RULE_IDS = [
+  'ranobedb-different',
+  'no-shared-author',
+  'spinoff-not-omnibus',
+  'store-same',
+  'series-word',
+  'spelled-series-word',
+  'subtitle',
 ];
 
 /**
