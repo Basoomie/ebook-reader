@@ -20,7 +20,7 @@
 import express, { Router } from 'express';
 import { ApiError, asyncHandler } from '../api/errors';
 import type { AiCore } from './core';
-import { isBuiltIn, PRICES_CHECKED } from './prices';
+import { isBuiltIn, offersFlex, PRICES_CHECKED } from './prices';
 import { modeOf } from './runner';
 import { isAiSecretName } from './secrets';
 import { AiSettingsError } from './settings';
@@ -59,6 +59,8 @@ export function aiStatus(core: AiCore) {
       /** The features' tasks that use it (a model in use can't be deleted). */
       inUse: core.modelUses(model),
       mode: modeOf(s, model),
+      /** OpenAI's Flex processing is offered for it (prices.ts). */
+      flex: offersFlex(model),
       offered: c ? (c.models ? c.models.includes(model) : null) : null,
       /** Most estimated prompt tokens in batches at the provider (0 = no cap). */
       batchQueueTokens: s.batchQueueTokens[model] ?? s.batchQueueTokensDefault,

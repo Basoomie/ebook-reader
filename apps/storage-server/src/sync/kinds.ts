@@ -1212,6 +1212,44 @@ const bookAttachmentKind: KindSpec = {
   },
 };
 
+/**
+ * kind "book-summary" (book summaries session 3): id = the book id, lww. What every device
+ * knows of the book's summary: { summary: { id, origin, setup, models, lang, madeAt, editedAt,
+ * background, langs: { <lang>: <digest> } } | null, making, outcome, note }. Written only by the
+ * summaries' server device (user_seeds "summaries-device"); the summary itself is fetched over
+ * REST (/api/v1/summaries/:bookId) because it is larger than a record may be.
+ */
+const bookSummaryKind: KindSpec = {
+  policy: () => 'lww',
+  deletable: false,
+  validate(id, data, _deleted, ctx) {
+    if (!UUID_RE.test(id)) throw new RecordError('invalid_id', 'ids are the book id');
+    const own = ctx.db
+      .prepare(
+        `SELECT 1 FROM user_seeds WHERE user_id = ? AND name = 'summaries-device' AND device_id = ?`,
+      )
+      .get(ctx.userId, ctx.deviceId);
+    if (!own) throw new RecordError('read_only', 'Book summaries are written by the server');
+    return { bookId: bookExists(ctx, id) ? id : null, data: requireObject(data) };
+  },
+};
+
+/**
+ * kind "summary-skip" (book summaries session 3): id = the book id, lww, data {}. Written by a
+ * device when the bulk "Mark completed" was told not to make summaries, before the completions
+ * (the same push): the server then makes no automatic summary for the book's first completion.
+ */
+const summarySkipKind: KindSpec = {
+  policy: () => 'lww',
+  deletable: true,
+  validate(id, _data, deleted, ctx) {
+    if (!UUID_RE.test(id)) throw new RecordError('invalid_id', 'ids are the book id');
+    if (!bookExists(ctx, id)) throw new RecordError('unknown_book', `No book ${id}`);
+    void deleted;
+    return { bookId: id, data: {} };
+  },
+};
+
 export const DEVICE_BOOKS_KIND = 'device-books';
 
 /**
@@ -1276,4 +1314,6 @@ export const DEFAULT_KINDS: KindRegistry = {
   'audiobook-position': audiobookPositionKind,
   [BOOK_ATTACHMENT_KIND]: bookAttachmentKind,
   [DEVICE_BOOKS_KIND]: deviceBooksKind,
+  'book-summary': bookSummaryKind,
+  'summary-skip': summarySkipKind,
 };

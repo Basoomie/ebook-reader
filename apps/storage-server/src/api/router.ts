@@ -60,6 +60,8 @@ import { createAttachmentRouter, type AttachmentOptions } from '../attachments/r
 import { createAiRouter } from '../ai/routes';
 import { createSummaryTestRouter } from '../summaries/test-routes';
 import type { SummaryTestService } from '../summaries/test-service';
+import type { SummaryService } from '../summaries/service';
+import { createSummaryRouter } from '../summaries/routes';
 import type { AiCore } from '../ai/core';
 import { createNotificationsRouter } from '../notifications/routes';
 import type { NotificationService } from '../notifications/service';
@@ -127,6 +129,8 @@ export interface ApiOptions {
   ai?: AiCore | null;
   /** Book summaries session 2: the accuracy test (only on the PC's test copy). */
   summariesTest?: SummaryTestService | null;
+  /** Book summaries (session 3). Without it their routes answer 503. */
+  summaries?: SummaryService | null;
 }
 
 export interface FontOptions {
@@ -164,6 +168,7 @@ export function createApiRouter({
   notifications = null,
   ai,
   summariesTest = null,
+  summaries = null,
 }: ApiOptions): Router {
   const router = express.Router();
   // Pushes can carry many records; everything else keeps the small default limit.
@@ -281,6 +286,8 @@ export function createApiRouter({
     router.use(createAiRouter(ai === undefined ? (cleanup.service?.aiCore ?? null) : ai));
     // Book summaries session 2: the accuracy test (only with SUMMARIES_TEST=1).
     router.use(createSummaryTestRouter(summariesTest, ai ?? null));
+    // Book summaries (session 3).
+    router.use(createSummaryRouter(summaries));
     // Uploads (WP7b): a separate source adapter, mounted only when it is on.
     if (catalog.uploads) {
       router.use(
@@ -289,6 +296,8 @@ export function createApiRouter({
     }
 
     const syncStore = new SyncStore(db, { maxClockSkewMs: sync.maxClockSkewSeconds * 1000 });
+    // The summaries tell every device about a book's summary through a record of their own.
+    summaries?.attachSync(syncStore);
     if (seedDefaults) {
       try {
         for (const userId of seedPlannedCollections(db, syncStore)) {
@@ -305,6 +314,8 @@ export function createApiRouter({
         onRefused: notifications
           ? (i) => notifications.syncRefused(i.deviceId, i.deviceName, i.refused)
           : undefined,
+        // A book's first completion makes its summary (book summaries session 3).
+        onApplied: summaries ? (i) => summaries.onSyncApplied(i.userId, i.applied) : undefined,
       }),
     );
     // Settings > Diagnostics (Season 2 §7): read-only.

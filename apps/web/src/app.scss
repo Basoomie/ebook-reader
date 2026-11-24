@@ -672,6 +672,25 @@ html.catalogue.eink .mdc-elevation--z24 button.border-current:not(:disabled):act
     .c-card-dots {
       opacity: 1;
     }
+
+    /* Touch screens show the ⋮ all the time, so it is a small see-through disc in the same
+       place (2026-11-23); the 36 px button around it stays the tap area. E-ink keeps the
+       solid button. */
+    html:not(.eink) .c-cover-dots {
+      background-color: transparent;
+      border-color: transparent;
+    }
+
+    html:not(.eink) .c-cover-dots > span {
+      width: 1.5rem;
+      height: 1.5rem;
+      border-radius: 9999px;
+      background-color: rgb(0 0 0 / 0.4);
+      color: #fff;
+      font-size: 0.75rem;
+      -webkit-backdrop-filter: blur(3px);
+      backdrop-filter: blur(3px);
+    }
   }
 
   html.eink .c-card-dots {

@@ -1,6 +1,7 @@
 import type { CatalogOptions } from './api/catalog-routes';
 import { AiCore } from './ai/core';
 import { startSummaryTest } from './summaries/test-start';
+import { startSummaries } from './summaries/start';
 import { createApp } from './app';
 import { CalibreIndexer, snapshotFile } from './calibre/indexer';
 import { getLibrary } from './calibre/libraries';
@@ -531,6 +532,37 @@ const summariesTest =
     ? startSummaryTest({ db: database.db, dbDir: config.dbDir, core: aiCore, tts })
     : null;
 
+// Book summaries (session 3): on wherever the AI layer is.
+const summaries =
+  database.ok && aiCore
+    ? startSummaries({
+        db: database.db,
+        dbDir: config.dbDir,
+        core: aiCore,
+        calibreDir: config.calibre.dir,
+        uploads: uploadStore,
+        importOptions: countImportOptions(config.counts),
+        maxSentence: config.audio.tts.maxSentence,
+        scriptTimeoutSeconds: config.audio.tts.scriptTimeoutSeconds,
+        notifications,
+      })
+    : null;
+let summariesSnapshots: SnapshotScheduler | null = null;
+if (summaries) {
+  try {
+    summariesSnapshots = scheduleSnapshots({
+      db: summaries.store.db,
+      dir: snapshotDir(config.dbDir),
+      time: config.snapshotTime,
+      keep: config.snapshotKeep,
+      prefix: 'summaries',
+      onResult: (ok, error) => notifications?.snapshotResult('summaries', ok, error),
+    });
+  } catch (err) {
+    console.error('Error: could not schedule summaries.db snapshots:', err);
+  }
+}
+
 const app = createApp({
   config,
   database,
@@ -563,6 +595,7 @@ const app = createApp({
   notifications,
   ai: aiCore,
   summariesTest,
+  summaries,
 });
 cleanup?.start();
 cleanupOptions.audio?.start();
@@ -588,6 +621,8 @@ function shutdown(signal: string): void {
   console.log(`${signal} received, shutting down`);
   snapshots?.stop();
   cleanupSnapshots?.stop();
+  summariesSnapshots?.stop();
+  void summaries?.stop();
   aiCore?.stop();
   void notifications?.stop();
   void cleanup?.stop();

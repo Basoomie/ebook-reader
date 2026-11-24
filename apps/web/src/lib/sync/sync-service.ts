@@ -146,6 +146,7 @@ import {
   type GlobalSettingsDeps
 } from '$lib/sync/settings-source';
 import { SyncApi } from '$lib/sync/sync-api';
+import { startSummarySync } from '$lib/summaries/summary-sync';
 import type { LocalRecord } from '$lib/sync/sync-db';
 import { SyncEngine } from '$lib/sync/sync-engine';
 import { SyncRunner, type RunnerEnv } from '$lib/sync/sync-runner';
@@ -286,6 +287,8 @@ export function startSync(): void {
         void refreshLegacySwitch();
         void reportDeviceSoon();
         void publishDeviceBooks();
+        // Book summaries (session 3): the current summaries kept on this device.
+        startSummarySync(engine);
       })
       .catch((error) => warn(`Sync: not started: ${(error as Error)?.message ?? error}`));
   } catch (error) {

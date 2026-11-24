@@ -37,10 +37,24 @@ export type RefusedListener = (info: {
  */
 const SELF_SETTLING_CODES = new Set(['read_through_finished']);
 
+/**
+ * Changes a device's push applied (book summaries session 3: a book's first completion makes
+ * its summary). Called after the answer; an error here never affects the push.
+ */
+export type AppliedListener = (i: {
+  userId: string;
+  deviceId: string;
+  applied: { kind: string; id: string }[];
+}) => void;
+
 export function createSyncRouter(
   db: Database.Database,
   store: SyncStore,
-  { frozenKinds = [], onRefused }: { frozenKinds?: string[]; onRefused?: RefusedListener } = {},
+  {
+    frozenKinds = [],
+    onRefused,
+    onApplied,
+  }: { frozenKinds?: string[]; onRefused?: RefusedListener; onApplied?: AppliedListener } = {},
 ): Router {
   const router = express.Router();
   // WP12: kinds devices may no longer change. Only device pushes are refused here;
@@ -97,6 +111,16 @@ export function createSyncRouter(
     const results = store.push(user.id, deviceId, changes as SyncChange[], now, { frozen });
     touchDevice(db, deviceId, now);
     res.json({ results, serverTime: Date.now() });
+    if (onApplied) {
+      try {
+        const applied = results.flatMap((r) =>
+          r.status === 'applied' ? [{ kind: r.kind, id: r.id }] : [],
+        );
+        if (applied.length) onApplied({ userId: user.id, deviceId, applied });
+      } catch (err) {
+        console.error('Sync: after the push:', err);
+      }
+    }
     if (onRefused) {
       try {
         const refused = results.flatMap((r) =>

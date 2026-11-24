@@ -115,6 +115,8 @@ export interface ProposalInput {
   ai?: (Stage4AiValues & { asked: boolean }) | null;
   /** Calibre's last_modified right after the cleanup's write, by field. */
   appliedLastModified?: Map<string, string | null>;
+  /** The fields whose written value was a best guess (unconfirmed when written). */
+  appliedGuess?: Set<string>;
   /**
    * Calibre's cover as it is now, read from its cover.jpg; only needed when the cleanup wrote
    * this book's cover (applied 'cover'). Undefined = not read: the cover counts as changed.
@@ -444,7 +446,22 @@ export function proposeStage4(input: ProposalInput): Stage4Proposal[] {
       ? { fit: { from, step: f.step, rules: f.rules } }
       : {};
 
-  if (title && fitted && (N(fitted) !== N(book.title) || fitted !== book.title)) {
+  // A title that only loses the volume number Calibre's title has is never proposed (the user's
+  // decision 4: the store's printed form keeps its number). The series step takes out a number
+  // no source prints itself, through its own title. After stop 3 wrote 「解剖探偵 1」, deciding
+  // again proposed 「解剖探偵」 for 111 books (the step no longer gives a title it doesn't change).
+  const digits = (t: string) => (t.normalize('NFKC').match(/[0-9]/gu) ?? []).length;
+  const onlyNumberLost =
+    !soTitle &&
+    !!fitted &&
+    onlyNumberAdded(fitted, book.title) &&
+    digits(book.title) > digits(fitted);
+  if (
+    title &&
+    fitted &&
+    !onlyNumberLost &&
+    (N(fitted) !== N(book.title) || fitted !== book.title)
+  ) {
     let cls: 'auto' | 'review' = ft.auto ? 'auto' : 'review';
     let reason = ft.reason;
     // A first author too long on its own: its own reason (never the planner's "Too long for a
@@ -659,7 +676,9 @@ export function proposeStage4(input: ProposalInput): Stage4Proposal[] {
       /^the reading order/u.test(so.from) &&
       decidedN !== null &&
       decidedN === oldSeries.index;
+    // A number written as a best guess is not kept against a confirmed one ((仮)花嫁 3 and 8).
     const writtenIndex =
+      !input.appliedGuess?.has('series') &&
       input.applied.has('series') &&
       stillAsWritten('series', input.applied.get('series'), oldSeries) &&
       oldSeries.index !== null;

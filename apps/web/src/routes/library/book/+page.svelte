@@ -33,6 +33,7 @@
   import AppHeader from '$lib/components/app-nav/app-header.svelte';
   import AddToCollectionDialog from '$lib/components/collections/add-to-collection-dialog.svelte';
   import AudioLinkSection from '$lib/components/audio/audio-link-section.svelte';
+  import SummarySection from '$lib/components/summaries/summary-section.svelte';
   import BookDownloadMenu from '$lib/components/library/book-download-menu.svelte';
   import BookLinks from '$lib/components/library/book-links.svelte';
   import BookIllustrations from '$lib/components/library/book-illustrations.svelte';
@@ -59,7 +60,7 @@
     type CoverRules
   } from '$lib/library/cover-blur';
   import type { Collection, CollectionItem } from '$lib/collections/collections';
-  import { coverGrid } from '$lib/library/cover-size';
+  import { coverSize } from '$lib/library/cover-size';
   import { descriptionParagraphs } from '$lib/library/description';
   import {
     authorHref,
@@ -210,7 +211,31 @@
   $: coverBlurred = book
     ? !revealed.has(book.id) && isCoverBlurred(state?.blur, book, blurCtx)
     : false;
-  $: gridLayout = coverGrid($libraryCoverSize$);
+  // The Series and Also by rows scroll sideways like Home's rows (2026-11-23): the Library's
+  // cover size, else Home's automatic widths.
+  $: stripSize = coverSize($libraryCoverSize$);
+  $: stripClass = `c-strip grid grid-flow-col gap-4 pb-2 ${
+    stripSize ? '' : 'auto-cols-[7rem] sm:auto-cols-[8.5rem]'
+  }`;
+  $: stripStyle = stripSize ? `grid-auto-columns: ${stripSize}px` : undefined;
+
+  /** Scrolls the Series row sideways so this book's volume is in view (never the page). */
+  function showCurrent(node: HTMLElement, id: string) {
+    const run = (current: string) => {
+      requestAnimationFrame(() => {
+        const card = node.querySelector<HTMLElement>(`[data-book-id="${CSS.escape(current)}"]`);
+        if (!card) return;
+        const box = node.getBoundingClientRect();
+        const at = card.getBoundingClientRect();
+        node.scrollLeft = Math.max(
+          0,
+          node.scrollLeft + (at.left - box.left) - (box.width - at.width) / 2
+        );
+      });
+    };
+    run(id);
+    return { update: run };
+  }
   // Season 2 §6: the device's setting (anything unknown counts as the default).
   $: illustrationsAt = $bookIllustrationsPosition$ === 'cover' ? 'cover' : 'description';
   // Where the links go (Settings > Library, per device; anything unknown is the default).
@@ -927,6 +952,8 @@
       />
     {/if}
 
+    <SummarySection book={shown ?? book} status={state?.status} {offline} />
+
     {#if api}
       <AudioLinkSection
         {api}
@@ -952,7 +979,12 @@
             href={libraryHref('series', book.series.name)}>All {series.length} volumes</a
           >
         </div>
-        <ul class="mt-4 {gridLayout.classes}" style={gridLayout.style || undefined}>
+        <ul
+          class="c-dstrip mt-4 {stripClass}"
+          style={stripStyle}
+          data-testid="details-series-books"
+          use:showCurrent={book.id}
+        >
           {#each series as b (b.id)}
             <LibraryBookCard
               book={b}
@@ -995,7 +1027,11 @@
             href={authorHref(pagePath, row.author)}>See all</a
           >
         </div>
-        <ul class="mt-4 {gridLayout.classes}" style={gridLayout.style || undefined}>
+        <ul
+          class="c-dstrip mt-4 {stripClass}"
+          style={stripStyle}
+          data-testid="details-also-by-books"
+        >
           {#each row.books as b (b.id)}
             <LibraryBookCard
               book={b}
@@ -1131,9 +1167,19 @@
       grid-template-areas: 'cover' 'main' 'desc' 'info';
     }
 
+    /* Phones: the cover in the middle (2026-11-23); the rest stays left. */
     .c-dcover {
       max-width: 11rem;
+      align-self: center;
     }
+  }
+
+  /* Room for the covers' hover lift inside the scrolling rows (as Home's), and for this
+     book's outline at either end of the Series row. */
+  .c-dstrip {
+    padding-top: 6px;
+    padding-inline: 5px;
+    margin-inline: -5px;
   }
 
   .c-dcover {

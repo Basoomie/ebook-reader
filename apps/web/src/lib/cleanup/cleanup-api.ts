@@ -1534,7 +1534,7 @@ export interface AudioStage5Status {
     turnaroundMs: { median: number | null; max: number | null };
   };
   /** How stage 5's two models are asked now. */
-  modes: { primary: 'batch' | 'direct'; secondary: 'batch' | 'direct' };
+  modes: { primary: 'batch' | 'direct' | 'flex'; secondary: 'batch' | 'direct' | 'flex' };
   models: { primary: string; secondary: string };
   batchStallMinutes: number;
   labeledOnly: boolean;
@@ -1604,7 +1604,7 @@ export interface AiStatus {
     price: AiPrice | null;
     /** true/false = in the provider's list when last checked; null = not checked. */
     checked: boolean | null;
-    mode: 'batch' | 'direct';
+    mode: 'batch' | 'direct' | 'flex';
   }[];
   /** The steps that ask models today and the model tasks each uses. */
   steps?: {

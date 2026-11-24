@@ -138,14 +138,16 @@
     GroupTile,
     UploadInfo
   } from '$lib/library/types';
-  import type { BookState } from '$lib/sync/book-state';
+  import { finishedReadThroughs, type BookState } from '$lib/sync/book-state';
   import type { LocalRecord } from '$lib/sync/sync-db';
   import {
     bookStateApi,
     collectionsApi,
+    getSyncEngine,
     libraryViewApi,
     notifySyncConnectionChanged
   } from '$lib/sync/sync-service';
+  import { bulkSummaryPlan, skipAutomaticSummaries } from '$lib/summaries/summary-sync';
   import {
     faArrowUpFromBracket,
     faArrowsUpDown,
@@ -935,21 +937,37 @@
         return;
       }
     } else if (change.kind === 'status' && change.status === 'completed') {
-      const finishedOn = await ask<string | null | undefined>(MarkCompletedDialog, {
-        count: ids.length
-      });
-      if (finishedOn === undefined) return;
       let completed: CatalogBook[];
       try {
-        // Completing needs each book's character count.
+        // Completing needs each book's character count (and the summary line its plan).
         completed = await selectedBooks(ids);
       } catch (error) {
         showMessage('Not saved', describe(error));
         return;
       }
+      // Book summaries: the books whose first completion this is get one (asked first).
+      const engine = await getSyncEngine();
+      const plan = await bulkSummaryPlan(
+        engine,
+        completed.map((b) => ({ id: b.id, charCount: b.charCount })),
+        (id) => {
+          const s = states.get(id);
+          return !!s && (s.status === 'completed' || finishedReadThroughs(s) > 0);
+        }
+      );
+      const answer = await ask<{ finishedOn: string | null; makeSummaries: boolean } | undefined>(
+        MarkCompletedDialog,
+        {
+          count: ids.length,
+          summaries: plan.books.length ? { count: plan.books.length, usd: plan.usd } : null
+        }
+      );
+      if (answer === undefined) return;
+      if (plan.books.length && !answer.makeSummaries)
+        await skipAutomaticSummaries(engine, plan.books);
       failed = await bookState.markCompleted(
         completed.map((b) => ({ bookId: b.id, charCount: b.charCount })),
-        finishedOn
+        answer.finishedOn
       );
     } else if (change.kind === 'status') {
       // Unread takes part-read books back to the start: ask first when any is part-read.

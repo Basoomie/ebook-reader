@@ -5,7 +5,7 @@
  * Which models a feature uses for what stays with the feature (the cleanup's `models`).
  */
 import type Database from 'better-sqlite3';
-import { DEFAULT_MODELS, isBuiltIn } from './prices';
+import { DEFAULT_MODELS, isBuiltIn, offersFlex } from './prices';
 
 /** A price tier per million tokens (US$). */
 export interface AiPriceTier {
@@ -36,8 +36,11 @@ export interface AiSettings {
    * Measured 2026-11-19: Anthropic answered a batch of 195 questions for claude-haiku-5-5 in 2 min;
    * OpenAI ran no batch for gpt-6-luna (six batches, none answered in 15-75 min, on both of its
    * endpoints) while a gpt-6.1-sol batch finished in 80 s and Luna answers one call in ~7 s.
+   * flex = one call each with OpenAI's Flex processing (batch price, answered when OpenAI has
+   * capacity; after flexRetries refusals that call goes at the normal price); only for the
+   * models prices.ts lists as offering it (book summaries session 3).
    */
-  modes: Record<string, 'batch' | 'direct'>;
+  modes: Record<string, AiMode>;
   /**
    * The models listed in Settings > AI, the ones a feature can choose (in this order). Added
    * there from the providers' own model lists (checked: offered to the key, a known price, one
@@ -49,6 +52,15 @@ export interface AiSettings {
    * and its questions are sent directly. 0 = wait for the provider (up to its 24 h).
    */
   batchStallMinutes: number;
+  /**
+   * The same for OpenAI's batches (book summaries session 3): they take far longer than
+   * Anthropic's (a one-line gpt-6.1-sol batch was answered after about 100 min on 2026-11-22,
+   * Anthropic's within minutes), so the 30 min that suits Anthropic cancelled them and asked
+   * them again at full price.
+   */
+  batchStallMinutesOpenai: number;
+  /** Flex: a call OpenAI refuses for capacity is tried this many times more before it goes at the normal price. */
+  flexRetries: number;
   /**
    * After a batch the provider refused as a whole (its status "failed"), that model sends no
    * batch for this many minutes, doubled with each failure in a row up to batchFailMaxWaitMinutes
@@ -111,6 +123,8 @@ export const DEFAULT_AI_SETTINGS: AiSettings = {
   modes: { 'gpt-6-luna': 'direct' },
   models: [...DEFAULT_MODELS],
   batchStallMinutes: 30,
+  batchStallMinutesOpenai: 180,
+  flexRetries: 3,
   batchFailWaitMinutes: 5,
   batchFailMaxWaitMinutes: 60,
   batchFailPauseAfter: 3,
@@ -135,6 +149,14 @@ export const DEFAULT_AI_SETTINGS: AiSettings = {
 export const AI_SETTING_KEYS = Object.keys(DEFAULT_AI_SETTINGS) as (keyof AiSettings)[];
 
 export class AiSettingsError extends Error {}
+
+/** The stall limit of a provider's batches (min; 0 = never). */
+export function stallMinutesOf(s: AiSettings, provider: 'anthropic' | 'openai'): number {
+  return provider === 'openai' ? s.batchStallMinutesOpenai : s.batchStallMinutes;
+}
+
+/** How a model is asked: the Batch API, one call each, or one call each with OpenAI's Flex. */
+export type AiMode = 'batch' | 'direct' | 'flex';
 
 type Obj = Record<string, unknown>;
 const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -165,11 +187,13 @@ export function validateAiSettings(value: unknown, current: AiSettings): AiSetti
   const v: Obj = { ...current, ...value };
   if (!isObj(v.modes)) throw new AiSettingsError('AI: modes must be an object');
   if (Object.keys(v.modes).length > 30) throw new AiSettingsError('AI: at most 30 model modes');
-  const modes: Record<string, 'batch' | 'direct'> = {};
+  const modes: Record<string, AiMode> = {};
   for (const [model, m] of Object.entries(v.modes)) {
     const id = modelId(model);
-    if (m !== 'batch' && m !== 'direct')
-      throw new AiSettingsError(`AI: ${id} must be batch or direct`);
+    if (m !== 'batch' && m !== 'direct' && m !== 'flex')
+      throw new AiSettingsError(`AI: ${id} must be batch, direct or flex`);
+    if (m === 'flex' && !offersFlex(id))
+      throw new AiSettingsError(`AI: ${id} does not offer flex processing`);
     if (id) modes[id] = m;
   }
   if (!Array.isArray(v.models) || v.models.length > 60)
@@ -220,6 +244,14 @@ export function validateAiSettings(value: unknown, current: AiSettings): AiSetti
       1440,
       true,
     ),
+    batchStallMinutesOpenai: num(
+      'Cancel an OpenAI batch with no answers after (min; 0 = never)',
+      v.batchStallMinutesOpenai ?? 180,
+      0,
+      1440,
+      true,
+    ),
+    flexRetries: num('Flex: tries before the normal price', v.flexRetries ?? 3, 0, 10, true),
     batchFailWaitMinutes: num(
       'Wait after a failed batch (min)',
       v.batchFailWaitMinutes ?? 5,

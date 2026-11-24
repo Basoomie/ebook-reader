@@ -37,6 +37,11 @@ export interface CallInput {
   effort?: import('./types').AiEffort;
   outputLimit?: number;
   stream?: boolean;
+  /**
+   * OpenAI's Flex processing (`service_tier: "flex"`, settings mode flex; book summaries
+   * session 3). Absent = the request as before.
+   */
+  serviceTier?: 'flex';
 }
 
 export interface Usage {
@@ -46,10 +51,14 @@ export interface Usage {
   cacheWrite: number;
 }
 
-export type CallResult =
+export type CallResult = (
   | { kind: 'answered'; text: string; json: unknown; usage: Usage }
   | { kind: 'blocked'; detail: string; text: string | null; usage: Usage }
-  | { kind: 'invalid'; detail: string; text: string | null; usage: Usage };
+  | { kind: 'invalid'; detail: string; text: string | null; usage: Usage }
+) & {
+  /** The processing tier OpenAI reports it used ("flex", "default", ...); absent for Claude. */
+  tier?: string;
+};
 
 interface ErrLike {
   code?: unknown;
@@ -105,6 +114,14 @@ export class RetryableError extends Error {
   ) {
     super(message);
   }
+}
+
+/**
+ * A Flex call OpenAI refused for capacity (429 "Resource Unavailable", not charged): tried again
+ * a few times, then sent at the normal price (runner; settings flexRetries).
+ */
+export class FlexUnavailableError extends RetryableError {
+  readonly flexUnavailable = true;
 }
 
 /** A failure that won't change by asking again (bad request, auth, model not found). */
@@ -422,6 +439,7 @@ const OPENAI_BLOCK_CODES = new Set([
 ]);
 
 interface ChatCompletionLike {
+  service_tier?: string | null;
   choices?: {
     finish_reason?: string | null;
     message?: { content?: string | null; refusal?: string | null };
@@ -476,6 +494,7 @@ function openaiBody(input: CallInput) {
       : { type: 'json_object' as const },
     ...(input.effort ? { reasoning_effort: input.effort } : {}),
     ...(input.outputLimit ? { max_completion_tokens: input.outputLimit } : {}),
+    ...(input.serviceTier ? { service_tier: input.serviceTier } : {}),
   };
 }
 
@@ -495,6 +514,7 @@ function responsesBody(input: CallInput) {
     store: false,
     ...(input.effort ? { reasoning: { effort: input.effort, summary: 'auto' as const } } : {}),
     ...(input.outputLimit ? { max_output_tokens: input.outputLimit } : {}),
+    ...(input.serviceTier ? { service_tier: input.serviceTier } : {}),
     text: {
       format: input.schema
         ? {
@@ -510,6 +530,7 @@ function responsesBody(input: CallInput) {
 
 interface ResponseLike {
   status?: string;
+  service_tier?: string | null;
   incomplete_details?: { reason?: string } | null;
   error?: { code?: string; message?: string } | null;
   output?: { type?: string; content?: { type?: string; text?: string; refusal?: string }[] }[];
@@ -554,6 +575,11 @@ export function responsesResult(r: ResponseLike): CallResult {
   if (json === undefined)
     return { kind: 'invalid', detail: 'no JSON object', text: text || null, usage };
   return { kind: 'answered', text, json, usage };
+}
+
+/** The result with the tier OpenAI reports (flex calls are priced by it). */
+function withTier(r: CallResult, tier: string | null | undefined): CallResult {
+  return tier ? { ...r, tier } : r;
 }
 
 export class OpenAiProvider implements ProviderClient {
@@ -650,17 +676,30 @@ export class OpenAiProvider implements ProviderClient {
             };
           throw new RetryableError(`failed: ${code} ${done.error?.message ?? ''}`.trim());
         }
-        return responsesResult(done);
+        return withTier(responsesResult(done), done.service_tier);
       }
       const c = await this.client.chat.completions.create(
         openaiBody(input) as OpenAI.ChatCompletionCreateParamsNonStreaming,
         { timeout: timeoutMs },
       );
-      return openaiResult(c as unknown as ChatCompletionLike);
+      return withTier(
+        openaiResult(c as unknown as ChatCompletionLike),
+        (c as unknown as ChatCompletionLike).service_tier,
+      );
     } catch (err) {
       const b = this.blocked(err);
       if (b) return b;
-      throw this.wrap(err);
+      const w = this.wrap(err);
+      // A Flex call refused for capacity is not the provider being busy: only this call waits.
+      if (
+        input.serviceTier === 'flex' &&
+        err instanceof OpenAI.APIError &&
+        (err as InstanceType<typeof OpenAI.APIError>).status === 429 &&
+        w instanceof RetryableError &&
+        w.busy
+      )
+        throw new FlexUnavailableError(w.message, w.retryAfterMs, false);
+      throw w;
     }
   }
 

@@ -8,17 +8,17 @@
   /**
    * Book summaries: a summary as the app shows it (book-summaries.md "UI", option C, approved
    * mockups): tabs Overview, Chapter by chapter, Characters, Relationships, Terms, Open threads
-   * (only those with content); characters as cards flowing in columns; quotes only where the
-   * summary marks them, each with its place in the book and a link into the reader there.
-   * Session 2 shows it on the accuracy test's page; session 4 puts it on the book page with
-   * the per-device layouts and the spoiler blur.
+   * (only those with content); quotes only where the summary marks them, each with a link into
+   * the reader at its place. Session 4 (the book page): this device's Characters and
+   * Relationships layouts, "edited by you", and Edit (change, delete or add items in place; the
+   * overview as one text; every tab while editing). Session 2's judging page passes `marks`.
    */
   import { createEventDispatcher } from 'svelte';
   import { readerLinkPath } from '$lib/anki/reader-link';
-  import ItemMarks from './item-marks.svelte';
-  import EnglishLine from './english-line.svelte';
-  import RubyHeading from './ruby-heading.svelte';
   import { pagePath } from '$lib/data/env';
+  import type { SummaryItemInput } from '$lib/summaries/summary-api';
+  import { quoteLinkText } from '$lib/summaries/summary-page';
+  import type { SummaryCharacterLayout, SummaryRelationshipLayout } from '$lib/summaries/settings';
   import {
     SUMMARY_TABS,
     quotePlace,
@@ -27,12 +27,39 @@
     type SummaryItem,
     type SummarySectionKey
   } from '$lib/summaries/summary-types';
+  import EnglishLine from './english-line.svelte';
+  import ItemMarks from './item-marks.svelte';
+  import RubyHeading from './ruby-heading.svelte';
+  import SummaryCharacters from './summary-characters.svelte';
+  import SummaryExtras from './summary-extras.svelte';
+  import SummaryItemEdit from './summary-item-edit.svelte';
+  import SummaryItemForm from './summary-item-form.svelte';
+  import SummaryRelationships from './summary-relationships.svelte';
 
   export let summary: Summary;
   /** The book's id in this app (quote links), or null: no links. */
   export let bookId: string | null = null;
+  /** The judging page: the book's chapters for "Chapter 3 · 41 %". */
   export let chapters: { index: number; title?: string; start: number }[] = [];
   export let characters = 0;
+  /** The book page: the book's character count, for the quote link's "41 %". */
+  export let charCount: number | null = null;
+  export let characterLayout: SummaryCharacterLayout = 'cards';
+  export let relationshipLayout: SummaryRelationshipLayout = 'list';
+  /** The book page shows the model line above the tabs itself. */
+  export let showMade = true;
+  /** Edit (the book page): every item gets Change and Delete, every tab Add. */
+  export let editing = false;
+  /** Edit: saves a change; resolves to an error to show, or null. */
+  export let saveItem: (
+    item: SummaryItem,
+    input: SummaryItemInput
+  ) => Promise<string | null> = async () => null;
+  export let removeItem: (item: SummaryItem) => Promise<string | null> = async () => null;
+  export let addItem: (
+    section: SummarySectionKey,
+    input: SummaryItemInput
+  ) => Promise<string | null> = async () => null;
   /**
    * The accuracy test's judging (session 2): each item's mark, by ref; null = no judging. Each
    * item gets the mark buttons and each tab says how many of its items are marked.
@@ -64,22 +91,40 @@
     return ` ${refs.filter((r) => marks[r]).length}/${refs.length}`;
   }
   $: shown = (it: SummaryItem) => !only || only.includes(it.ref);
-  $: ruby = summary.lang === 'ja';
+  /** The language shown: a translation's, else the book's. */
+  $: lang = summary.viewLang ?? summary.lang;
+  $: ruby = lang === 'ja';
+  /** Quotes are always the book's own words. */
+  $: quoteLang = summary.lang;
 
-  $: present = SUMMARY_TABS.filter((t) => summary.sections.some((s) => s.key === t.key));
+  $: hasChapters = summary.sections.some((s) => s.key === 'chapters');
+  $: present = SUMMARY_TABS.filter((t) =>
+    editing ? t.key !== 'chapters' || hasChapters : summary.sections.some((s) => s.key === t.key)
+  );
   /** The open tab (the accuracy test's page reads it for its notes). */
   export let tab: SummarySectionKey = 'overview';
   $: if (!present.some((t) => t.key === tab) && present.length) tab = present[0].key;
-  $: section = summary.sections.find((s) => s.key === tab) ?? null;
-  $: lang = summary.lang;
+  $: section = summary.sections.find((s) => s.key === tab) ?? { key: tab, groups: [] };
+  $: flat = (section.groups[0]?.items ?? []).filter(shown);
+  /** Plain rendering for judging and Edit; the device's layouts otherwise. */
+  $: plain = !!marks || editing;
+  $: chapterChoices = (summary.sections.find((s) => s.key === 'chapters')?.groups ?? [])
+    .filter((g) => g.chapter !== undefined)
+    .map((g) => ({
+      chapter: g.chapter as number,
+      title: g.title ?? `Chapter ${(g.chapter ?? 0) + 1}`
+    }));
 
-  function place(it: SummaryItem): string {
-    return it.position === null ? '' : quotePlace(it.position, chapters, characters);
-  }
-  function href(it: SummaryItem): string | null {
-    return bookId && it.position !== null
+  function hrefOf(it: SummaryItem): string | null {
+    return bookId && it.position !== null && it.showQuote && it.quote
       ? `${pagePath}${readerLinkPath(bookId, it.position)}`
       : null;
+  }
+  function linkTextOf(it: SummaryItem): string {
+    if (it.position === null) return '';
+    // The judging page knows the chapters; the book page the item's chapter and the length.
+    if (chapters.length) return quotePlace(it.position, chapters, characters);
+    return quoteLinkText(it.position, charCount, it.chapterTitle);
   }
   function made(ms: number): string {
     return new Date(ms).toLocaleDateString(undefined, {
@@ -88,14 +133,28 @@
       day: 'numeric'
     });
   }
+
+  let adding: SummarySectionKey | null = null;
+  let addBusy = false;
+  let addError = '';
+  async function onAdd(input: SummaryItemInput) {
+    addBusy = true;
+    addError = '';
+    const e = await addItem(tab, input);
+    addBusy = false;
+    if (e) addError = e;
+    else adding = null;
+  }
+  $: if (!editing) adding = null;
+  $: tabLabel = SUMMARY_TABS.find((t) => t.key === tab)?.label ?? '';
 </script>
 
 <section class="summary" data-testid="summary-view">
-  <div class="c-modal-tabs tabs" role="tablist">
+  <div class="c-modal-tabs c-strip tabs" role="tablist" aria-label="Summary sections">
     {#each present as t (t.key)}
       <button
         type="button"
-        class="c-modal-tab"
+        class="c-modal-tab tab"
         role="tab"
         aria-selected={tab === t.key}
         data-testid="summary-tab-{t.key}"
@@ -106,109 +165,50 @@
     {/each}
   </div>
 
-  {#if section}
-    <div class="mt-4" {lang} data-testid="summary-section-{section.key}">
-      {#if section.key === 'overview'}
-        {#each (section.groups[0]?.items ?? []).filter(shown) as it (it.ref)}
-          <p class="overview leading-relaxed" data-ref={it.ref}>{it.text}</p>
-          {#if english?.[it.ref]}<EnglishLine line={english[it.ref]} />{/if}
-          {#if marks}<ItemMarks
-              ref={it.ref}
-              mark={marks[it.ref] ?? null}
-              copiedFrom={copied?.[it.ref] ?? null}
-              check={checks?.[it.ref] ?? null}
-              on:mark={(e) => dispatch('mark', e.detail)}
-            />{/if}
-        {/each}
-      {:else if section.key === 'chapters'}
-        {#each section.groups.filter((g) => g.items.some(shown)) as g (g.chapter)}
-          <h3 class="mt-4 font-bold first:mt-0">{g.title}</h3>
-          <ul class="mt-1 list-disc pl-5">
-            {#each g.items.filter(shown) as it (it.ref)}
-              <li class="mt-1" data-ref={it.ref}>
-                {it.text}
-                {#if english?.[it.ref]}<EnglishLine line={english[it.ref]} />{/if}
-                {#if it.showQuote && it.quote}
-                  <blockquote class="quote">
-                    「{it.quote}」
-                    {#if href(it)}
-                      <a class="c-link text-xs" href={href(it)} data-testid="summary-quote-link"
-                        >{place(it)}</a
-                      >
-                    {/if}
-                  </blockquote>
-                {/if}
-                {#if marks}<ItemMarks
-                    ref={it.ref}
-                    mark={marks[it.ref] ?? null}
-                    copiedFrom={copied?.[it.ref] ?? null}
-                    check={checks?.[it.ref] ?? null}
-                    on:mark={(e) => dispatch('mark', e.detail)}
-                  />{/if}
-              </li>
-            {/each}
-          </ul>
-        {/each}
-      {:else if section.key === 'characters'}
-        <div class="cards">
-          {#each (section.groups[0]?.items ?? []).filter(shown) as it (it.ref)}
-            <article class="card" data-ref={it.ref} data-testid="summary-character">
-              <h3 class="font-bold">
-                <RubyHeading text={it.heading ?? ''} pieces={ruby ? it.ruby : null} />
-              </h3>
-              <p class="mt-1">{it.text}</p>
-              {#if english?.[it.ref]}<EnglishLine line={english[it.ref]} />{/if}
-              {#if it.showQuote && it.quote}
-                <blockquote class="quote">
-                  「{it.quote}」
-                  {#if href(it)}
-                    <a class="c-link text-xs" href={href(it)} data-testid="summary-quote-link"
-                      >{place(it)}</a
-                    >
-                  {/if}
-                </blockquote>
-              {/if}
-              {#if marks}<ItemMarks
-                  ref={it.ref}
-                  mark={marks[it.ref] ?? null}
-                  copiedFrom={copied?.[it.ref] ?? null}
-                  check={checks?.[it.ref] ?? null}
-                  on:mark={(e) => dispatch('mark', e.detail)}
+  <div class="mt-4" {lang} data-testid="summary-section-{section.key}">
+    {#if section.key === 'overview'}
+      {#each flat as it (it.ref)}
+        <p class="overview leading-relaxed" data-ref={it.ref}>
+          {it.text}<SummaryExtras item={it} />
+        </p>
+        {#if editing}<SummaryItemEdit
+            item={it}
+            section="overview"
+            {lang}
+            save={saveItem}
+            remove={null}
+          />{/if}
+        {#if english?.[it.ref]}<EnglishLine line={english[it.ref]} />{/if}
+        {#if marks}<ItemMarks
+            ref={it.ref}
+            mark={marks[it.ref] ?? null}
+            copiedFrom={copied?.[it.ref] ?? null}
+            check={checks?.[it.ref] ?? null}
+            on:mark={(e) => dispatch('mark', e.detail)}
+          />{/if}
+      {/each}
+    {:else if section.key === 'chapters'}
+      {#each section.groups.filter((g) => g.items.some(shown)) as g (g.chapter)}
+        <h3 class="mt-4 font-bold first:mt-0">{g.title}</h3>
+        <ul class="mt-1 list-disc pl-5">
+          {#each g.items.filter(shown) as it (it.ref)}
+            <li class="mt-1" data-ref={it.ref}>
+              {it.text}<SummaryExtras item={it} />
+              {#if editing}<SummaryItemEdit
+                  item={it}
+                  section="chapters"
+                  {lang}
+                  save={saveItem}
+                  remove={removeItem}
                 />{/if}
-            </article>
-          {/each}
-        </div>
-        {#if summary.alsoMentioned.length}
-          <p class="mt-3 text-sm text-c-muted" data-testid="summary-also">
-            Also mentioned: {summary.alsoMentioned.join(lang === 'ja' ? '、' : ', ')}
-          </p>
-        {/if}
-      {:else}
-        <ul class="space-y-3">
-          {#each (section.groups[0]?.items ?? []).filter(shown) as it (it.ref)}
-            <li data-ref={it.ref}>
-              {#if it.heading}<span class="font-bold"
-                  ><RubyHeading text={it.heading} pieces={ruby ? it.ruby : null} /></span
-                >{/if}
-              {#if it.between}<span class="font-bold"
-                  ><RubyHeading text={it.between[0]} pieces={ruby ? it.betweenRuby?.[0] : null} /> –
-                  <RubyHeading
-                    text={it.between[1]}
-                    pieces={ruby ? it.betweenRuby?.[1] : null}
-                  /></span
-                >{/if}
-              <p class:mt-1={!!(it.heading || it.between)}>{it.text}</p>
               {#if english?.[it.ref]}<EnglishLine line={english[it.ref]} />{/if}
-              {#if it.showQuote && it.quote}
-                <blockquote class="quote">
-                  「{it.quote}」
-                  {#if href(it)}
-                    <a class="c-link text-xs" href={href(it)} data-testid="summary-quote-link"
-                      >{place(it)}</a
-                    >
-                  {/if}
-                </blockquote>
-              {/if}
+              <SummaryExtras
+                part="quote"
+                item={it}
+                {quoteLang}
+                href={hrefOf(it)}
+                linkText={linkTextOf(it)}
+              />
               {#if marks}<ItemMarks
                   ref={it.ref}
                   mark={marks[it.ref] ?? null}
@@ -219,22 +219,124 @@
             </li>
           {/each}
         </ul>
+      {/each}
+    {:else if section.key === 'characters' && !plain}
+      <SummaryCharacters
+        items={flat}
+        alsoMentioned={summary.alsoMentioned}
+        layout={characterLayout}
+        {lang}
+        {ruby}
+        {quoteLang}
+        {hrefOf}
+        {linkTextOf}
+      />
+    {:else if section.key === 'relationships' && !plain}
+      <SummaryRelationships
+        items={flat}
+        layout={relationshipLayout}
+        {ruby}
+        {quoteLang}
+        {hrefOf}
+        {linkTextOf}
+      />
+    {:else}
+      <ul
+        class:cards={section.key === 'characters' && !editing}
+        class:rows={section.key !== 'characters' || editing}
+      >
+        {#each flat as it (it.ref)}
+          <li
+            class:card={section.key === 'characters' && !editing}
+            data-ref={it.ref}
+            data-testid={section.key === 'characters' ? 'summary-character' : undefined}
+          >
+            {#if it.heading}<h3 class="font-bold">
+                <RubyHeading text={it.heading} pieces={ruby ? it.ruby : null} />
+              </h3>{/if}
+            {#if it.between}<h3 class="font-bold">
+                <RubyHeading text={it.between[0]} pieces={ruby ? it.betweenRuby?.[0] : null} /> –
+                <RubyHeading text={it.between[1]} pieces={ruby ? it.betweenRuby?.[1] : null} />
+                {#if it.label}<span class="ml-2 text-sm font-normal text-c-muted">{it.label}</span
+                  >{/if}
+              </h3>{/if}
+            <p class:mt-1={!!(it.heading || it.between)} class="leading-relaxed">
+              {it.text}<SummaryExtras item={it} />
+            </p>
+            {#if editing}<SummaryItemEdit
+                item={it}
+                section={section.key}
+                {lang}
+                save={saveItem}
+                remove={removeItem}
+              />{/if}
+            {#if english?.[it.ref]}<EnglishLine line={english[it.ref]} />{/if}
+            <SummaryExtras
+              part="quote"
+              item={it}
+              {quoteLang}
+              href={hrefOf(it)}
+              linkText={linkTextOf(it)}
+            />
+            {#if marks}<ItemMarks
+                ref={it.ref}
+                mark={marks[it.ref] ?? null}
+                copiedFrom={copied?.[it.ref] ?? null}
+                check={checks?.[it.ref] ?? null}
+                on:mark={(e) => dispatch('mark', e.detail)}
+              />{/if}
+          </li>
+        {/each}
+      </ul>
+      {#if section.key === 'characters' && summary.alsoMentioned.length}
+        <p class="mt-3 text-sm text-c-muted" data-testid="summary-also">
+          Also mentioned: {summary.alsoMentioned.join(lang === 'ja' ? '、' : ', ')}
+        </p>
       {/if}
-    </div>
-  {/if}
+    {/if}
 
-  <p class="mt-6 text-xs text-c-muted" data-testid="summary-made">
-    Generated by {summary.models.join(' + ')} on {made(summary.madeAt)}
-  </p>
+    {#if editing && (section.key !== 'overview' || !flat.length)}
+      {#if adding === section.key}
+        <SummaryItemForm
+          section={section.key}
+          {lang}
+          chapters={chapterChoices}
+          busy={addBusy}
+          error={addError}
+          saveLabel="Add"
+          on:save={(e) => onAdd(e.detail)}
+          on:cancel={() => {
+            adding = null;
+            addError = '';
+          }}
+        />
+      {:else}
+        <button
+          type="button"
+          class="c-btn c-btn-secondary mt-3"
+          data-testid="summary-add-{section.key}"
+          on:click={() => (adding = section.key)}
+          >{section.key === 'overview' ? 'Add an overview' : `Add to ${tabLabel}`}</button
+        >
+      {/if}
+    {/if}
+  </div>
+
+  {#if showMade}
+    <p class="mt-6 text-xs text-c-muted" data-testid="summary-made">
+      Generated by {summary.models.join(' + ')} on {made(summary.madeAt)}
+    </p>
+  {/if}
 </section>
 
 <style>
-  .tabs {
-    overflow-x: auto;
-    scrollbar-width: none;
+  .tab {
+    min-height: var(--c-btn-h);
+    flex-shrink: 0;
   }
-  .tabs::-webkit-scrollbar {
-    display: none;
+  .tabs {
+    display: flex;
+    overflow-x: auto;
   }
   .cards {
     columns: 18rem;
@@ -242,19 +344,18 @@
   }
   .card {
     break-inside: avoid;
+    display: inline-block;
+    width: 100%;
     margin-bottom: 1rem;
     padding: 0.75rem 1rem;
     border-radius: 10px;
-    background: var(--c-surface-2, rgba(127, 127, 127, 0.08));
+    background: var(--c-raised);
+    border: var(--c-border-width) solid var(--c-line);
+  }
+  .rows > li + li {
+    margin-top: 0.75rem;
   }
   .overview {
     white-space: pre-line;
-  }
-  .quote {
-    margin-top: 0.35rem;
-    padding-left: 0.75rem;
-    border-left: 3px solid rgba(127, 127, 127, 0.35);
-    font-size: 0.9em;
-    opacity: 0.9;
   }
 </style>
