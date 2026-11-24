@@ -87,8 +87,13 @@
     timer = null;
     const want = lang;
     if (!want || want === bookLang || !description) return;
-    cached = await getDescriptionTranslation(bookId, want);
-    if (destroyed || loadingFor !== key) return;
+    // The device's copy is read beside the server's answer, never before it: a blocked
+    // IndexedDB upgrade (an older tab holds the database) must not stop the translation.
+    void getDescriptionTranslation(bookId, want)
+      .then((c) => {
+        if (!destroyed && loadingFor === key) cached = c;
+      })
+      .catch(() => undefined);
     try {
       api ??= await summaryApi();
       if (!api || offline) {
