@@ -209,6 +209,12 @@ export interface RunProgress {
   betterOf: Record<string, { calibreId: number; uuid: string; pair: Record<string, unknown> }>;
   /** The compare phase's stage and its own start (the bar's pace). */
   cmp?: { stage: CompareStage; cursor: number; startedAt: number; startDone: number };
+  /**
+   * Since when the run waits for another stage's analysis. The bar shows no time left meanwhile,
+   * and the wait is taken out of the pace when the run goes on (WP20g, 2026-11-24: a two-hour
+   * wait for stage 2 showed "about 82 h left").
+   */
+  waitingSince?: number;
   reviews: number;
   stage4: Stage4Progress | null;
   ai: ArrivalAiProgress | null;
@@ -835,7 +841,15 @@ export class BookArrivals {
     const busy = this.deps.libraryBusy();
     if (busy && p.phase !== 'scan' && p.phase !== 'archives') {
       p.waiting = `Waiting for ${busy}`;
+      p.waitingSince ??= Date.now();
       return 'wait';
+    }
+    if (p.waitingSince !== undefined) {
+      // The wait is not this phase's work: its pace counts from as far on as the wait took.
+      const waited = Date.now() - p.waitingSince;
+      p.phaseStartedAt += waited;
+      if (p.cmp) p.cmp.startedAt += waited;
+      delete p.waitingSince;
     }
     // A stage set Off is not run for the arrivals either: the run waits for it (as the
     // audiobooks' stage 7 waits for its stages).

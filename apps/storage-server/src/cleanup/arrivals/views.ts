@@ -64,7 +64,10 @@ export function runBar(p: RunProgress, now = Date.now()): Bar {
     total: c.total,
     bytesDone: byBytes ? (c.bytesDone ?? 0) : null,
     bytesTotal: byBytes ? c.bytesTotal! : null,
-    secondsLeft: rate > 0 && total > done ? Math.round((total - done) / rate / 1000) : null,
+    secondsLeft:
+      p.waitingSince === undefined && rate > 0 && total > done
+        ? Math.round((total - done) / rate / 1000)
+        : null,
     part: sub
       ? {
           index: COMPARE_STAGES.indexOf(sub.stage),

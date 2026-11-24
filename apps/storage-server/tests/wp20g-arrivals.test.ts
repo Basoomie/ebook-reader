@@ -214,6 +214,20 @@ describe('wp20g: files and formats', () => {
     );
     expect(cmp.part).toEqual({ index: 4, count: 6, stage: 'measure' });
     expect(cmp.secondsLeft).toBe(840);
+    // While the run waits for another stage's analysis, no time left (the pace would count the
+    // wait as work).
+    const waiting = runBar(
+      {
+        phase: 'compare',
+        phaseStartedAt: now - 3_600_000,
+        phaseStartDone: 0,
+        waitingSince: now - 30_000,
+        cmp: { stage: 'measure', cursor: 0, startedAt: now - 60_000, startDone: 100 },
+        counts: { compare: { done: 160, total: 1_000 } },
+      } as never,
+      now,
+    );
+    expect(waiting.secondsLeft).toBeNull();
   });
 
   it('reads a copy’s quality without hashing it (no rule uses the hash; it read every file twice)', async () => {
