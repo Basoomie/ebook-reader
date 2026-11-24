@@ -81,7 +81,7 @@ export interface CompareDeps {
   log?: (m: string) => void;
 }
 
-const BOOKS_PER_COMPARE = 8;
+export const BOOKS_PER_COMPARE = 8;
 const MIN_RUN = 100;
 const MIN_CONTEXT = 500;
 /** The candidate index's thresholds (the whole index and the per-book lookup use the same). */
@@ -405,6 +405,7 @@ export async function libraryQuality(
     customTags,
     addedAt: b.timestamp,
     pacer,
+    cache: deps.cleanup,
   });
 }
 
@@ -423,9 +424,39 @@ export async function qualityOfFile(
     customTags: number;
     addedAt: number | null;
     pacer: SourcePacer;
+    /**
+     * cleanup.db: the file's picture facts are kept once read (calibre_arrival_quality, by path,
+     * size and mtime) and read from there while the file is unchanged. Only what comes from the
+     * file is kept; the rest (characters, tags, the date added) is the caller's, as without it.
+     */
+    cache?: Database.Database;
   },
 ): Promise<Quality | null> {
+  const fromFile = (f: {
+    images: ImageFact[];
+    vertical: boolean | null;
+    coverSide: number | null;
+  }): Quality => ({
+    calibreId: base.calibreId,
+    chars: base.chars,
+    images: f.images,
+    ruby: base.ruby,
+    tocEntries: base.tocEntries,
+    vertical: f.vertical,
+    coverSide: f.coverSide,
+    customTags: base.customTags,
+    addedAt: base.addedAt,
+    sha256: null,
+  });
   try {
+    const before = base.cache ? await statFile(file) : null;
+    if (before && base.cache) {
+      const kept = base.cache
+        .prepare('SELECT size, mtime_ms, facts_json FROM calibre_arrival_quality WHERE file = ?')
+        .get(file) as { size: number; mtime_ms: number; facts_json: string } | undefined;
+      if (kept && kept.size === before.size && kept.mtime_ms === before.mtimeMs)
+        return fromFile(JSON.parse(kept.facts_json));
+    }
     const counted = { bytes: 0 };
     const meta = await readFileMetadata(file, { text: false, cover: true, layout: true, counted });
     const images = await epubImageFacts(
@@ -434,18 +465,23 @@ export async function qualityOfFile(
       counted,
     );
     await base.pacer.take(counted.bytes);
-    return {
-      calibreId: base.calibreId,
-      chars: base.chars,
+    const read = {
       images,
-      ruby: base.ruby,
-      tocEntries: base.tocEntries,
       vertical: meta.layout?.vertical ?? null,
       coverSide: meta.cover ? Math.max(meta.cover.width, meta.cover.height) : null,
-      customTags: base.customTags,
-      addedAt: base.addedAt,
-      sha256: null,
     };
+    if (before && base.cache) {
+      // Kept only when the file did not change while it was read.
+      const after = await statFile(file);
+      if (after && after.size === before.size && after.mtimeMs === before.mtimeMs)
+        base.cache
+          .prepare(
+            `INSERT OR REPLACE INTO calibre_arrival_quality (file, size, mtime_ms, facts_json, made_at)
+             VALUES (?, ?, ?, ?, ?)`,
+          )
+          .run(file, before.size, before.mtimeMs, JSON.stringify(read), Date.now());
+    }
+    return fromFile(read);
   } catch {
     return null;
   }

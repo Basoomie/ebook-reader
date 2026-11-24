@@ -250,6 +250,31 @@ describe('wp20g: files and formats', () => {
     // hash read the whole file again (about twice the file).
     expect(taken).toBeLessThan(fs.statSync(file).size * 1.5);
   });
+
+  it('keeps a file’s picture facts once read and reads them again only when the file changes', async () => {
+    const dir = tmp();
+    const st = initCleanupDatabase(dir);
+    if (!st.ok) throw new Error(st.error);
+    const file = path.join(dir, 'c.epub');
+    fs.writeFileSync(file, makeTextEpub({ title: 'C', chapters: chaptersOf(42) }));
+    let taken = 0;
+    const pacer = { take: async (b: number) => void (taken += b) } as unknown as SourcePacer;
+    const base = { calibreId: -7, chars: 5, ruby: 1, tocEntries: 3, customTags: 0, pacer };
+    const first = await qualityOfFile(file, { ...base, addedAt: 1, cache: st.db });
+    const read = taken;
+    expect(read).toBeGreaterThan(0);
+    // Unchanged: nothing read; the file's facts as before, the caller's own (date added) fresh.
+    const second = await qualityOfFile(file, { ...base, addedAt: 2, cache: st.db });
+    expect(taken).toBe(read);
+    expect(second).toEqual({ ...first, addedAt: 2 });
+    // Changed: read again.
+    fs.writeFileSync(file, makeTextEpub({ title: 'C', chapters: chaptersOf(43) }));
+    const t = new Date(Date.now() + 5_000);
+    fs.utimesSync(file, t, t);
+    await qualityOfFile(file, { ...base, addedAt: 3, cache: st.db });
+    expect(taken).toBeGreaterThan(read);
+    st.db.close();
+  });
 });
 
 describe('wp20g: the catalog walk', () => {
@@ -1049,6 +1074,22 @@ describe('wp20g: the queries at the catalog’s end size (lessons 3-4)', () => {
         [],
       ],
       [`SELECT sha256 FROM calibre_arrival_files WHERE sha256 = ?`, ['0'.repeat(64)]],
+      // The measuring's plan, page by page over every owner still to measure (each stream).
+      [
+        `SELECT id, pair_key, rel_path, size, sha256, facts_json FROM calibre_arrival_files
+           INDEXED BY calibre_arrival_files_outcome
+           WHERE outcome = 'new' AND pair_key IN (?) AND gone_at IS NULL
+             AND json_extract(facts_json, '$.compared') IS NULL
+             AND json_array_length(facts_json, '$.cands') > 0
+             AND json_extract(facts_json, '$.measured') IS NULL AND id > ?
+           ORDER BY id LIMIT 2000`,
+        ['a|books/japanese', 0],
+      ],
+      // The quality check's kept facts (by file).
+      [
+        `SELECT size, mtime_ms, facts_json FROM calibre_arrival_quality WHERE file = ?`,
+        ['/x.epub'],
+      ],
     ];
     // The books added by hand a Preview run only showed (a year of them), for the first On run.
     {
@@ -1075,7 +1116,7 @@ describe('wp20g: the queries at the catalog’s end size (lessons 3-4)', () => {
     }
     for (const [sql, args] of hot) {
       const p = plan(sql, ...args);
-      expect(p, sql).not.toMatch(/SCAN calibre_arrival_files(?! USING)/);
+      expect(p, sql).not.toMatch(/SCAN calibre_arrival_(files|quality)(?! USING)/);
       const t = performance.now();
       db.prepare(sql).all(...args);
       // A list page may count many rows by its index; never seconds (lessons 3).
@@ -1585,6 +1626,10 @@ describe('wp20g: library pairs measured while each book is read', () => {
     // C's text again with N's: a pair with both a library and a new book.
     'C and N.epub': makeTextEpub({ title: 'CN', chapters: [...library.C, ...chaptersOf(25)] }),
     'U.epub': makeTextEpub({ title: 'U', chapters: chaptersOf(26) }),
+    // Three rips of D: each settles against D, so their pairs with each other change nothing.
+    'D rip 1.epub': makeTextEpub({ title: 'D (1)', chapters: library.D }),
+    'D rip 2.epub': makeTextEpub({ title: 'D (2)', chapters: library.D }),
+    'D rip 3.epub': makeTextEpub({ title: 'D (3)', chapters: library.D }),
   };
   const auth = (t: string) => ({ Authorization: `Bearer ${t}` });
 
@@ -1676,25 +1721,22 @@ describe('wp20g: library pairs measured while each book is read', () => {
           outcome: r.outcome,
           book: r.calibre_id === null ? null : names.get(r.calibre_id),
           cands: (fx.cands ?? []).map(nameOf).sort(),
-          verdicts: (fx.verdicts ?? [])
-            .map((v) => ({
-              other: nameOf(v.otherKey),
-              aInB: v.aInB,
-              bInA: v.bInA,
-              cls: v.cls,
-              rule: v.rule,
-              keep: v.keep,
-            }))
-            .sort((x, y) => x.other.localeCompare(y.other)),
+          // The copies it has a verdict against (pairs that change nothing are not measured).
+          measuredWith: (fx.verdicts ?? []).map((v) => nameOf(v.otherKey)).sort(),
         };
       });
-      return { out, early, covered };
+      const quality = (
+        env.cleanupDb.prepare('SELECT COUNT(*) AS n FROM calibre_arrival_quality').get() as {
+          n: number;
+        }
+      ).n;
+      return { out, early, covered, quality };
     } finally {
       await env.close();
     }
   };
 
-  it('gives the same outcomes, pairs and verdicts as measuring every pair afterwards', async () => {
+  it('gives the same outcomes and pairs as measuring every pair afterwards', async () => {
     const withLookup = await preview(new InProcessReader(bundle, IMPORT));
     const plain = new InProcessReader(bundle, IMPORT);
     const without = await preview({
@@ -1707,7 +1749,20 @@ describe('wp20g: library pairs measured while each book is read', () => {
     expect(withLookup.early).toBeGreaterThan(0);
     expect(withLookup.covered).toBeGreaterThan(0);
     expect(without.early).toBe(0);
-    expect(withLookup.out).toEqual(without.out);
+    // The same outcome and candidates for every file. (Which copy a duplicate names is its first
+    // "as good or better" verdict, so it follows the order verdicts come in: read early, a D rip
+    // names the library's D; measured afterwards, another rip. The outcome is the same.)
+    const shape = (o: typeof withLookup.out) =>
+      o.map(({ file, outcome, cands }) => ({ file, outcome, cands }));
+    expect(shape(withLookup.out)).toEqual(shape(without.out));
+    // With the lookup each D rip settles against D while it is read, so the pairs between the
+    // rips are left out; measured afterwards (no lookup), they are measured in one group.
+    const withOf = (o: typeof withLookup.out, f: string) =>
+      o.find((r) => r.file === f)!.measuredWith;
+    expect(withOf(withLookup.out, 'D rip 3.epub')).toEqual(['D']);
+    expect(withOf(without.out, 'D rip 3.epub')).toEqual(['D', 'D rip 1.epub', 'D rip 2.epub']);
+    // Each file's picture facts were kept once read.
+    expect(withLookup.quality).toBeGreaterThan(0);
     // And the outcomes are what stage 3's rules give.
     const o = Object.fromEntries(withLookup.out.map((r) => [r.file, [r.outcome, r.book]]));
     expect(o['A rip.epub']).toEqual(['duplicate', 'A']);
@@ -1715,6 +1770,8 @@ describe('wp20g: library pairs measured while each book is read', () => {
     expect(o['C part.epub']).toEqual(['duplicate', 'C']);
     expect(o['U.epub']).toEqual(['new', null]);
     expect([o['N one.epub'][0], o['N two.epub'][0]].sort()).toEqual(['duplicate', 'new']);
+    for (const r of ['D rip 1.epub', 'D rip 2.epub', 'D rip 3.epub'])
+      expect(o[r]).toEqual(['duplicate', 'D']);
   }, 600_000);
 });
 
