@@ -276,7 +276,7 @@ export function matchImages(
   b: ImageFact[],
   maxDistance: number,
 ): { a: ImageFact; b: ImageFact; distance: number }[] {
-  // The two 32-bit halves as hamming() reads them (parseInt of each 8 hex digits).
+  // The two 32-bit halves of each hash (parseInt of each 8 hex digits, as the distance always read them).
   const halves = (xs: ImageFact[]) => {
     const hi = new Float64Array(xs.length);
     const lo = new Float64Array(xs.length);
