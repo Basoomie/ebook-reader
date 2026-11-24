@@ -19,6 +19,7 @@ import path from 'path';
 import { gunzipSync, gzipSync } from 'zlib';
 import { snapshotFile } from '../calibre/indexer';
 import { getLibrary } from '../calibre/libraries';
+import { currentCalibreEpub } from '../calibre/live-lookup';
 import { resolveInside, statFile } from '../calibre/source-fs';
 import { calibreCoverFacts, readFileMetadata } from './file-metadata';
 import { getSettings, type CleanupSettings } from './settings';
@@ -40,6 +41,7 @@ import {
   type FieldProposal,
   type FileFacts,
   type SpellingLookup,
+  type Stage2Field,
   authorGroup,
   proposeStage2,
   titleGroup,
@@ -200,6 +202,8 @@ export class Stage2Analysis {
   private current: { file: string; mtime: number; snap: Stage2Snapshot } | null = null;
   private spelling: SpellingLookup | null = null;
   private readPacer: Pacer | null = null;
+  /** Fields a later cleanup stage wrote, with the value written (applied_values), per book. */
+  private laterValues: Map<string, Map<string, string>> | null = null;
   private readPacerBps = -1;
 
   constructor(private readonly deps: Stage2Deps) {}
@@ -220,12 +224,92 @@ export class Stage2Analysis {
     const p = emptyStage2Progress(libraryId);
     this.snapshot = null;
     this.spelling = null;
+    this.laterValues = null;
     this.save(p, 'analysing');
     return p;
   }
 
   invalidate(): void {
     this.snapshot = null;
+    this.laterValues = null;
+  }
+
+  /**
+   * The fields of this book whose value Calibre holds now was written by a later cleanup stage
+   * (any stage but stage 2: the online sources, the user's edits; Undo removes the record), so
+   * it is Calibre's own (stage2-rules.ts `owned`). Read once per analysis.
+   */
+  private ownedFields(libraryId: string, book: Stage2Book): Stage2Field[] {
+    if (!this.laterValues) {
+      const m = new Map<string, Map<string, string>>();
+      for (const r of this.deps.cleanup
+        .prepare(
+          `SELECT a.calibre_uuid, a.field, a.value_json FROM applied_values a
+           JOIN batches b ON b.id = a.batch_id
+           WHERE a.library_id = ? AND a.field IN ('title', 'authors', 'cover') AND b.stage <> 2`,
+        )
+        .iterate(libraryId) as Iterable<{
+        calibre_uuid: string;
+        field: string;
+        value_json: string;
+      }>) {
+        let f = m.get(r.calibre_uuid);
+        if (!f) m.set(r.calibre_uuid, (f = new Map()));
+        f.set(r.field, r.value_json);
+      }
+      this.laterValues = m;
+    }
+    const later = this.laterValues.get(book.uuid);
+    if (!later) return [];
+    const out: Stage2Field[] = [];
+    const title = later.get('title');
+    if (title !== undefined && JSON.parse(title) === book.title) out.push('title');
+    const authors = later.get('authors');
+    if (
+      authors !== undefined &&
+      JSON.stringify(JSON.parse(authors)) === JSON.stringify(book.authors)
+    )
+      out.push('authors');
+    // A cover a later stage wrote and Calibre still lists one (a cover you changed since is
+    // yours: user_fields keeps stage 2 off it).
+    if (later.has('cover') && book.hasCover) out.push('cover');
+    return out;
+  }
+
+  /**
+   * Calibre's title and authors before stage 2 first changed them (its earliest applied change's
+   * old value), for the gate; not for a field a later stage owns (that book is scored as
+   * Calibre's own value).
+   */
+  private beforeStage2(
+    libraryId: string,
+    uuid: string,
+    owned: readonly Stage2Field[] | undefined,
+  ): { title?: string; authors?: string[] } | undefined {
+    const first = this.deps.cleanup.prepare(
+      `SELECT old_json FROM proposed_changes INDEXED BY proposed_changes_book
+       WHERE library_id = ? AND calibre_uuid = ? AND stage = 2 AND field = ? AND state = 'applied'
+       ORDER BY id LIMIT 1`,
+    );
+    const out: { title?: string; authors?: string[] } = {};
+    for (const field of ['title', 'authors'] as const) {
+      if (owned?.includes(field)) continue;
+      const r = first.get(libraryId, uuid, field) as { old_json: string | null } | undefined;
+      if (!r?.old_json) continue;
+      const v = JSON.parse(r.old_json) as unknown;
+      if (field === 'title' && typeof v === 'string') out.title = v;
+      if (field === 'authors' && Array.isArray(v))
+        out.authors = v.filter((x) => typeof x === 'string');
+    }
+    return out.title !== undefined || out.authors !== undefined ? out : undefined;
+  }
+
+  /** Calibre's facts of a book for the rules, with the fields later stages own. */
+  private calFacts(libraryId: string, book: Stage2Book, ev: FileEvidence) {
+    return {
+      ...calibreFactsOf(book, ev.cover?.facts ?? null),
+      owned: this.ownedFields(libraryId, book),
+    };
   }
 
   referenceFile(): string | null {
@@ -312,15 +396,29 @@ export class Stage2Analysis {
     book: Stage2Book,
   ): Promise<{ ev: FileEvidence | null; read: boolean }> {
     if (!book.filePath) return { ev: null, read: false };
-    const epub = resolveInside(libDir, book.filePath);
-    const st = await statFile(epub);
-    const coverFile = resolveInside(libDir, `${book.path}/cover.jpg`);
+    // The analysis keeps one snapshot for its whole run, and any Calibre write moves a book's
+    // folder: a book not at the snapshot's path is looked for where it is now (by UUID, in the
+    // live metadata.db), never recorded as missing (seen 2026-11-15: 4,277 books were never
+    // analysed because stage-2 batches moved their folders during the analysis).
+    let filePath = book.filePath;
+    let epub = resolveInside(libDir, filePath);
+    let st = await statFile(epub);
+    if (!st) {
+      const now = await currentCalibreEpub(libDir, book.uuid);
+      if (now && now !== filePath) {
+        filePath = now;
+        epub = resolveInside(libDir, filePath);
+        st = await statFile(epub);
+      }
+    }
+    const folder = filePath === book.filePath ? book.path : path.posix.dirname(filePath);
+    const coverFile = resolveInside(libDir, `${folder}/cover.jpg`);
     const coverSt = book.hasCover ? await statFile(coverFile) : null;
     const old = loadEvidence(this.deps.cleanup, libraryId, book.uuid);
     const sameFile =
       old !== null &&
       st !== null &&
-      old.path === book.filePath &&
+      old.path === filePath &&
       old.size === st.size &&
       old.mtimeMs === st.mtimeMs;
     const sameCover =
@@ -361,7 +459,7 @@ export class Stage2Analysis {
     }
     const ev: FileEvidence = {
       v: EVIDENCE_VERSION,
-      path: book.filePath,
+      path: filePath,
       size: st?.size ?? null,
       mtimeMs: st?.mtimeMs ?? null,
       file,
@@ -435,7 +533,9 @@ export class Stage2Analysis {
     spelling?: SpellingLookup,
   ): FieldProposal[] {
     if (!ev.file) return [];
-    return proposeStage2(calibreFactsOf(book, ev.cover?.facts ?? null), ev.file, {
+    const lib = this.progress()?.libraryId ?? null;
+    const cal = lib ? this.calFacts(lib, book, ev) : calibreFactsOf(book, ev.cover?.facts ?? null);
+    return proposeStage2(cal, ev.file, {
       ...proposalOptions(settings, spelling),
       calibreId: book.calibreId,
     });
@@ -466,14 +566,17 @@ export class Stage2Analysis {
     if (p.proposeCursor === 0) {
       db.transaction(() => {
         // Proposals never queued (or skipped without reaching a batch) are replaced; review
-        // items the user already decided stay as they are.
+        // items the user already decided stay as they are. A new-arrivals run's own proposals
+        // (arrivals:<run>, e.g. a field its gate held) are that run's, never the library's.
         db.prepare(
           `DELETE FROM proposed_changes WHERE stage = 2 AND library_id = ? AND decided_by IS NULL
-             AND state IN ('proposed', 'skipped') AND id NOT IN (SELECT change_id FROM batch_items)`,
+             AND state IN ('proposed', 'skipped') AND id NOT IN (SELECT change_id FROM batch_items)
+             AND analysis_id NOT LIKE 'arrivals:%'`,
         ).run(p.libraryId);
         db.prepare(
           `UPDATE proposed_changes SET state = 'skipped', review_reason = 'Replaced by a new analysis',
-             updated_at = ? WHERE stage = 2 AND library_id = ? AND state = 'proposed' AND decided_by IS NULL`,
+             updated_at = ? WHERE stage = 2 AND library_id = ? AND state = 'proposed' AND decided_by IS NULL
+             AND analysis_id NOT LIKE 'arrivals:%'`,
         ).run(now, p.libraryId);
       })();
       this.spelling = spellingLookup(snap.names);
@@ -629,7 +732,7 @@ export class Stage2Analysis {
       const ev = loadEvidence(db, p.libraryId, book.uuid);
       if (!ev?.file) continue;
       books += 1;
-      const cal = calibreFactsOf(book, ev.cover?.facts ?? null);
+      const cal = this.calFacts(p.libraryId, book, ev);
       const tg = titleGroup(cal, ev.file);
       const ag = authorGroup(cal, ev.file);
       groups.title[tg] = (groups.title[tg] ?? 0) + 1;
@@ -666,12 +769,14 @@ export class Stage2Analysis {
         missing += 1;
         continue;
       }
+      const cal = this.calFacts(p.libraryId, book, ev);
       out.push({
         id: goldId,
         gold: gold[goldId],
-        cal: calibreFactsOf(book, ev.cover?.facts ?? null),
+        cal,
         file: ev.file,
         proposals: this.proposalsFor(book, ev, settings, spelling),
+        before: this.beforeStage2(p.libraryId, book.uuid, cal.owned),
       });
     }
     return { books: out, missing, error: null };
