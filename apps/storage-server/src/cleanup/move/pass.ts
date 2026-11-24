@@ -220,8 +220,11 @@ export class MovePass {
   }
 
   /**
-   * Proposes a move for each decided book that has none yet (a book proposed, queued, moved or
-   * kept before is never proposed again). Returns the counts.
+   * Proposes a move for each decided book that has none yet: a book proposed, queued, moved or
+   * kept before is never proposed again, and neither is one you moved back by Undo (found in the
+   * e2e at NAS scale: the pass, still On, selected the undone books again as soon as the reader's
+   * snapshot showed them back, and moved them again). A book re-added from the quarantine by
+   * that Undo has a new UUID: its move record names it (back_uuid). Returns the counts.
    */
   propose(
     lib: string,
@@ -234,8 +237,11 @@ export class MovePass {
     const targetFolder = settings.move.targetFolder;
     const sourceFolder = getLibrary(this.deps.main, lib)?.folder ?? lib;
     const has = this.db.prepare(
-      `SELECT 1 FROM proposed_changes WHERE library_id = ? AND calibre_uuid = ? AND stage = ${MOVE_STAGE}
-         AND state IN ('proposed', 'queued', 'applied', 'kept') LIMIT 1`,
+      `SELECT 1 FROM proposed_changes WHERE library_id = @lib AND calibre_uuid = @uuid AND stage = ${MOVE_STAGE}
+         AND state IN ('proposed', 'queued', 'applied', 'kept', 'undone')
+       UNION ALL
+       SELECT 1 FROM calibre_moves WHERE from_library_id = @lib AND back_uuid = @uuid AND state = 'undone'
+       LIMIT 1`,
     );
     const insert = this.db.prepare(
       `INSERT INTO proposed_changes (stage, library_id, calibre_id, calibre_uuid, field, old_json,
@@ -246,7 +252,7 @@ export class MovePass {
     this.db.transaction(() => {
       for (const d of decisions) {
         const c = d.candidate;
-        if (has.get(lib, c.uuid)) {
+        if (has.get({ lib, uuid: c.uuid })) {
           out.already++;
           continue;
         }

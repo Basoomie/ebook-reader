@@ -504,6 +504,43 @@ describe('moving books to the manga library', () => {
     await indexManga();
     expect(findCalibreSource(env.db, lib, A.uuid)?.missingAt).toBeNull();
     expect(epubB.length).toBeGreaterThan(0);
+    // The move is still On: the library changed (the book is back), so it selects again, and a
+    // book you moved back is never moved again by itself (found in the NAS-scale e2e).
+    await env.service.batches.checkIngested();
+    for (let i = 0; i < 10; i++) if ((await env.service.move.step()) !== 'more') break;
+    expect(
+      one(
+        `SELECT COUNT(*) AS n FROM proposed_changes WHERE stage = ? AND calibre_uuid = ? AND state = 'proposed'`,
+        MOVE_STAGE,
+        A.uuid,
+      ),
+    ).toEqual({ n: 0 });
+    // Nor when the Undo re-added it from the quarantine (a new UUID): its move record names it.
+    env.cleanupDb
+      .prepare(`UPDATE calibre_moves SET back_uuid = 'readded-uuid' WHERE from_uuid = ?`)
+      .run(A.uuid);
+    const r = env.service.move.propose(lib, mangaId(), 'move:test', [
+      {
+        candidate: {
+          calibreId: 99,
+          uuid: 'readded-uuid',
+          title: 'x',
+          authors: ['y'],
+          lastModified: null,
+          path: 'p',
+          epubPath: 'p/x.epub',
+          epubSize: 1,
+          formats: ['EPUB'],
+          tags: ['マンガ'],
+          matched: ['マンガ'],
+          series: null,
+        },
+        reader: null,
+        hold: null,
+        detail: null,
+      },
+    ]);
+    expect(r).toMatchObject({ auto: 0, already: 1 });
   });
 
   it('a field batch written before the move is not undone on a moved book', async () => {

@@ -2521,6 +2521,9 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
       CREATE INDEX calibre_moves_from ON calibre_moves (from_library_id, from_uuid);
       CREATE INDEX calibre_moves_to ON calibre_moves (to_library_id, to_uuid);
       CREATE INDEX calibre_moves_change ON calibre_moves (change_id);
+      -- A book moved back by Undo is never moved again by itself (also when re-added: a new UUID).
+      CREATE INDEX calibre_moves_back ON calibre_moves (from_library_id, back_uuid)
+        WHERE back_uuid IS NOT NULL;
       -- The 30-book spot check before On (all marked, none wrong: the user, 2026-11-24).
       CREATE TABLE calibre_move_spot (
         library_id    TEXT NOT NULL,
