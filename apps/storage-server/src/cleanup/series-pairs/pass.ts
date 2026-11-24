@@ -88,6 +88,8 @@ export interface SpProgress {
   propose: { books: number; pairs: number; yours: number };
   write: { batches: string[]; waiting: string | null; repointed: number; closed: number };
   error: string | null;
+  /** Each phase's steps: how many, the longest and the total, in ms (WP20 lessons 2-3). */
+  times?: Record<string, { n: number; maxMs: number; totalMs: number }>;
 }
 
 export function emptySpProgress(run = 1, libraryId: string | null = null): SpProgress {
@@ -224,9 +226,19 @@ export class SeriesPairs {
     this.deps.log?.(`Series under two names: ${mode === 'analyse' ? 'Preview' : mode}`);
   }
 
-  /** Starts over from the library as it is now (a new run; written merges stay written). */
+  /**
+   * Starts over from the library as it is now (a new run; written merges stay written). The
+   * earlier run's open merge proposals go (a new run never plans them).
+   */
   again(): void {
     const p = this.state().progress;
+    if (p.libraryId)
+      this.db
+        .prepare(
+          `DELETE FROM proposed_changes WHERE source = 'series-pairs' AND library_id = ? AND analysis_id = ?
+             AND state = 'proposed' AND batch_id IS NULL`,
+        )
+        .run(p.libraryId, seriesPairsAnalysisId(p.run));
     saveProgress(this.db, emptySpProgress(p.run + 1, p.libraryId));
     this.library = null;
     this.facts.clear();
@@ -249,6 +261,8 @@ export class SeriesPairs {
     p.startedAt ??= Date.now();
     p.phaseStartedAt ??= Date.now();
     let r: SpStep = 'idle';
+    const phase = p.phase;
+    const t0 = performance.now();
     try {
       if (p.phase === 'pairs') r = this.pairsStep(p, lib);
       else if (p.phase === 'signals') r = this.signalsStep(p, lib);
@@ -261,6 +275,11 @@ export class SeriesPairs {
       this.deps.log?.(`Series under two names failed: ${p.error}`);
       r = 'idle';
     } finally {
+      const ms = performance.now() - t0;
+      const t = ((p.times ??= {})[phase] ??= { n: 0, maxMs: 0, totalMs: 0 });
+      t.n++;
+      t.maxMs = Math.max(t.maxMs, Math.round(ms));
+      t.totalMs += Math.round(ms);
       saveProgress(this.db, p);
     }
     return r;
