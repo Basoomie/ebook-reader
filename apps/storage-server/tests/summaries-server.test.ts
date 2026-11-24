@@ -8,7 +8,7 @@
  * and per-provider stall limit.
  */
 import Database from 'better-sqlite3';
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import path from 'path';
 import request from 'supertest';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -28,7 +28,14 @@ import { createToken } from '../src/db/tokens';
 import { listUsers } from '../src/db/users';
 import { isCountedChar } from '../src/summaries/book-text';
 import { importSummaries, type ImportEntry } from '../src/summaries/import';
-import { NoTextError, SummaryService } from '../src/summaries/service';
+import {
+  LABELS_REQUESTED,
+  labelPlan,
+  NoTextError,
+  phaseOfStage,
+  SummaryService,
+} from '../src/summaries/service';
+import { itemDigest } from '../src/summaries/store';
 import { OPUS, SOL, SONNET } from '../src/summaries/settings';
 import { modelForTask } from '../src/summaries/specs';
 import { openSummariesDb } from '../src/summaries/summaries-db';
@@ -176,6 +183,7 @@ function answer(input: CallInput): unknown {
         {
           a: '汐見ナギ',
           b: 'カイト',
+          label: '守り手',
           text: 'ナギはカイトを守る。',
           cites: [ids[0].id],
           quote_from: '',
@@ -191,16 +199,21 @@ function answer(input: CallInput): unknown {
       .split('\n\n')
       .slice(1)
       .flatMap((b) => {
-        const m = /^(\S+)(?: HEADING: (.*))?\nTEXT: ([\s\S]*)$/.exec(b);
+        const m = /^(\S+)(?: HEADING: (.*))?(?:\nLABEL: (.*))?\nTEXT: ([\s\S]*)$/.exec(b);
         return m ? [m] : [];
       });
     return {
       items: refs.map((m) => ({
         ref: m[1],
         heading: m[2] ? `EN ${m[2]}` : '',
-        text: `EN ${m[3]}`,
+        label: m[3] ? `EN ${m[3]}` : '',
+        text: `EN ${m[4]}`,
       })),
     };
+  }
+  if (name === 'labels') {
+    const refs = [...u.matchAll(/^(\S+) BETWEEN: (.*)$/gm)].map((m) => m[1]);
+    return { items: refs.map((ref) => ({ ref, label: '仲間' })) };
   }
   throw new Error(`unexpected ${name}`);
 }
@@ -780,6 +793,170 @@ describe('the user’s actions', () => {
     const v = e.svc.store.versions(e.books.solo);
     expect(v.map((x) => `${x.state}/${x.origin}`).sort()).toEqual(['current/user', 'earlier/ai']);
     expect(e.svc.store.currentMeta(e.books.solo)!.origin).toBe('user');
+  });
+});
+
+describe('session 4: relationship labels and the job’s step', () => {
+  async function made(e: Env) {
+    await register(e);
+    await push(e, complete(e.books.solo));
+    await drain(e);
+    return e.svc.store.currentMeta(e.books.solo)!;
+  }
+  const rels = (e: Env, id: number, lang?: string) =>
+    e.svc.store.view(id, lang)!.sections.find((s) => s.key === 'relationships')!.groups[0].items;
+
+  it('the writer’s label is stored, translated, edited by the user and given to added items', async () => {
+    const e = setup();
+    const m = await made(e);
+    const id = e.books.solo;
+    expect(rels(e, m.id)[0]).toMatchObject({ between: ['汐見ナギ', 'カイト'], label: '守り手' });
+    expect(e.stand.calls.find((c) => c.schema === 'summary')).toBeTruthy();
+    await request(e.app)
+      .post(`/api/v1/summaries/${id}/translate`)
+      .set(e.auth)
+      .send({ lang: 'en' })
+      .expect(202);
+    await drain(e);
+    const tr = e.stand.calls.filter((c) => c.schema === 'translation');
+    expect(tr[0].user).toContain('LABEL: 守り手');
+    expect(rels(e, m.id, 'en')[0]).toMatchObject({ label: 'EN 守り手' });
+    // The user changes the label: their edit, translated again.
+    const rel = e.svc.store.items(m.id).find((i) => i.section === 'relationships')!;
+    const put = await request(e.app)
+      .put(`/api/v1/summaries/${id}/items/${rel.id}`)
+      .set(e.auth)
+      .send({ text: rel.text, label: '  幼なじみ  ' })
+      .expect(200);
+    expect(put.body.item).toMatchObject({ label: '幼なじみ', editedByUser: true });
+    await drain(e);
+    expect(rels(e, m.id, 'en')[0]).toMatchObject({ label: 'EN 幼なじみ' });
+    // Added with and without a label.
+    const a = await request(e.app)
+      .post(`/api/v1/summaries/${id}/items`)
+      .set(e.auth)
+      .send({ section: 'relationships', between: ['A', 'B'], label: '敵対', text: '争う。' })
+      .expect(201);
+    expect(a.body.item).toMatchObject({ label: '敵対', addedByUser: true });
+    const b = await request(e.app)
+      .post(`/api/v1/summaries/${id}/items`)
+      .set(e.auth)
+      .send({ section: 'relationships', between: ['C', 'D'], text: '話す。' })
+      .expect(201);
+    expect(b.body.item.label).toBeUndefined();
+    // Write my own keeps labels too.
+    const own = await request(e.app)
+      .put(`/api/v1/summaries/${id}/own`)
+      .set(e.auth)
+      .send({
+        overview: '自分の要約。',
+        sections: [
+          {
+            key: 'relationships',
+            items: [{ between: ['X', 'Y'], label: '師弟', text: '教える。' }],
+          },
+        ],
+      })
+      .expect(200);
+    expect(own.body.summary.sections[1].groups[0].items[0]).toMatchObject({ label: '師弟' });
+  });
+
+  it('translations made before labels stay valid: the digest is unchanged without a label', () => {
+    const old = (x: { heading?: string; between?: [string, string]; text: string }) =>
+      createHash('sha1')
+        .update(
+          [x.heading ?? '', x.between ? x.between.join(String.fromCharCode(2)) : '', x.text].join(
+            String.fromCharCode(1),
+          ),
+        )
+        .digest('hex')
+        .slice(0, 16);
+    const it1 = { between: ['A', 'B'] as [string, string], text: 'こんにちは' };
+    expect(itemDigest(it1)).toBe(old(it1));
+    expect(itemDigest({ heading: 'カイト', text: '少年' })).toBe(
+      old({ heading: 'カイト', text: '少年' }),
+    );
+    expect(itemDigest({ ...it1, label: '師弟' })).not.toBe(old(it1));
+  });
+
+  it('cli summaries label: the plan, then the server labels the old relationships once', async () => {
+    const e = setup();
+    const m = await made(e);
+    const id = e.books.solo;
+    await request(e.app)
+      .post(`/api/v1/summaries/${id}/translate`)
+      .set(e.auth)
+      .send({ lang: 'en' })
+      .expect(202);
+    await drain(e);
+    // A summary written before labels existed.
+    e.sdb.prepare('UPDATE summary_items SET label = NULL WHERE summary_id = ?').run(m.id);
+    e.sdb.prepare('UPDATE summary_translations SET label = NULL WHERE summary_id = ?').run(m.id);
+    // Its translation was made from the item without a label.
+    for (const it of e.svc.store.items(m.id))
+      e.sdb
+        .prepare(
+          'UPDATE summary_translations SET source_digest = ? WHERE summary_id = ? AND ref = ?',
+        )
+        .run(itemDigest(it), m.id, it.ref);
+    expect(e.svc.store.view(m.id, 'en')!.untranslated).toEqual([]);
+    const plan = labelPlan(e.svc.store, { inputPerMTok: 2, outputPerMTok: 10 });
+    expect(plan.summaries).toMatchObject([{ summaryId: m.id, bookId: id, items: 1 }]);
+    expect(plan.usd).toBeGreaterThan(0);
+    expect(plan.usd).toBeLessThan(0.01);
+    // Nothing happens until asked.
+    await e.svc.pass();
+    expect(e.stand.calls.filter((c) => c.schema === 'labels')).toHaveLength(0);
+    e.sdb
+      .prepare('INSERT INTO summary_state (key, value) VALUES (?, ?)')
+      .run(LABELS_REQUESTED, '1');
+    const before = e.stand.calls.filter((c) => c.schema === 'translation').length;
+    for (let i = 0; i < 20; i++) {
+      await e.svc.pass();
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    await drain(e);
+    const labels = e.stand.calls.filter((c) => c.schema === 'labels');
+    expect(labels).toHaveLength(1);
+    expect(labels[0].model).toBe(SONNET);
+    const rel = e.svc.store.items(m.id).find((i) => i.section === 'relationships')!;
+    expect(rel).toMatchObject({ label: '仲間', editedByUser: false });
+    expect(e.svc.store.metaById(m.id)!.editedAt).toBeNull();
+    // Only that item is translated again.
+    const again = e.stand.calls.filter((c) => c.schema === 'translation').slice(before);
+    expect(again).toHaveLength(1);
+    expect([...again[0].user.matchAll(/^(\S+) HEADING/gm)].map((x) => x[1])).toEqual([rel.ref]);
+    expect(rels(e, m.id, 'en')[0]).toMatchObject({ label: 'EN 仲間' });
+    expect(
+      e.sdb.prepare('SELECT value FROM summary_state WHERE key = ?').get(LABELS_REQUESTED),
+    ).toBeUndefined();
+    expect(labelPlan(e.svc.store, null).summaries).toEqual([]);
+  });
+
+  it('the record and the jobs list name the running job’s step', async () => {
+    const e = setup();
+    await register(e);
+    await push(e, complete(e.books.solo));
+    const user = listUsers(e.main)[0].id;
+    const seen: string[] = [];
+    for (let i = 0; i < 400; i++) {
+      await e.svc.pass();
+      await new Promise((r) => setTimeout(r, 5));
+      const d = e.sync.getRecord(user, 'book-summary', e.books.solo)?.data as
+        | { making: string | null; phase: string | null; since: number | null }
+        | undefined;
+      if (d?.phase && seen[seen.length - 1] !== d.phase) seen.push(d.phase);
+      if (d?.making === 'running') expect(d.since).toBeTypeOf('number');
+      if (jobs(e)[0]?.state === 'done') break;
+    }
+    expect(seen).toEqual(['reading', 'checking', 'writing']);
+    const d = e.sync.getRecord(user, 'book-summary', e.books.solo)!.data as { phase: unknown };
+    expect(d.phase).toBeNull();
+    expect(phaseOfStage('sum.support-chapter')).toBe('checking');
+    expect(phaseOfStage('sum.claims')).toBeNull();
+    const list = (await request(e.app).get(`/api/v1/summaries/${e.books.solo}/jobs`).set(e.auth))
+      .body.jobs;
+    expect(list[0]).toMatchObject({ state: 'done', phase: null });
   });
 });
 

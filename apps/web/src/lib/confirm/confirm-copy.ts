@@ -1169,3 +1169,76 @@ export function bookmeterOnCopy(books: number): ConfirmCopy {
     irreversible: false
   };
 }
+
+// ---- Book summaries (session 4): the Summary section on the book page ------------------
+
+/** Replace ▾ › Regenerate with AI, when the book has a summary. */
+export function regenerateSummaryCopy(title: string): ConfirmCopy {
+  return {
+    title: `Make a new summary of ${quoted(title)}?`,
+    message: [
+      'The AI reads the book again and writes a new summary. It takes about 15–20 minutes and is charged to the AI spending of this month.',
+      'The summary you have now is kept under Earlier versions, where you can bring it back.'
+    ],
+    confirmLabel: 'Regenerate',
+    danger: false
+  };
+}
+
+/** Replace ▾ › Write my own: saving it over the book's summary. */
+export function replaceSummaryWithOwnCopy(title: string): ConfirmCopy {
+  return {
+    title: `Replace the summary of ${quoted(title)} with yours?`,
+    message: [
+      'What you wrote becomes the summary.',
+      'The summary you have now is kept under Earlier versions, where you can bring it back.'
+    ],
+    confirmLabel: 'Replace',
+    danger: false
+  };
+}
+
+/** ⋯ › Delete summary. */
+export function deleteSummaryCopy(title: string): ConfirmCopy {
+  return {
+    title: `Delete the summary of ${quoted(title)}?`,
+    message: [
+      'The book no longer shows a summary, on any device.',
+      'It is kept under Earlier versions, where you can bring it back. A summary is not made again on its own: use Add summary.'
+    ],
+    confirmLabel: 'Delete summary'
+  };
+}
+
+/** Earlier versions › Restore, over the current summary. */
+export function restoreSummaryCopy(date: string): ConfirmCopy {
+  return {
+    title: `Bring back the summary of ${date}?`,
+    message: [
+      'It becomes the summary again.',
+      'The summary you have now is kept under Earlier versions.'
+    ],
+    confirmLabel: 'Restore',
+    danger: false
+  };
+}
+
+/** Earlier versions › Delete, one earlier version for good. */
+export function deleteSummaryVersionCopy(date: string): ConfirmCopy {
+  return {
+    title: `Delete the earlier summary of ${date}?`,
+    message: ['Only this earlier version goes; the current summary stays.'],
+    confirmLabel: 'Delete',
+    irreversible: true
+  };
+}
+
+/** Edit › Delete on one item. */
+export function deleteSummaryItemCopy(): ConfirmCopy {
+  return {
+    title: 'Delete this item?',
+    message: ['It goes from the summary on every device, and from its translations.'],
+    confirmLabel: 'Delete',
+    irreversible: true
+  };
+}

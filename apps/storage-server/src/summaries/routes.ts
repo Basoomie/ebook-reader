@@ -97,6 +97,7 @@ export function createSummaryRouter(svc: SummaryService | null): Router {
         text?: unknown;
         heading?: unknown;
         between?: unknown;
+        label?: unknown;
         chapter?: unknown;
         chapterTitle?: unknown;
       };
@@ -107,6 +108,7 @@ export function createSummaryRouter(svc: SummaryService | null): Router {
           text: b.text as string,
           heading: b.heading as string | null | undefined,
           between: b.between as [string, string] | null | undefined,
+          label: b.label as string | null | undefined,
           chapter: b.chapter as number | null | undefined,
           chapterTitle: b.chapterTitle as string | null | undefined,
         }),
@@ -116,12 +118,18 @@ export function createSummaryRouter(svc: SummaryService | null): Router {
   router.put(
     '/summaries/:bookId/items/:itemId',
     h((req, res) => {
-      const b = (req.body ?? {}) as { text?: unknown; heading?: unknown; between?: unknown };
+      const b = (req.body ?? {}) as {
+        text?: unknown;
+        heading?: unknown;
+        between?: unknown;
+        label?: unknown;
+      };
       res.json({
         item: svc.editItem(bookId(req), intParam(req.params.itemId, 'an item id'), {
           text: b.text as string,
           ...(b.heading !== undefined ? { heading: b.heading as string } : {}),
           ...(b.between !== undefined ? { between: b.between as [string, string] } : {}),
+          ...(b.label !== undefined ? { label: b.label as string | null } : {}),
         }),
       });
     }),

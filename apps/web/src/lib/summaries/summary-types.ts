@@ -22,6 +22,8 @@ export interface SummaryItem {
   heading?: string;
   /** Relationships: the two people. */
   between?: [string, string];
+  /** Relationships: one or two words naming it (the diagram's line label; session 4). */
+  label?: string;
   /** The heading with the book's own furigana (Characters and Terms), when the book has it. */
   ruby?: RubyPiece[];
   /** Relationships: each name with the book's furigana, when the book has it. */
@@ -30,6 +32,13 @@ export interface SummaryItem {
   quote: string | null;
   position: number | null;
   showQuote: boolean;
+  /** The server's item id (edits; session 4). */
+  id?: number;
+  /** Chapter by chapter: its chapter's title (the quote link's place). */
+  chapterTitle?: string | null;
+  /** Changed or added by the user: "edited by you" (session 4). */
+  editedByUser?: boolean;
+  addedByUser?: boolean;
 }
 
 export type SummarySectionKey =
@@ -47,6 +56,8 @@ export interface SummarySection {
 
 export interface Summary {
   lang: string;
+  /** The language shown when it is a translation (session 4); else `lang`. */
+  viewLang?: string;
   bookTitle: string;
   models: string[];
   madeAt: number;

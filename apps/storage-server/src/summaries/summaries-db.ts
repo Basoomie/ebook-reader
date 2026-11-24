@@ -406,6 +406,17 @@ export const SUMMARIES_MIGRATIONS: { version: number; name: string; sql: string 
       );
     `,
   },
+  {
+    version: 9,
+    name: 'book summaries session 4: a short label per relationship (for the diagram lines)',
+    sql: `
+      -- One or two words naming a relationship (師弟, 敵対), shown on the diagram's lines; null
+      -- for summaries written before it (labelled once by \`cli summaries label\`) and for
+      -- relationships the user adds without one (the diagram shows a number).
+      ALTER TABLE summary_items ADD COLUMN label TEXT;
+      ALTER TABLE summary_translations ADD COLUMN label TEXT;
+    `,
+  },
 ];
 
 export const SUMMARIES_SCHEMA_VERSION =

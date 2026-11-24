@@ -1094,7 +1094,7 @@ export class CleanupService {
     const runId = bookmeterAnalysisId(p.run);
     const aiBatches = p.phase === 'ai' ? pass.openAiBatches() : [];
     const bar = bookmeterBar(p, now, {
-      ai: this.aiRunner.counts('bookmeter-near', runId),
+      ai: pass.aiCounts(runId),
       aiInBatches: aiBatches.reduce((a, b) => a + b.requests, 0),
       openSearches: pass.openRequests(['q1', 'q2']),
       openQ1: pass.openRequests(['q1']),
