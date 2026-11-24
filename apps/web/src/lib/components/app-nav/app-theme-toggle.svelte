@@ -9,9 +9,13 @@
    * on hover (decided with the user). It sets this device's Library Look to the other one of what
    * is shown, so "Like the book" becomes Light or Dark (Settings can set it back).
    * 夜 (night) while light, 紙 (paper) while dark; "D" does the same when not typing.
+   * Light and Dark are this device's library themes for each (Settings > Library > Theme and
+   * display): the switch goes to the other pick, whatever colours the picks have.
    * Hidden with E-ink on: E-ink is black on white whatever the look.
    */
-  $: dark = isCatalogueDark($libraryLook$, $theme$, $customThemes$);
+  $: dark =
+    $libraryLook$ === 'dark' ||
+    ($libraryLook$ !== 'light' && isCatalogueDark('auto', $theme$, $customThemes$));
   $: label = dark ? 'Switch to light' : 'Switch to dark';
 
   function toggle() {

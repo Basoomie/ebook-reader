@@ -1,5 +1,6 @@
 /**
- * Library sorts (WP19a): date added, title, author, length and publication date, each
+ * Library sorts (WP19a): date added, title, author, length and publication date (and the
+ * Natively level, migration 32), each
  * ascending or descending, keyset-paginated like the date-added list.
  *
  * Books without a value (no character count yet, no publication date, an upload without
@@ -14,7 +15,7 @@
  */
 import { decodeCursor, encodeCursor, InvalidCursorError } from './queries';
 
-export type BookSortKey = 'added' | 'title' | 'author' | 'chars' | 'published';
+export type BookSortKey = 'added' | 'title' | 'author' | 'chars' | 'published' | 'level';
 export type SortDir = 'asc' | 'desc';
 
 export interface BookSort {
@@ -22,7 +23,14 @@ export interface BookSort {
   dir: SortDir;
 }
 
-export const BOOK_SORT_KEYS: BookSortKey[] = ['added', 'title', 'author', 'chars', 'published'];
+export const BOOK_SORT_KEYS: BookSortKey[] = [
+  'added',
+  'title',
+  'author',
+  'chars',
+  'published',
+  'level',
+];
 export const SORT_DIRS: SortDir[] = ['asc', 'desc'];
 
 /** The default list order: newest added first. Its cursor keeps the pre-WP19 shape. */
@@ -48,6 +56,7 @@ export interface SortRow {
   char_count: number | null;
   published_at: number | null;
   added_at: number;
+  natively_level: number | null;
 }
 
 const COLUMNS: Record<BookSortKey, SortColumn> = {
@@ -81,6 +90,15 @@ const COLUMNS: Record<BookSortKey, SortColumn> = {
       desc: `IFNULL(b.published_at, -${HIGH_NUMBER})`,
     },
     value: (r, dir) => r.published_at ?? (dir === 'asc' ? HIGH_NUMBER : -HIGH_NUMBER),
+  },
+  // The Natively level (migration 32's two indexes): books without one last.
+  level: {
+    type: 'number',
+    sql: {
+      asc: `IFNULL(b.natively_level, ${HIGH_NUMBER})`,
+      desc: 'IFNULL(b.natively_level, -1)',
+    },
+    value: (r, dir) => r.natively_level ?? (dir === 'asc' ? HIGH_NUMBER : -1),
   },
 };
 
@@ -130,7 +148,8 @@ export function parseBookSort(key: unknown, dir: unknown): BookSort | null | und
   if (key === undefined && dir === undefined) return undefined;
   const k = key === undefined ? DEFAULT_BOOK_SORT.key : key;
   if (!BOOK_SORT_KEYS.includes(k as BookSortKey)) return null;
-  const d = dir === undefined ? (k === 'title' || k === 'author' ? 'asc' : 'desc') : dir;
+  const d =
+    dir === undefined ? (k === 'title' || k === 'author' || k === 'level' ? 'asc' : 'desc') : dir;
   if (!SORT_DIRS.includes(d as SortDir)) return null;
   return { key: k as BookSortKey, dir: d as SortDir };
 }

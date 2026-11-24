@@ -37,6 +37,8 @@
   import BookDescription from '$lib/components/summaries/book-description.svelte';
   import BookDownloadMenu from '$lib/components/library/book-download-menu.svelte';
   import BookLinks from '$lib/components/library/book-links.svelte';
+  import NativelyLevelTag from '$lib/components/library/natively-level.svelte';
+  import { hasDirectNatively, withNativelyLevel } from '$lib/library/natively-level';
   import BookIllustrations from '$lib/components/library/book-illustrations.svelte';
   import BookStateDialog from '$lib/components/library/book-state-dialog.svelte';
   import CoverImage from '$lib/components/library/cover-image.svelte';
@@ -416,6 +418,27 @@
     void loadHighlights();
     void loadOnDevice();
     void loadRelated(book, controller.signal);
+    void refreshNativelyLevel(book, controller.signal);
+  }
+
+  /**
+   * The Natively level (2026-11-24): the saved one shows at once; when it is older than the
+   * server's setting the server reads it again and the page updates in place. Offline the saved
+   * one stays.
+   */
+  async function refreshNativelyLevel(target: CatalogBookDetail, signal: AbortSignal) {
+    if (offline || !api || !hasDirectNatively(target)) return;
+    try {
+      const answer = await api.nativelyLevel(target.id, true, { signal, timeoutSeconds: 40 });
+      if (signal.aborted || !book || book.id !== target.id) return;
+      const next = withNativelyLevel(book, answer);
+      if (next !== book) {
+        book = next;
+        void saveOfflineDetail(next);
+      }
+    } catch {
+      // An older server, or Natively unreachable: the saved level stays.
+    }
   }
 
   async function loadOnDevice() {
@@ -662,12 +685,20 @@
       </div>
 
       <div class="c-dmain flex min-w-0 flex-col gap-3">
-        {#if seriesLabel}
-          <a
-            class="c-jp-label c-link inline-flex min-h-[2.75rem] items-center self-start tracking-[0.2em]"
-            href={libraryHref('series', book.series?.name ?? '')}
-            data-testid="details-series-link">{seriesLabel}</a
-          >
+        {#if seriesLabel || shown?.nativelyLevel}
+          <!-- The series line, and the Natively level's tag after it (placement C, 2026-11-24). -->
+          <div class="flex min-h-[2.75rem] flex-wrap items-center gap-x-3 gap-y-1 self-start">
+            {#if seriesLabel}
+              <a
+                class="c-jp-label c-link inline-flex min-h-[2.75rem] items-center tracking-[0.2em]"
+                href={libraryHref('series', book.series?.name ?? '')}
+                data-testid="details-series-link">{seriesLabel}</a
+              >
+            {/if}
+            {#if shown?.nativelyLevel}
+              <NativelyLevelTag level={shown.nativelyLevel} testid="details-natively-level" />
+            {/if}
+          </div>
         {/if}
         <h1
           class="break-words font-mincho text-3xl font-bold leading-snug sm:text-[2.4rem]"
@@ -841,7 +872,7 @@
           </div>
         </div>
         {#if linksAt === 'buttons'}
-          <BookLinks {book} variant="buttons" />
+          <BookLinks {book} variant="buttons" nativelyLevel={shown?.nativelyLevel} />
         {/if}
       </div>
 
@@ -917,13 +948,13 @@
           {/if}
         </section>
         {#if linksAt === 'panel'}
-          <BookLinks {book} variant="panel" />
+          <BookLinks {book} variant="panel" nativelyLevel={shown?.nativelyLevel} />
         {/if}
       </div>
     </div>
 
     {#if linksAt === 'section'}
-      <BookLinks {book} variant="section" />
+      <BookLinks {book} variant="section" nativelyLevel={shown?.nativelyLevel} />
     {/if}
 
     {#if illustrationsAt === 'description'}

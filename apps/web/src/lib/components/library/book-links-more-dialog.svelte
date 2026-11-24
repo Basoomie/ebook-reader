@@ -14,8 +14,12 @@
   import { createEventDispatcher } from 'svelte';
   import type { BookLink } from '$lib/book-links/links';
   import BookLinkMark from './book-link-mark.svelte';
+  import NativelyLevelTag from './natively-level.svelte';
+  import type { NativelyLevel } from '$lib/library/types';
 
   export let links: BookLink[];
+  /** The book's Natively level, inside its direct Natively link (2026-11-24). */
+  export let nativelyLevel: NativelyLevel | null = null;
   /** Set by dialogManager.open (no answer). */
   export let resolver: (value: undefined) => void = () => {};
 
@@ -44,7 +48,16 @@
           data-kind={link.kind}
           on:click={close}
         >
-          <span>{link.name}</span>
+          <span
+            >{link.name}{#if nativelyLevel && link.id === 'natively' && link.kind === 'direct'}<span
+                class="ml-2 text-c-label"
+                ><NativelyLevelTag
+                  level={nativelyLevel}
+                  variant="inline"
+                  testid="book-link-natively-level"
+                /></span
+              >{/if}</span
+          >
           <BookLinkMark kind={link.kind} />
         </a>
       </li>

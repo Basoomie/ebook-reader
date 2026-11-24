@@ -6,6 +6,8 @@
  * - author/series/tag and plain text: the matching author, series and tag ids are
  *   computed once per term from their small tables (IN (SELECT ...)), never per book.
  * - chars: books.char_count; books without a count never match (also when negated).
+ * - level: books.natively_level (the Natively level, migration 32); books without one never
+ *   match (also when negated).
  * - status/favorite: the user's own book-state records (sync_records primary key
  *   user_id, kind, id = book id). No record = unread / not a favorite.
  * - /regex/: ttu_regexp() (regexp.ts). Queries that use it run in the search worker.
@@ -184,15 +186,15 @@ function deviceAudioSql(userId: string, deviceId: string | null): SqlCondition {
   };
 }
 
-function charsSql(min: number | null, max: number | null): SqlCondition {
-  const parts = ['b.char_count IS NOT NULL'];
+function charsSql(min: number | null, max: number | null, column = 'b.char_count'): SqlCondition {
+  const parts = [`${column} IS NOT NULL`];
   const params: unknown[] = [];
   if (min !== null) {
-    parts.push('b.char_count >= ?');
+    parts.push(`${column} >= ?`);
     params.push(min);
   }
   if (max !== null) {
-    parts.push('b.char_count <= ?');
+    parts.push(`${column} <= ?`);
     params.push(max);
   }
   return { sql: `(${parts.join(' AND ')})`, params };
@@ -214,6 +216,13 @@ export function termSql(
     // A book without a count is never included, negated or not.
     return term.negated
       ? { sql: `(b.char_count IS NOT NULL AND NOT ${range.sql})`, params: range.params }
+      : range;
+  }
+  if (term.type === 'level') {
+    const range = charsSql(term.min, term.max, 'b.natively_level');
+    // A book without a level is never included, negated or not.
+    return term.negated
+      ? { sql: `(b.natively_level IS NOT NULL AND NOT ${range.sql})`, params: range.params }
       : range;
   }
   let cond: SqlCondition;

@@ -20,7 +20,12 @@
     theme$
   } from '$lib/data/store';
   import { startAppearanceEffects } from '$lib/data/appearance-effects';
-  import { libraryLook$ } from '$lib/library/settings';
+  import {
+    libraryDarkTheme$,
+    libraryLightTheme$,
+    libraryLook$,
+    libraryThemes$
+  } from '$lib/library/settings';
   import { isMobile, isMobile$ } from '$lib/functions/utils';
   import { startKeyboardInset } from '$lib/functions/on-screen-keyboard';
   import { MetaTags } from 'svelte-meta-tags';
@@ -33,6 +38,21 @@
 
   $: if (browser) {
     isMobile$.next(isMobile(window));
+  }
+
+  /** A library theme of your own: its colours in one style element at the end of head. */
+  function setLibraryCss(css: string | null) {
+    let el = document.getElementById('library-theme');
+    if (css === null) {
+      el?.remove();
+      return;
+    }
+    if (!el) {
+      el = document.createElement('style');
+      el.id = 'library-theme';
+      document.head.appendChild(el);
+    }
+    el.textContent = css;
   }
 
   // WP10d: follow the system light/dark setting, theme fonts, E-ink mode. App-wide.
@@ -49,11 +69,15 @@
           fontFamilyGroupOne: fontFamilyGroupOne$,
           fontFamilyGroupTwo: fontFamilyGroupTwo$,
           fontSize: fontSize$,
-          libraryLook: libraryLook$
+          libraryLook: libraryLook$,
+          libraryThemes: libraryThemes$,
+          libraryLightTheme: libraryLightTheme$,
+          libraryDarkTheme: libraryDarkTheme$
         },
         window.matchMedia?.('(prefers-color-scheme: dark)'),
         document.documentElement,
-        (message) => console.warn(message)
+        (message) => console.warn(message),
+        setLibraryCss
       );
     } catch (error) {
       console.warn('Appearance: not started', error);

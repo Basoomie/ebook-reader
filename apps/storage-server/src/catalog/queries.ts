@@ -53,6 +53,11 @@ export interface BookSummary {
   tags: string[];
   /** Calibre's #illustrator names in Calibre's order; [] for uploads and books without one. */
   illustrators: string[];
+  /**
+   * The Natively level last read from the book's Natively page (migration 32; a direct Natively
+   * link only); `temporary` is Natively's "Level 25??". Null without one.
+   */
+  nativelyLevel: { level: number; temporary: boolean } | null;
   publisher: string | null;
   publishedAt: number | null;
   addedAt: number;
@@ -118,6 +123,8 @@ interface BookRow {
   published_at: number | null;
   added_at: number;
   char_count: number | null;
+  natively_level: number | null;
+  natively_temporary: number | null;
   description: string | null;
   missing: number;
   has_cover: number;
@@ -144,6 +151,7 @@ export const SQL_CATALOG_SOURCE = "s.kind IN ('calibre', 'upload')";
 const BOOK_SELECT = `
   SELECT b.id, b.library_id, b.title, b.title_sort, b.author_sort, se.name AS series_name,
          b.series_index, b.publisher, b.published_at, b.added_at, b.char_count, b.description,
+         b.natively_level, b.natively_temporary,
          (s.missing_at IS NOT NULL) AS missing, s.has_cover, s.kind AS source_kind,
          s.calibre_path, s.content_hash, s.calibre_last_modified, c.status AS count_status, c.spec AS count_spec,
          (c.source_key = ${SQL_COUNT_SOURCE_KEY}) AS count_key_current
@@ -235,6 +243,10 @@ function attachLists(
     series: r.series_name ? { name: r.series_name, index: r.series_index } : null,
     tags: tags.get(r.id) ?? [],
     illustrators: illustrators.get(r.id) ?? [],
+    nativelyLevel:
+      r.natively_level === null || r.natively_level === undefined
+        ? null
+        : { level: r.natively_level, temporary: r.natively_temporary === 1 },
     publisher: r.publisher,
     publishedAt: r.published_at,
     addedAt: r.added_at,

@@ -11,6 +11,7 @@ import type { AiCore } from './ai/core';
 import type { NotificationService } from './notifications/service';
 import type { SummaryService } from './summaries/service';
 import type { SummaryTestService } from './summaries/test-service';
+import type { NativelyLevels } from './natively/levels';
 
 export interface AppOptions {
   config: ServerConfig;
@@ -35,6 +36,8 @@ export interface AppOptions {
   summariesTest?: SummaryTestService | null;
   /** Book summaries (session 3). Without it their routes answer 503. */
   summaries?: SummaryService | null;
+  /** The Natively level (2026-11-24). */
+  natively?: NativelyLevels | null;
 }
 
 export function createApp({
@@ -51,6 +54,7 @@ export function createApp({
   ai,
   summariesTest,
   summaries,
+  natively,
 }: AppOptions): Express {
   const app = express();
 
@@ -103,6 +107,7 @@ export function createApp({
       ai,
       summariesTest,
       summaries,
+      natively,
     }),
   );
 

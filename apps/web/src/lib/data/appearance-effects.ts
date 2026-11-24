@@ -6,6 +6,7 @@
 
 import { distinctUntilChanged, skip, type Subscription } from 'rxjs';
 import { isCatalogueDark } from './catalogue-look';
+import { resolveLibraryTheme, themeCss } from '$lib/library-theme/library-themes';
 import type { CustomTheme } from './theme-option';
 
 /** The parts of a settings subject this module uses (a BehaviorSubject fits). */
@@ -28,6 +29,10 @@ export interface AppearanceSettings {
   fontSize: SettingSubject<number>;
   /** WP19b: "Library Look" (catalogue-look.ts); absent = no catalogue light/dark class. */
   libraryLook?: SettingSubject<string>;
+  /** Library themes (2026-11-24): your own themes and this device's light and dark picks. */
+  libraryThemes?: SettingSubject<Record<string, unknown>>;
+  libraryLightTheme?: SettingSubject<string>;
+  libraryDarkTheme?: SettingSubject<string>;
 }
 
 /** The part of `MediaQueryList` used here. */
@@ -64,7 +69,9 @@ export function startAppearanceEffects(
   s: AppearanceSettings,
   darkQuery: DarkQuery | undefined,
   root: { classList: DOMTokenList } | undefined,
-  warn: (message: string) => void = () => {}
+  warn: (message: string) => void = () => {},
+  /** Puts a library theme of your own on the page (its CSS), or takes it off (null). */
+  setLibraryCss: (css: string | null) => void = () => {}
 ) {
   const subscriptions: Subscription[] = [];
   let applying = false;
@@ -186,19 +193,35 @@ export function startAppearanceEffects(
     subscriptions.push(s.theme.subscribe(applyReaderDark));
     subscriptions.push(s.customThemes.subscribe(applyReaderDark));
 
-    // WP19b: the catalogue pages' dark look, from "Library Look" or the reader theme.
+    // WP19b: the catalogue pages' dark look, from "Library Look" or the reader theme; since
+    // 2026-11-24 the look is this device's light or dark library theme. A theme of your own
+    // adds its colours (html.library-theme); its kind still sets catalogue-dark.
     const look = s.libraryLook;
     if (look) {
+      let lastCss: string | null = null;
       const applyLook = () =>
-        guard('library look', () =>
-          root.classList.toggle(
-            'catalogue-dark',
-            isCatalogueDark(look.getValue(), s.theme.getValue(), s.customThemes.getValue())
-          )
-        );
+        guard('library look', () => {
+          const resolved = resolveLibraryTheme(
+            look.getValue(),
+            isCatalogueDark('auto', s.theme.getValue(), s.customThemes.getValue()),
+            s.libraryLightTheme?.getValue() ?? '',
+            s.libraryDarkTheme?.getValue() ?? '',
+            s.libraryThemes?.getValue() ?? {}
+          );
+          root.classList.toggle('catalogue-dark', resolved.dark);
+          root.classList.toggle('library-theme', !resolved.builtIn);
+          const css = resolved.builtIn ? null : themeCss(resolved.theme);
+          if (css !== lastCss) {
+            lastCss = css;
+            setLibraryCss(css);
+          }
+        });
       subscriptions.push(look.subscribe(applyLook));
       subscriptions.push(s.theme.subscribe(applyLook));
       subscriptions.push(s.customThemes.subscribe(applyLook));
+      for (const subject of [s.libraryThemes, s.libraryLightTheme, s.libraryDarkTheme]) {
+        if (subject) subscriptions.push((subject as SettingSubject<unknown>).subscribe(applyLook));
+      }
     }
   }
 

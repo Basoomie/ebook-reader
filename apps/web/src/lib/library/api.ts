@@ -93,6 +93,30 @@ export interface RequestOptions {
   timeoutSeconds?: number;
 }
 
+/** GET /natively/level/:bookId (the Natively level, 2026-11-24). */
+export interface NativelyLevelAnswer {
+  /** Null when the book has no direct Natively link. */
+  nativelyId: string | null;
+  level: number | null;
+  temporary: boolean;
+  state: 'ok' | 'none' | 'gone' | 'error' | null;
+  checkedAt: number | null;
+}
+
+export interface NativelySettings {
+  maxAgeDays: number;
+  requestSeconds: number;
+  maxBackoffMinutes: number;
+}
+
+export interface NativelyProgressAnswer {
+  pass: { running: boolean; total: number; done: number; left: number; secondsLeft: number };
+  saved: number;
+  waitingUntil: number | null;
+  lastError: string | null;
+  settings: NativelySettings;
+}
+
 export interface DownloadResult {
   blob: Blob;
   etag: string | null;
@@ -652,6 +676,31 @@ export class LibraryApi {
 
   async book(id: string, options?: RequestOptions): Promise<CatalogBookDetail> {
     return (await this.get(`/books/${encodeURIComponent(id)}`, options)).json();
+  }
+
+  /**
+   * The book's Natively level (2026-11-24). `fresh`: the server reads it again first when the
+   * saved one is older than its setting (it waits up to 20 s for Natively).
+   */
+  async nativelyLevel(
+    bookId: string,
+    fresh: boolean,
+    options?: RequestOptions
+  ): Promise<NativelyLevelAnswer> {
+    const qs = fresh ? '?fresh=1' : '';
+    return (await this.get(`/natively/level/${encodeURIComponent(bookId)}${qs}`, options)).json();
+  }
+
+  /** The first pass over the linked books, and the settings (Settings › Library). */
+  async nativelyProgress(options?: RequestOptions): Promise<NativelyProgressAnswer> {
+    return (await this.get('/natively/progress', options)).json();
+  }
+
+  async saveNativelySettings(
+    patch: Partial<NativelySettings>,
+    options?: RequestOptions
+  ): Promise<{ settings: NativelySettings }> {
+    return (await this.sendJson('PUT', '/natively/settings', patch, options)).json();
   }
 
   /**

@@ -5,7 +5,9 @@
    * and an optional info line (author links, series number, characters, progress).
    * Tapping the cover or title opens the book; a hidden cover is revealed by the first
    * tap. The ⋮ in the cover's corner (on hover; always on touch screens and E-ink) has
-   * Continue reading / Read, Book status… and Add to collection….
+   * Continue reading / Read, Book status… and Add to collection…. The cover's bottom left
+   * shows "Uploaded" or the Natively level ("Level 25??" when temporary), the bottom right
+   * "on this device".
    */
   import type { CatalogBook } from '$lib/library/types';
   import { formatBookCharCount } from '$lib/library/char-counts';
@@ -23,6 +25,7 @@
   import Fa from 'svelte-fa';
   import CoverImage from './cover-image.svelte';
   import LibraryBookMenu from './library-book-menu.svelte';
+  import NativelyLevelTag from './natively-level.svelte';
 
   export let book: CatalogBook;
   export let thumbnailUrl: string;
@@ -111,6 +114,18 @@
         >
           Uploaded
         </span>
+      {:else if book.nativelyLevel}
+        <!-- The Natively level (2026-11-24), bottom left as "on this device" is bottom right. -->
+        <span
+          class="c-badge absolute bottom-2 left-2 px-2 text-[0.7rem]"
+          class:hidden={selectMode}
+          data-testid="card-natively-level"
+          ><NativelyLevelTag
+            level={book.nativelyLevel}
+            variant="inline"
+            testid="card-level"
+          /></span
+        >
       {/if}
       {#if onDevice}
         <!-- A download mark, not a tick: a tick read as "finished". -->

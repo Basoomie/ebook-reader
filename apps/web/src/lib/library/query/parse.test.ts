@@ -215,6 +215,30 @@ describe('parseQuery: chars', () => {
   });
 });
 
+describe('parseQuery: level (the Natively level)', () => {
+  const bounds = (q: string) => {
+    const [t] = terms(q);
+    return t.type === 'level' ? [t.min, t.max, t.negated] : null;
+  };
+
+  it('reads comparisons and ranges like chars:', () => {
+    expect(bounds('level:<25')).toEqual([null, 24, false]);
+    expect(bounds('level:<=25')).toEqual([null, 25, false]);
+    expect(bounds('level:>30')).toEqual([31, null, false]);
+    expect(bounds('level:>=30')).toEqual([30, null, false]);
+    expect(bounds('level:29')).toEqual([29, 29, false]);
+    expect(bounds('Level：20-29')).toEqual([20, 29, false]);
+    expect(bounds('-level:20-29')).toEqual([20, 29, true]);
+  });
+
+  it('takes plain whole numbers only', () => {
+    for (const q of ['level:', 'level:k', 'level:2k', 'level:1,000', 'level:abc', 'level:1-2-3']) {
+      expect(error(q).message, q).toMatch(/level/);
+    }
+    expect(error('level:30-20').message).toMatch(/smaller one/);
+  });
+});
+
 describe('parseQuery: status and favorite', () => {
   it('reads one or more statuses, ignoring case and repeats', () => {
     expect(shapes('status:Reading,completed,reading')).toEqual([

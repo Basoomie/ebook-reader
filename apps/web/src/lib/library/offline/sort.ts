@@ -12,7 +12,7 @@ import type { CatalogBook } from '$lib/library/types';
  * offline Library:
  *
  * - books: date added, title (Calibre's title sort, else the title), author (author sort),
- *   length, publication date; ties by id in the same direction; books without a value
+ *   length, publication date, Natively level; ties by id in the same direction; books without a value
  *   always last (a high or low stand-in per direction, like the server's SQL);
  * - strings compare by code point (SQLite's BINARY collation on UTF-8);
  * - inside a series without a sort: series index (none = -1), then date added, then id;
@@ -54,6 +54,8 @@ function sortValue(book: CatalogBook, key: BookSortKey, dir: SortDir): number | 
       return asc ? book.charCount || HIGH_NUMBER : (book.charCount ?? -1);
     case 'published':
       return book.publishedAt ?? (asc ? HIGH_NUMBER : -HIGH_NUMBER);
+    case 'level':
+      return book.nativelyLevel?.level ?? (asc ? HIGH_NUMBER : -1);
   }
 }
 

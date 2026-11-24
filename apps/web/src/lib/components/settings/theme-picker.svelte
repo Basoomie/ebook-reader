@@ -14,7 +14,8 @@
   import { availableThemes } from '$lib/data/theme-option';
   import { createEventDispatcher } from 'svelte';
 
-  export let options: { id: string; style?: Record<string, string> }[] = [];
+  /** `band`: a strip across the top of the swatch (a library theme's header colour). */
+  export let options: { id: string; style?: Record<string, string>; band?: string }[] = [];
   export let value: string;
   export let label = '';
   export let labelledby = '';
@@ -23,8 +24,17 @@
   /** Show Edit and Delete for a picked theme of your own. */
   export let allowEdit = true;
   export let testid = '';
+  /** Whether a theme is your own (Edit, Delete); the reader's built-ins by default. */
+  export let isOwn: (id: string) => boolean = (id) => !availableThemes.has(id);
+  /** A theme's name on screen; the reader's by default. */
+  export let nameOf: (id: string) => string = readerThemeName;
 
-  const dispatch = createEventDispatcher<{ new: void; edit: string; delete: string }>();
+  const dispatch = createEventDispatcher<{
+    new: void;
+    edit: string;
+    delete: string;
+    pick: string;
+  }>();
 
   const BUILT_IN_NAMES: Record<string, string> = {
     'light-theme': 'Light',
@@ -35,7 +45,7 @@
     'black-theme': 'Black'
   };
 
-  function themeName(id: string): string {
+  function readerThemeName(id: string): string {
     return BUILT_IN_NAMES[id] ?? id.replace(/-theme$/, '').replace(/^./, (c) => c.toUpperCase());
   }
 
@@ -47,7 +57,7 @@
   }
 
   $: picked = options.find((o) => o.id === value);
-  $: pickedIsOwn = !!picked && !availableThemes.has(picked.id);
+  $: pickedIsOwn = !!picked && isOwn(picked.id);
 </script>
 
 <div data-testid={testid || undefined}>
@@ -63,14 +73,20 @@
         role="radio"
         class="s-theme"
         aria-checked={option.id === value}
-        title={themeName(option.id)}
-        on:click={() => (value = option.id)}
+        title={nameOf(option.id)}
+        on:click={() => {
+          value = option.id;
+          dispatch('pick', option.id);
+        }}
       >
         <span class="s-sample" style={swatchStyle(option.style)}>
+          {#if option.band}
+            <span class="s-band" style="background-color: {option.band}" aria-hidden="true" />
+          {/if}
           ぁあ
           <span class="s-tick" aria-hidden="true">✓</span>
         </span>
-        <span class="s-name">{themeName(option.id)}</span>
+        <span class="s-name">{nameOf(option.id)}</span>
       </button>
     {/each}
     {#if allowNew}
@@ -88,7 +104,7 @@
   {#if allowEdit && picked && pickedIsOwn}
     <div class="s-theme-actions">
       <span class="mr-auto min-w-0 break-words text-sm">
-        <strong>{themeName(picked.id)}</strong> is your own theme.
+        <strong>{nameOf(picked.id)}</strong> is your own theme.
       </span>
       <button
         type="button"
@@ -134,6 +150,13 @@
     border: var(--c-border-width) solid var(--c-line-strong);
     font-family: 'Shippori Mincho', 'Noto Serif JP', serif;
     font-size: 1.25rem;
+  }
+
+  .s-band {
+    position: absolute;
+    inset: 0 0 auto 0;
+    height: 0.75rem;
+    border-radius: 0.4rem 0.4rem 0 0;
   }
 
   .s-name {

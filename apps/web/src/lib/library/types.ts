@@ -61,6 +61,17 @@ export interface CatalogBook {
    * before ttsu.db 30 and from offline copies stored before it.
    */
   illustrators?: string[];
+  /**
+   * The Natively level last read from the book's Natively page (a book with a direct Natively
+   * link only); `temporary` is Natively's "Level 25??". Null without one; missing from servers
+   * before ttsu.db 32 and from offline copies stored before it.
+   */
+  nativelyLevel?: NativelyLevel | null;
+}
+
+export interface NativelyLevel {
+  level: number;
+  temporary: boolean;
 }
 
 /** Whether the server takes uploads (WP7b), and their size limit in bytes. */

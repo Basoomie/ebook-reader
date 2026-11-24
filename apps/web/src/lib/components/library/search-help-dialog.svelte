@@ -16,6 +16,7 @@
     ['tag:SF tag:BL', 'Books with both tags'],
     ['tag:SF,BL', 'Books with either tag'],
     ['chars:<150000', 'Fewer than 150,000 characters (also >, <=, >=, 50k-150k)'],
+    ['level:20-29', 'Natively level 20 to 29 (also <, >, <=, >=, level:25)'],
     ['status:reading', 'Unread, reading, completed or dropped (commas for either)'],
     ['favorite:yes', 'Your favorites'],
     ['-status:completed', 'A minus leaves out what follows'],
@@ -40,7 +41,8 @@
   </table>
   <p class="text-sm text-c-muted">
     Mix them freely: <span class="font-mono">tag:SF chars:&lt;100k -status:completed</span>. Books
-    not counted yet are left out of <span class="font-mono">chars:</span> searches.
+    not counted yet are left out of <span class="font-mono">chars:</span> searches, and books
+    without a Natively level out of <span class="font-mono">level:</span> searches.
   </p>
   <p class="mt-2 text-sm text-c-muted" data-testid="search-help-width">
     Full-width and half-width letters and digits match alike, and case doesn't matter:

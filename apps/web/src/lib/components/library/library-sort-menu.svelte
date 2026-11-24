@@ -33,6 +33,7 @@
     author: '著者',
     chars: '文字数',
     published: '刊行日',
+    level: '難易度',
     series: '巻順',
     list: '並べた順',
     newest: '追加日',
