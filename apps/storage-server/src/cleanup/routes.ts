@@ -1133,6 +1133,64 @@ export function createCleanupRouter(options: CleanupOptions): Router {
     res.json({ counts: pass.spotCounts(), passed: pass.spotPassed() });
   });
 
+  // ---- Tier 4, Part 3: series under a short and a full name ----
+
+  const seriesPairsOr503 = () => {
+    const service = serviceOr503(options);
+    if (!service.seriesPairs) throw new ApiError(503, 'no_calibre', 'No Calibre library is set up');
+    return { service, pass: service.seriesPairs };
+  };
+
+  router.get('/cleanup/series-pairs', (_req, res) => {
+    const { service } = seriesPairsOr503();
+    res.json(service.seriesPairsStatus(service.targetLibrary()));
+  });
+
+  router.put('/cleanup/series-pairs/mode', (req, res) => {
+    const { service, pass } = seriesPairsOr503();
+    const mode = (req.body as { mode?: unknown } | undefined)?.mode;
+    if (mode !== 'off' && mode !== 'analyse' && mode !== 'on')
+      throw new ApiError(400, 'bad_mode', 'mode must be off, analyse or on');
+    pass.setMode(mode);
+    service.seriesPairsChanged();
+    res.json(service.seriesPairsStatus(service.targetLibrary()));
+  });
+
+  router.post('/cleanup/series-pairs/again', (_req, res) => {
+    const { service, pass } = seriesPairsOr503();
+    pass.again();
+    service.seriesPairsChanged();
+    res.json(service.seriesPairsStatus(service.targetLibrary()));
+  });
+
+  router.get('/cleanup/series-pairs/pairs', (req, res) => {
+    const { service, pass } = seriesPairsOr503();
+    const lib = service.targetLibrary();
+    const q = req.query as Record<string, string | undefined>;
+    const view =
+      q.view === 'merge' || q.view === 'separate' || q.view === 'decided' ? q.view : 'review';
+    const offset = Math.max(0, Number(q.offset ?? 0) || 0);
+    const limit = Math.min(100, Math.max(1, Number(q.limit ?? 20) || 20));
+    res.json(lib ? pass.list(lib, view, offset, limit) : { total: 0, pairs: [] });
+  });
+
+  router.post('/cleanup/series-pairs/pairs/:id', (req, res) => {
+    const { service, pass } = seriesPairsOr503();
+    const lib = service.targetLibrary();
+    if (!lib) throw new ApiError(409, 'not_now', 'No library is chosen for the cleanup');
+    const choice = (req.body as { choice?: unknown } | undefined)?.choice;
+    if (choice !== 'merge' && choice !== 'separate' && choice !== 'clear')
+      throw new ApiError(400, 'bad_choice', 'choice must be merge, separate or clear');
+    let pair;
+    try {
+      pair = pass.decidePair(lib, Number(req.params.id), choice);
+    } catch (err) {
+      throw new ApiError(409, 'not_now', (err as Error).message);
+    }
+    service.seriesPairsChanged();
+    res.json(pair);
+  });
+
   // ---- WP20g: the Calibre library's new arrivals ----
 
   router.get('/cleanup/arrivals', (_req, res) => {

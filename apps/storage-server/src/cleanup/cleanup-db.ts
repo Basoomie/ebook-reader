@@ -2406,6 +2406,53 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
       ) WITHOUT ROWID;
     `,
   },
+  {
+    version: 31,
+    name: 'series under a short and a full name: the pairs, their answers and who decided',
+    // Tier 4, Part 3 (cleanup-finish.md; series-pairs/pass.ts). One pass with its own
+    // Off/Preview/On. series_pairs: every pair of series names where one name's key starts the
+    // other's, with its signals, the rules' answer and the books of both names (for the review
+    // list). series_pair_decisions (v29, the series editor's) is the one record of a choice per
+    // pair, shared with the editor: who decided it and why; "Forget my choice" deletes the row.
+    sql: `
+      CREATE TABLE series_pairs_state (
+        id            INTEGER PRIMARY KEY CHECK (id = 1),
+        library_id    TEXT,
+        mode          TEXT NOT NULL DEFAULT 'off' CHECK (mode IN ('off', 'analyse', 'on')),
+        progress_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(progress_json)),
+        paused_reason TEXT,
+        updated_at    INTEGER NOT NULL
+      );
+      INSERT INTO series_pairs_state (id, updated_at) VALUES (1, 0);
+      CREATE TABLE series_pairs (
+        id            INTEGER PRIMARY KEY,
+        library_id    TEXT NOT NULL,
+        run           INTEGER NOT NULL,
+        short_name    TEXT NOT NULL,
+        long_name     TEXT NOT NULL,
+        grp           TEXT NOT NULL,
+        added         TEXT NOT NULL,
+        kept_name     TEXT NOT NULL,
+        short_books   INTEGER NOT NULL,
+        long_books    INTEGER NOT NULL,
+        signals_json  TEXT CHECK (signals_json IS NULL OR json_valid(signals_json)),
+        books_json    TEXT CHECK (books_json IS NULL OR json_valid(books_json)),
+        answer        TEXT CHECK (answer IS NULL OR answer IN ('merge', 'separate', 'review')),
+        rule          TEXT,
+        held          TEXT,
+        note          TEXT,
+        updated_at    INTEGER NOT NULL,
+        UNIQUE (library_id, short_name, long_name)
+      );
+      CREATE INDEX series_pairs_answer ON series_pairs (library_id, answer, id);
+      -- The pass's own merge proposals (source 'series-pairs'): read per pair by the review list
+      -- and per run by the card, never by scanning stage 4's rows.
+      CREATE INDEX proposed_changes_series_pairs
+        ON proposed_changes (library_id, analysis_id, state) WHERE source = 'series-pairs';
+      ALTER TABLE series_pair_decisions ADD COLUMN decided_by TEXT NOT NULL DEFAULT 'you';
+      ALTER TABLE series_pair_decisions ADD COLUMN note TEXT;
+    `,
+  },
 ];
 
 export const CLEANUP_SCHEMA_VERSION = CLEANUP_MIGRATIONS[CLEANUP_MIGRATIONS.length - 1].version;
