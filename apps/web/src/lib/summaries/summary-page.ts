@@ -164,6 +164,24 @@ export function makingProgress(
   };
 }
 
+/** A chapter's own number or name at the start of its title (１章, 第三章, プロローグ, Chapter 3). */
+const CHAPTER_MARK =
+  /^(?:第?[0-9０-９一二三四五六七八九十百千]+[章話幕部節巻]|プロローグ|エピローグ|序章|終章|幕間|間章|あとがき|Prologue|Epilogue|Interlude|Afterword|(?:Chapter|Part)\s*[0-9IVXLC]+)/i;
+
+/**
+ * The text of a chapter button (Chapter by chapter): the chapter's mark when its title starts
+ * with one ("１章 ちょっと嫁いでみませんか" → "１章"), else the title, cut with "…" past 12
+ * characters (the whole title is the button's tooltip and the heading under it).
+ */
+export function chapterButtonLabel(title: string, index: number): string {
+  const t = title.trim();
+  if (!t) return `Chapter ${index + 1}`;
+  const mark = CHAPTER_MARK.exec(t)?.[0];
+  if (mark) return mark;
+  const chars = [...t];
+  return chars.length <= 12 ? t : `${chars.slice(0, 11).join('')}…`;
+}
+
 /** "Open the book here · 第三章 · 41 %": the link under a shown quote. */
 export function quoteLinkText(
   position: number,

@@ -9,6 +9,7 @@ import { dragAxis, swipeStep, wrapIndex } from './carousel';
 import { layoutDiagram } from './relationship-diagram';
 import { SummaryApi } from './summary-api';
 import {
+  chapterButtonLabel,
   languageChoices,
   madeLine,
   makingProgress,
@@ -165,6 +166,22 @@ describe('the states', () => {
   it('a shown quote links to its place', () => {
     expect(quoteLinkText(41_000, 100_000, '第三章')).toBe('Open the book here · 第三章 · 41 %');
     expect(quoteLinkText(10, null, null)).toBe('Open the book here');
+  });
+});
+
+describe('the chapter buttons', () => {
+  it('show the chapter mark, else the title cut short', () => {
+    expect(
+      chapterButtonLabel(`１章${String.fromCharCode(0x3000)}ちょっと嫁いでみませんか`, 1)
+    ).toBe('１章');
+    expect(chapterButtonLabel('第三章 港長の疑い', 2)).toBe('第三章');
+    expect(chapterButtonLabel('プロローグ', 0)).toBe('プロローグ');
+    expect(chapterButtonLabel('Chapter 12: The Storm', 11)).toBe('Chapter 12');
+    expect(chapterButtonLabel('とある月のひとりごと', 9)).toBe('とある月のひとりごと');
+    expect(chapterButtonLabel('とても長いタイトルの章で区切りがない話', 3)).toBe(
+      'とても長いタイトルの章…'
+    );
+    expect(chapterButtonLabel('  ', 4)).toBe('Chapter 5');
   });
 });
 

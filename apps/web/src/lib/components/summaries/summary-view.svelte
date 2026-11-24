@@ -17,7 +17,8 @@
   import { readerLinkPath } from '$lib/anki/reader-link';
   import { pagePath } from '$lib/data/env';
   import type { SummaryItemInput } from '$lib/summaries/summary-api';
-  import { quoteLinkText } from '$lib/summaries/summary-page';
+  import { chapterButtonLabel, quoteLinkText } from '$lib/summaries/summary-page';
+  import { einkMode$ } from '$lib/data/store';
   import type { SummaryCharacterLayout, SummaryRelationshipLayout } from '$lib/summaries/settings';
   import {
     SUMMARY_TABS,
@@ -115,6 +116,34 @@
       title: g.title ?? `Chapter ${(g.chapter ?? 0) + 1}`
     }));
 
+  /**
+   * Chapter by chapter shows one chapter at a time, chosen with a row of chapter buttons (user,
+   * 2026-11-23: the list ran to dozens of screens), or All. The judging page keeps the whole
+   * list. Opens on the first chapter; a chapter that goes away (an edit) falls back to it.
+   */
+  $: chapterGroups = section.groups.filter((g) => g.items.some(shown));
+  $: chapterButtons = !marks && chapterGroups.length > 1;
+  let chapterPick: number | 'all' | null = null;
+  $: if (
+    chapterPick !== 'all' &&
+    (chapterPick === null || !chapterGroups.some((g) => g.chapter === chapterPick))
+  )
+    chapterPick = chapterGroups[0]?.chapter ?? null;
+  $: shownGroups =
+    !chapterButtons || chapterPick === 'all'
+      ? chapterGroups
+      : chapterGroups.filter((g) => g.chapter === chapterPick);
+  let chapterRow: HTMLElement | undefined;
+  function pickChapter(c: number | 'all', i: number) {
+    chapterPick = c;
+    // Keep the chosen button in view in its row (no animation on E-ink).
+    chapterRow?.querySelectorAll<HTMLElement>('[data-chapter-button]')[i]?.scrollIntoView({
+      block: 'nearest',
+      inline: 'nearest',
+      behavior: $einkMode$ ? 'auto' : 'smooth'
+    });
+  }
+
   function hrefOf(it: SummaryItem): string | null {
     return bookId && it.position !== null && it.showQuote && it.quote
       ? `${pagePath}${readerLinkPath(bookId, it.position)}`
@@ -188,7 +217,37 @@
           />{/if}
       {/each}
     {:else if section.key === 'chapters'}
-      {#each section.groups.filter((g) => g.items.some(shown)) as g (g.chapter)}
+      {#if chapterButtons}
+        <div
+          class="c-strip chapters"
+          role="group"
+          aria-label="Chapters"
+          bind:this={chapterRow}
+          data-testid="summary-chapter-buttons"
+        >
+          {#each chapterGroups as g, i (g.chapter)}
+            <button
+              type="button"
+              class="c-chip c-chip-sm shrink-0"
+              aria-pressed={chapterPick === g.chapter}
+              title={g.title}
+              data-chapter-button
+              data-testid="summary-chapter-button"
+              on:click={() => pickChapter(g.chapter ?? 0, i)}
+              >{chapterButtonLabel(g.title ?? '', g.chapter ?? 0)}</button
+            >
+          {/each}
+          <button
+            type="button"
+            class="c-chip c-chip-sm shrink-0"
+            aria-pressed={chapterPick === 'all'}
+            data-chapter-button
+            data-testid="summary-chapter-all"
+            on:click={() => pickChapter('all', chapterGroups.length)}>All</button
+          >
+        </div>
+      {/if}
+      {#each shownGroups as g (g.chapter)}
         <h3 class="mt-4 font-bold first:mt-0">{g.title}</h3>
         <ul class="mt-1 list-disc pl-5">
           {#each g.items.filter(shown) as it (it.ref)}
@@ -330,6 +389,16 @@
 </section>
 
 <style>
+  .chapters {
+    display: flex;
+    gap: 0.5rem;
+    padding-bottom: 0.25rem;
+    margin-bottom: 0.5rem;
+  }
+  /* 48 px on touch and E-ink, like the buttons. */
+  .chapters .c-chip {
+    min-height: var(--c-btn-h);
+  }
   .tab {
     min-height: var(--c-btn-h);
     flex-shrink: 0;
