@@ -124,6 +124,15 @@ export const SETTINGS_SECTIONS: CatalogSection[] = [
     title: 'Look',
     keywords: 'library theme'
   },
+  // Search history (2026-11-24): after Look.
+  {
+    id: 'library-search',
+    tab: 'Library',
+    jp: '検索',
+    title: 'Search',
+    description: 'The library search box’s recent searches, the same on every device.',
+    keywords: 'search history recent searches'
+  },
   {
     id: 'library-book-page',
     tab: 'Library',
@@ -481,6 +490,29 @@ export const SETTINGS_CATALOG: CatalogSetting[] = [
       'Light or dark for Home, Library, Collections, Notes and Stats. “Like the book” turns dark when the book’s theme is dark (also when it follows the device). E-ink always wins.',
     keywords: 'dark'
   },
+  // Library › Search (search history, 2026-11-24)
+  {
+    id: 'search-history-on',
+    section: 'library-search',
+    title: 'Remember library searches',
+    description:
+      'Shows your recent searches under the search box. Off: nothing new is remembered and the list is hidden.',
+    keywords: 'search history recent searches remember'
+  },
+  {
+    id: 'search-history-limit',
+    section: 'library-search',
+    title: 'Library searches to keep',
+    description: 'The oldest are removed beyond this.',
+    keywords: 'search history recent searches number'
+  },
+  {
+    id: 'search-history-clear',
+    section: 'library-search',
+    title: 'Clear library search history',
+    description: 'Removes every remembered library search, on every device.',
+    keywords: 'search history recent searches delete forget clear'
+  },
   {
     id: 'collection-groups-as',
     section: 'library-appearance',
@@ -719,6 +751,29 @@ export const SETTINGS_CATALOG: CatalogSetting[] = [
     description:
       'How many places Back ([) and Forward (]) remember after jumps: search, contents, saved place, bookmarks, highlights, Jump and Continue there.',
     keywords: 'jump history back forward'
+  },
+  // Search history (2026-11-24): "Search in this book"
+  {
+    id: 'book-search-history-on',
+    section: 'reader-place',
+    title: 'Remember searches in books',
+    description:
+      'Search in this book lists your recent searches: the book’s own first, then other books’. Off: nothing new is remembered and the list is hidden.',
+    keywords: 'search history recent searches remember find'
+  },
+  {
+    id: 'book-search-history-limit',
+    section: 'reader-place',
+    title: 'Searches to keep per book',
+    description: 'The oldest of a book are removed beyond this.',
+    keywords: 'search history recent searches number find'
+  },
+  {
+    id: 'book-search-history-clear',
+    section: 'reader-place',
+    title: 'Clear search history in books',
+    description: 'Removes every remembered search in every book, on every device.',
+    keywords: 'search history recent searches delete forget clear find'
   },
   // Reader › Opening books
   {

@@ -155,7 +155,8 @@
     collectionsApi,
     getSyncEngine,
     libraryViewApi,
-    notifySyncConnectionChanged
+    notifySyncConnectionChanged,
+    searchHistoryApi
   } from '$lib/sync/sync-service';
   import { bulkSummaryPlan, skipAutomaticSummaries } from '$lib/summaries/summary-sync';
   import { summaryAutoOnFirstCompletion$ } from '$lib/summaries/settings';
@@ -175,6 +176,8 @@
   import { CalibreEditApi } from '$lib/calibre-edit/api';
   import { seriesEditAs$ } from '$lib/calibre-edit/settings';
   import Fa from 'svelte-fa';
+  import LibrarySearchHistory from '$lib/components/search-history/library-search-history.svelte';
+  import { searchHistoryOn$ } from '$lib/search-history/settings';
 
   /**
    * Library (WP6, WP7a): browse and search the Calibre catalog and open a book through
@@ -271,6 +274,11 @@
   /** Opened from a Home row's "See all" (`from=home`): the back link goes to Home. */
   let fromHome = false;
   let searchInput: HTMLInputElement | undefined;
+  // Search history (2026-11-24): the drop-down under the box.
+  let searchBox: HTMLElement | undefined;
+  let searchHistory: LibrarySearchHistory | undefined;
+  let historyOpen = false;
+  let historyActiveId: string | undefined;
   /** WP19c: how the page was last reached ('popstate' = back/forward). */
   let lastNavigation: string | null = null;
   /** WP19c: what a list snapshot keeps. */
@@ -1864,7 +1872,25 @@
       return;
     }
     queryError = '';
+    searchHistory?.hide();
+    // Remembered only when typed and searched (or picked from the list): never chips,
+    // tab or group links, back/forward or opening a collection.
+    if (q && $searchHistoryOn$) void searchHistoryApi().recordLibrary(q);
     go(q);
+  }
+
+  /** A remembered search was picked: search it now. */
+  function searchFromHistory(q: string) {
+    queryInput = q;
+    search();
+  }
+
+  /** ↖ on a remembered search: put it in the box to edit first. */
+  async function editFromHistory(q: string) {
+    queryInput = q;
+    await tick();
+    searchInput?.focus();
+    searchInput?.setSelectionRange(q.length, q.length);
   }
 
   function onChip(chip: ChipId) {
@@ -2308,33 +2334,55 @@
         {/if}
       </svelte:fragment>
       <div class="flex w-full min-w-0 flex-col sm:w-[22rem] lg:w-[24rem]">
-        <form
-          class="flex w-full min-w-0 items-stretch gap-2"
-          role="search"
-          on:submit|preventDefault={search}
-        >
-          <label class="c-input flex min-w-0 grow items-center gap-2">
-            <span class="text-c-muted" aria-hidden="true"><Fa icon={faMagnifyingGlass} /></span>
-            <span class="sr-only">Search the library</span>
-            <input
-              class="w-full min-w-0 border-0 bg-transparent p-0 text-sm focus:ring-0"
-              type="search"
-              enterkeyhint="search"
-              autocapitalize="off"
-              spellcheck="false"
-              placeholder="Title, author or series — or author: tag: chars:<100000 …"
-              aria-invalid={queryError ? 'true' : undefined}
-              aria-describedby={queryError ? 'library-query-error' : undefined}
-              data-testid="library-search"
-              bind:value={queryInput}
-              bind:this={searchInput}
-            />
-          </label>
-          <button class="c-btn c-btn-secondary px-4" type="submit" title="Search">
-            <Fa icon={faMagnifyingGlass} />
-            <span class="sr-only">Search</span>
-          </button>
-        </form>
+        <div class="relative" bind:this={searchBox}>
+          <form
+            class="flex w-full min-w-0 items-stretch gap-2"
+            role="search"
+            on:submit|preventDefault={search}
+          >
+            <label class="c-input flex min-w-0 grow items-center gap-2">
+              <span class="text-c-muted" aria-hidden="true"><Fa icon={faMagnifyingGlass} /></span>
+              <span class="sr-only">Search the library</span>
+              <input
+                class="w-full min-w-0 border-0 bg-transparent p-0 text-sm focus:ring-0"
+                type="search"
+                enterkeyhint="search"
+                autocapitalize="off"
+                spellcheck="false"
+                placeholder="Title, author or series — or author: tag: chars:<100000 …"
+                aria-invalid={queryError ? 'true' : undefined}
+                aria-describedby={queryError ? 'library-query-error' : undefined}
+                data-testid="library-search"
+                role="combobox"
+                aria-autocomplete="list"
+                aria-expanded={historyOpen}
+                aria-controls="library-search-history"
+                aria-activedescendant={historyActiveId}
+                autocomplete="off"
+                bind:value={queryInput}
+                bind:this={searchInput}
+                on:focus={() => searchHistory?.show()}
+                on:click={() => searchHistory?.show()}
+                on:input={() => searchHistory?.show()}
+                on:keydown={(event) => searchHistory?.onKeydown(event)}
+              />
+            </label>
+            <button class="c-btn c-btn-secondary px-4" type="submit" title="Search">
+              <Fa icon={faMagnifyingGlass} />
+              <span class="sr-only">Search</span>
+            </button>
+          </form>
+          <LibrarySearchHistory
+            bind:this={searchHistory}
+            bind:open={historyOpen}
+            bind:activeId={historyActiveId}
+            query={queryInput}
+            enabled={$searchHistoryOn$}
+            container={searchBox}
+            on:pick={(event) => searchFromHistory(event.detail)}
+            on:edit={(event) => editFromHistory(event.detail)}
+          />
+        </div>
         {#if queryError}
           <p
             id="library-query-error"

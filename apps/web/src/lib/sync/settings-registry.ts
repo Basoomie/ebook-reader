@@ -229,6 +229,12 @@ export const SETTINGS_REGISTRY: Record<string, SettingSpec> = {
   // Session 5: "Update the story so far automatically" (every device; the server reads it too).
   summaryRecapAuto: g('Boolean'),
 
+  // --- lib/search-history/settings.ts (every device, like the history itself; 2026-11-24) ---
+  searchHistoryOn: g('Boolean'),
+  searchHistoryLimit: g('Number'),
+  bookSearchHistoryOn: g('Boolean'),
+  bookSearchHistoryLimit: g('Number'),
+
   // --- lib/calibre-edit/settings.ts (per device: Calibre metadata editing, Settings > Library) ---
   bookEditAs: d('String'),
   seriesEditAs: d('String'),

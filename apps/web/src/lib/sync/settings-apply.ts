@@ -35,6 +35,12 @@ import {
   summaryRecapAuto$,
   summarySpoilerBlur$
 } from '$lib/summaries/settings';
+import {
+  bookSearchHistoryLimit$,
+  bookSearchHistoryOn$,
+  searchHistoryLimit$,
+  searchHistoryOn$
+} from '$lib/search-history/settings';
 import { parseStoredValue, SETTINGS_REGISTRY } from '$lib/sync/settings-registry';
 
 /**
@@ -65,7 +71,11 @@ export const GLOBAL_SETTING_SUBJECTS: Record<string, { next(value: never): void 
   summaryLanguages: summaryLanguages$,
   summarySpoilerBlur: summarySpoilerBlur$,
   summaryAutoOnFirstCompletion: summaryAutoOnFirstCompletion$,
-  summaryRecapAuto: summaryRecapAuto$
+  summaryRecapAuto: summaryRecapAuto$,
+  searchHistoryOn: searchHistoryOn$,
+  searchHistoryLimit: searchHistoryLimit$,
+  bookSearchHistoryOn: bookSearchHistoryOn$,
+  bookSearchHistoryLimit: bookSearchHistoryLimit$
 };
 
 /** Applies one global setting. null (never set on the source device) leaves this device's value. */

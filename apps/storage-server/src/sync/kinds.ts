@@ -1271,6 +1271,66 @@ const summarySkipKind: KindSpec = {
   },
 };
 
+// ---------------------------------------------------------------------------
+// Search history (2026-11-24)
+// ---------------------------------------------------------------------------
+
+export const SEARCH_HISTORY_KIND = 'search-history';
+/** Same as the library search box (QUERY_LIMITS.maxLength in the parser). */
+export const MAX_LIBRARY_SEARCH = 500;
+export const MAX_BOOK_SEARCH = 200;
+export const MAX_SEARCH_TITLE = 200;
+const SEARCH_HISTORY_ID_RE = /^(lib|book):[0-9a-f]{16}$/;
+/** A book the catalog doesn't know: local:<deviceId>:<the device's own book id>. */
+const LOCAL_BOOK_RE =
+  /^local:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}:\d{1,15}$/;
+
+/**
+ * kind "search-history": one record per remembered search, lww, deletable (a removed or
+ * pruned search is a deletion marker, stored as {}, so no text is kept).
+ *   lib:<hash>   the library search box, data { query, usedAt }
+ *   book:<hash>  "Search in this book", data { query, book, title, usedAt }; `book` is the
+ *                server book id, or local:<deviceId>:<id> for a book outside the catalog
+ * The hash (16 hex, FNV-1a 64, made by the device) is of the search's key (and the book's),
+ * so the same search on any device is the same record: it moves to the top, never twice.
+ * The book is not checked against the catalog: a book that left Calibre is still a search.
+ */
+const searchHistoryKind: KindSpec = {
+  policy: () => 'lww',
+  deletable: true,
+  validate(id, data, deleted) {
+    const match = SEARCH_HISTORY_ID_RE.exec(id);
+    if (!match) throw new RecordError('invalid_id', 'ids are lib:<16 hex> or book:<16 hex>');
+    if (deleted) return { bookId: null, data: {} };
+    const obj = requireObject(data);
+    const scope = match[1];
+    const max = scope === 'lib' ? MAX_LIBRARY_SEARCH : MAX_BOOK_SEARCH;
+    const query = typeof obj.query === 'string' ? obj.query.trim() : '';
+    if (query === '' || query.length > max) {
+      throw new RecordError('invalid_data', `query must be 1-${max} characters`);
+    }
+    const usedAt = obj.usedAt;
+    if (typeof usedAt !== 'number' || !Number.isFinite(usedAt) || usedAt < 0) {
+      throw new RecordError('invalid_data', 'usedAt must be a time');
+    }
+    if (scope === 'lib') {
+      if (obj.book !== undefined || obj.title !== undefined) {
+        throw new RecordError('invalid_data', 'a library search has no book');
+      }
+      return { bookId: null, data: { query, usedAt } };
+    }
+    const book = obj.book;
+    if (typeof book !== 'string' || !(UUID_RE.test(book) || LOCAL_BOOK_RE.test(book))) {
+      throw new RecordError('invalid_data', 'book must be a book id or local:<device>:<id>');
+    }
+    const title = typeof obj.title === 'string' ? obj.title.trim() : '';
+    if (title.length > MAX_SEARCH_TITLE) {
+      throw new RecordError('invalid_data', `title must be at most ${MAX_SEARCH_TITLE} characters`);
+    }
+    return { bookId: null, data: { query, book, title, usedAt } };
+  },
+};
+
 export const DEVICE_BOOKS_KIND = 'device-books';
 
 /**
@@ -1338,4 +1398,5 @@ export const DEFAULT_KINDS: KindRegistry = {
   'book-summary': bookSummaryKind,
   'summary-skip': summarySkipKind,
   'series-recap': seriesRecapKind,
+  [SEARCH_HISTORY_KIND]: searchHistoryKind,
 };

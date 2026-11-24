@@ -14,6 +14,23 @@ import { canUseWebLocks, randomId } from '$lib/functions/secure-context';
 import { getLibraryStore } from '$lib/library/library-db';
 import { libraryRequestTimeoutSeconds$ } from '$lib/library/settings';
 import { MigrationApi } from '$lib/migration/api';
+import type { Readable } from 'svelte/store';
+import type { HistoryBook, HistoryEntry, HistoryScope } from '$lib/search-history/search-history';
+import {
+  clearScope,
+  historyStore,
+  pruneNow,
+  readerBookKey,
+  recordBookSearch,
+  recordLibrarySearch,
+  removeEntry,
+  type SearchHistoryDeps
+} from '$lib/search-history/search-history-service';
+import {
+  bookSearchHistoryLimit$,
+  historyLimit,
+  searchHistoryLimit$
+} from '$lib/search-history/settings';
 import { localBookmarkForTitle, localTitleSummaries } from '$lib/migration/local-summary';
 import { applyReadingGoals, applyStatDays } from '$lib/sync/apply-records';
 import {
@@ -910,6 +927,42 @@ export function collectionsApi() {
 }
 
 export type CollectionsApi = ReturnType<typeof collectionsApi>;
+
+// ---------------------------------------------------------------------------
+// Search history (2026-11-24)
+// ---------------------------------------------------------------------------
+
+const searchHistoryDeps: SearchHistoryDeps = {
+  getEngine: getSyncEngine,
+  warn,
+  limits: () => ({
+    library: historyLimit(searchHistoryLimit$.getValue(), 30),
+    perBook: historyLimit(bookSearchHistoryLimit$.getValue(), 20)
+  })
+};
+
+let searchHistoryEntries: Readable<HistoryEntry[]> | null = null;
+
+/**
+ * The library's and the reader's search history (synced records, one per search). Never
+ * rejects: a failure is logged and the list stays as it was.
+ */
+export function searchHistoryApi() {
+  if (!searchHistoryEntries) searchHistoryEntries = historyStore(searchHistoryDeps);
+  return {
+    entries: searchHistoryEntries,
+    recordLibrary: (query: string) => recordLibrarySearch(query, searchHistoryDeps),
+    recordBook: (query: string, book: HistoryBook) =>
+      recordBookSearch(query, book, searchHistoryDeps),
+    remove: (id: string) => removeEntry(id, searchHistoryDeps),
+    clear: (scope: HistoryScope) => clearScope(scope, searchHistoryDeps),
+    pruneNow: () => pruneNow(searchHistoryDeps),
+    bookKey: (serverBookId: string | null, localId: number) =>
+      readerBookKey(serverBookId, localId, searchHistoryDeps)
+  };
+}
+
+export type SearchHistoryApi = ReturnType<typeof searchHistoryApi>;
 
 const notesDeps: NotesDeps = { getEngine: getSyncEngine, warn };
 

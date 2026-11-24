@@ -94,6 +94,8 @@ describe('Settings › Library (calibre-metadata-display.md)', () => {
   it('has Look, Book page, Links, Editing and Downloading books, in that order', () => {
     expect(SETTINGS_SECTIONS.filter((s) => s.tab === 'Library').map((s) => s.title)).toEqual([
       'Look',
+      // Search history (2026-11-24): after Look.
+      'Search',
       'Book page',
       // Book summaries session 4: after Book page.
       'Summaries',

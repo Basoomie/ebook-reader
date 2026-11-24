@@ -41,7 +41,9 @@ const SETTINGS_FILES = [
   'lib/book-links/settings.ts',
   // Calibre metadata editing: the forms' layouts and the empty rating line
   'lib/calibre-edit/settings.ts',
-  'lib/summaries/settings.ts'
+  'lib/summaries/settings.ts',
+  // Search history (2026-11-24)
+  'lib/search-history/settings.ts'
 ];
 
 /** Keys and value types declared with writable*LocalStorageSubject()('key', ...). */
@@ -120,7 +122,7 @@ describe('settings registry', () => {
     ]) {
       expect(settingScope(key), key).toBe('local');
     }
-    expect(keysWithScope('global')).toHaveLength(23); // 15 + ankiAutoEnrich (Phase 8) + ankiAutoEnrichSeconds + ttsDialoguePauseMs (Phase 12 session 4) + speakerUnsureBelow (session 5) + summaryLanguages (book summaries session 3) + summarySpoilerBlur (session 4) + summaryAutoOnFirstCompletion (session 4b) + summaryRecapAuto (book summaries session 5)
+    expect(keysWithScope('global')).toHaveLength(27); // + 4 search history (searchHistoryOn, searchHistoryLimit, bookSearchHistoryOn, bookSearchHistoryLimit; 2026-11-24) + 15 + ankiAutoEnrich (Phase 8) + ankiAutoEnrichSeconds + ttsDialoguePauseMs (Phase 12 session 4) + speakerUnsureBelow (session 5) + summaryLanguages (book summaries session 3) + summarySpoilerBlur (session 4) + summaryAutoOnFirstCompletion (session 4b) + summaryRecapAuto (book summaries session 5)
     expect(keysWithScope('device')).toHaveLength(
       95 + 2 + 77 + 1 + 8 + 1 + 2 + 4 + 2 + 2 + 1 + 2 - 3 + 4 + 3 + 2 + 2
     ); // + 2 collection views (collectionGroupsAs, collectionSectionsBy), + 2 summary layouts (summaryCharacterLayout, summaryRelationshipLayout; book summaries session 4), + 3 Calibre editing (bookEditAs, seriesEditAs, bookRatingEmpty), + 4 book links (bookLinks, bookLinksPlacement, bookLinksMoreAs, bookLinksSearch), + libraryServerCheckSeconds, + 8 pacer (Phase 10), + bookIllustrationsPosition (Season 2 §6), + 2 on-track dot (Season 2 §9), + 4 read-aloud (Phase 12), + 2 Notes sorts (notesBookSort, notesHighlightSort), + 2 select-mode downloads (libraryBulkDownloadMode, libraryDownloadConfirmGb), + libraryCoverBlur (Hidden covers), + readerToolbar and readerBottomBar - the 3 bottom-bar switches they replace (reader toolbars session 1)
