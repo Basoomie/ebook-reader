@@ -129,8 +129,13 @@ async function main() {
   const t0 = performance.now();
   for (;;) {
     const s = pass.state().progress;
-    if (s.phase === until || s.phase === 'done') break;
-    if (s.phase !== 'match' && !has('ai')) break;
+    // --reask: a finished AI check (version 1) asked again once (NEAR_VERSION 2), then stop.
+    if (has('reask')) {
+      if ((s.nearVersion ?? 1) >= 2 && s.phase === 'second') break;
+    } else {
+      if (s.phase === until || s.phase === 'done') break;
+      if (s.phase !== 'match' && !has('ai')) break;
+    }
     const t = performance.now();
     const r = await pass.step();
     const ms = performance.now() - t;

@@ -2519,6 +2519,15 @@ export class Stage4Analysis {
       queryTitle: queryTitle(ref.opf_title || book.title),
       bookmeter: ev.bookmeter,
       searchRequest: ev.requests['bookmeter-search'] ?? null,
+      // The book's own store titles, which name its label or edition (the AI check's
+      // candidates, 2026-11-23): the Amazon record the rules identified, the BOOK☆WALKER page
+      // whose title is the book's (as proposeStage4 takes its id).
+      storeTitles: [
+        d.trace.amazonIdentified ? (rec.amazon?.product?.title as string | undefined) : null,
+        d.trace.cleaned.bookwalker && N(d.trace.cleaned.bookwalker) === N(d.values.t)
+          ? (ev.bookwalker.detail?.title ?? null)
+          : null,
+      ].filter((t): t is string => typeof t === 'string' && t !== ''),
       asin:
         (d.trace.amazonIdentified ? ((ev.amazon.product?.asin as string | null) ?? null) : null) ??
         book.identifiers.amazon_jp ??
@@ -3435,6 +3444,8 @@ export interface BookmeterFacts {
   bookmeter: OnlineEvidence['bookmeter'];
   /** The stored search's request id (fetch_requests). */
   searchRequest: number | null;
+  /** The book's own store titles (Amazon identified, BOOK☆WALKER with the book's title). */
+  storeTitles: string[];
   /** The ASIN stage 4 identified (Natively's lookup, as proposalsFor). */
   asin: string | null;
 }
