@@ -9,10 +9,15 @@
    * Book summaries, the Characters tab (session 4; approved mockups): this device's layout.
    * - list: one entry under another;
    * - cards: cards flowing in columns, so a long entry leaves no empty space beside it;
-   * - carousel: one card at a time with ‹ › on its two ends, a sideways swipe, and a row of
-   *   name buttons to jump to one ("Also mentioned" is the last card).
+   * - carousel: one card at a time; its whole left and right edges turn the card (quiet,
+   *   full-height zones inside the card that never move: the app's pressed-button nudge once
+   *   moved a centred arrow out from under the pointer, user 2026-11-23), a sideways swipe
+   *   (also starting on an edge, which then doesn't count as a click), ← / → while focus is in
+   *   it, and a row of name buttons to jump to one ("Also mentioned" is the last card).
    * Headings show the book's furigana; in a translation the server's "Name (original)".
    */
+  import Fa from 'svelte-fa';
+  import { faChevronLeft, faChevronRight } from '@fortawesome/free-solid-svg-icons';
   import { einkMode$ } from '$lib/data/store';
   import { dragAxis, swipeStep, wrapIndex } from '$lib/summaries/carousel';
   import type { SummaryCharacterLayout } from '$lib/summaries/settings';
@@ -54,10 +59,14 @@
   let startY = 0;
   let axis: 'x' | 'y' | null = null;
   let dragging = false;
+  /** A swipe just turned the card: the click that follows its release is not a tap. */
+  let swiped = false;
   function down(e: PointerEvent) {
     if (e.pointerType === 'mouse' && e.button !== 0) return;
-    if ((e.target as HTMLElement).closest('button, a')) return;
+    // A link (the quote's) keeps its own tap; a swipe may start anywhere else, edges too.
+    if ((e.target as HTMLElement).closest('a')) return;
     dragging = true;
+    swiped = false;
     axis = null;
     startX = e.clientX;
     startY = e.clientY;
@@ -71,7 +80,24 @@
     dragging = false;
     const a = axis ?? dragAxis(e.clientX - startX, e.clientY - startY);
     const step = swipeStep(e.clientX - startX, a);
-    if (step) go(at + step);
+    if (step) {
+      swiped = true;
+      go(at + step);
+    } else if (a === 'x') swiped = true;
+  }
+  function edge(delta: -1 | 1) {
+    if (swiped) {
+      swiped = false;
+      return;
+    }
+    go(at + delta);
+  }
+  function keydown(e: KeyboardEvent) {
+    if (e.altKey || e.ctrlKey || e.metaKey) return;
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+      e.preventDefault();
+      go(at + (e.key === 'ArrowLeft' ? -1 : 1));
+    }
   }
 </script>
 
@@ -102,15 +128,26 @@
       >
     {/if}
   </div>
-  <div
+  <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
+  <section
     class="carousel"
+    class:single={cards < 2}
+    aria-roledescription="carousel"
+    aria-label="Character cards"
     on:pointerdown={down}
     on:pointermove={move}
     on:pointerup={up}
     on:pointercancel={() => (dragging = false)}
+    on:keydown={keydown}
     data-testid="summary-carousel"
   >
-    <article class="slide" aria-live="polite" data-testid="summary-character">
+    <article
+      class="slide"
+      aria-roledescription="slide"
+      aria-label="{at + 1} of {cards}"
+      aria-live="polite"
+      data-testid="summary-character"
+    >
       {#if current}
         <h3 class="text-lg font-bold">
           <RubyHeading text={current.heading ?? ''} pieces={ruby ? current.ruby : null} />
@@ -131,20 +168,20 @@
     {#if cards > 1}
       <button
         type="button"
-        class="c-btn c-btn-secondary c-btn-icon arrow left"
+        class="edge prev"
         aria-label="Previous character"
         data-testid="summary-car-prev"
-        on:click={() => go(at - 1)}>‹</button
+        on:click={() => edge(-1)}><Fa icon={faChevronLeft} /></button
       >
       <button
         type="button"
-        class="c-btn c-btn-secondary c-btn-icon arrow right"
+        class="edge next"
         aria-label="Next character"
         data-testid="summary-car-next"
-        on:click={() => go(at + 1)}>›</button
+        on:click={() => edge(1)}><Fa icon={faChevronRight} /></button
       >
     {/if}
-  </div>
+  </section>
   <p class="mt-1 text-center text-xs text-c-muted" data-testid="summary-car-pos">
     {at + 1} / {cards}
   </p>
@@ -203,29 +240,82 @@
     gap: 0.5rem;
     padding-bottom: 0.25rem;
   }
+  /*
+   * The card itself holds the edges: they are clipped by its rounded corners and sit inside
+   * its border, so they read as part of it. At least a touch target wide (48 px on touch and
+   * E-ink, 40 px with a mouse), up to 4.5rem on a wide screen.
+   */
   .carousel {
+    --edge-w: clamp(var(--c-btn-h), 12%, 4.5rem);
     position: relative;
     margin-top: 0.625rem;
+    overflow: hidden;
+    border-radius: 10px;
+    border: var(--c-border-width) solid var(--c-line);
+    background: var(--c-raised);
     touch-action: pan-y;
   }
   .slide {
     min-height: 9rem;
-    padding: 1rem calc(var(--c-btn-h) + 0.75rem);
-    border-radius: 10px;
-    border: var(--c-border-width) solid var(--c-line);
-    background: var(--c-raised);
+    padding: 1rem var(--edge-w);
   }
-  .arrow {
+  .single .slide {
+    padding: 1rem 1.25rem;
+  }
+  .edge {
     position: absolute;
-    top: 50%;
-    transform: translateY(-50%);
-    font-size: 1.5rem;
-    line-height: 1;
+    top: 0;
+    bottom: 0;
+    width: var(--edge-w);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--c-muted);
+    opacity: 0.55;
+    font-size: 1rem;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    transition:
+      opacity 0.15s ease,
+      background-color 0.15s ease;
   }
-  .arrow.left {
-    left: 0.25rem;
+  .edge.prev {
+    left: 0;
   }
-  .arrow.right {
-    right: 0.25rem;
+  .edge.next {
+    right: 0;
+  }
+  /* A soft wash from the edge inward on hover and while pressed; nothing moves. */
+  @media (hover: hover) {
+    :global(html:not(.eink)) .edge:hover {
+      opacity: 1;
+      color: var(--c-ink);
+    }
+    :global(html:not(.eink)) .edge.prev:hover {
+      background: linear-gradient(to right, var(--c-tint), transparent);
+    }
+    :global(html:not(.eink)) .edge.next:hover {
+      background: linear-gradient(to left, var(--c-tint), transparent);
+    }
+  }
+  :global(html:not(.eink)) .edge:active {
+    opacity: 1;
+    color: var(--c-ink);
+  }
+  .edge:focus-visible {
+    opacity: 1;
+    color: var(--c-ink);
+    outline: 2px solid var(--c-link);
+    outline-offset: -4px;
+    border-radius: 8px;
+  }
+  /* E-ink: plain black, no fades or washes. */
+  :global(html.eink) .edge {
+    opacity: 1;
+    color: var(--c-ink);
+    transition: none;
   }
 </style>

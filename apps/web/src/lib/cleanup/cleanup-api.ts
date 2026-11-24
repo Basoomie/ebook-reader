@@ -4,6 +4,13 @@
  * All rights reserved.
  */
 
+import type {
+  SeriesPair,
+  SeriesPairChoice,
+  SeriesPairsMode,
+  SeriesPairsStatus,
+  SeriesPairsView
+} from './series-pairs-text';
 import type { ArrivalsStatus } from './arrivals-text';
 import type {
   BookmeterMatch,
@@ -2664,5 +2671,39 @@ export class CleanupApi {
     return this.request('PUT', `/cleanup/bookmeter/spot/${encodeURIComponent(uuid)}`, {
       verdict
     }) as Promise<{ counts: BookmeterStatus['spot']; passed: boolean }>;
+  }
+
+  // ---------------------------------------------------------------- Series under two names
+
+  seriesPairs(): Promise<SeriesPairsStatus> {
+    return this.request('GET', '/cleanup/series-pairs') as Promise<SeriesPairsStatus>;
+  }
+
+  setSeriesPairsMode(mode: SeriesPairsMode): Promise<SeriesPairsStatus> {
+    return this.request('PUT', '/cleanup/series-pairs/mode', {
+      mode
+    }) as Promise<SeriesPairsStatus>;
+  }
+
+  seriesPairsAgain(): Promise<SeriesPairsStatus> {
+    return this.request('POST', '/cleanup/series-pairs/again') as Promise<SeriesPairsStatus>;
+  }
+
+  seriesPairList(
+    view: SeriesPairsView,
+    offset = 0,
+    limit = 20
+  ): Promise<{ total: number; pairs: SeriesPair[] }> {
+    const q = new URLSearchParams({ view, offset: String(offset), limit: String(limit) });
+    return this.request('GET', `/cleanup/series-pairs/pairs?${q}`) as Promise<{
+      total: number;
+      pairs: SeriesPair[];
+    }>;
+  }
+
+  decideSeriesPair(id: number, choice: SeriesPairChoice): Promise<SeriesPair> {
+    return this.request('POST', `/cleanup/series-pairs/pairs/${id}`, {
+      choice
+    }) as Promise<SeriesPair>;
   }
 }

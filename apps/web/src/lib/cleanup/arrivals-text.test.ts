@@ -58,6 +58,46 @@ describe('the new arrivals card', () => {
     expect(bar.eta).toBe('about 10 min left');
   });
 
+  it('names the part of the compare step the count and the time left are for', () => {
+    const run = (stage: string, index: number) =>
+      arrivalsBar({
+        ...base,
+        run: {
+          id: 1,
+          trigger: 'now',
+          mode: 'analyse',
+          phase: 'compare',
+          startedAt: 0,
+          waiting: null,
+          scope: { import: 0, hand: 0 },
+          cost: 0,
+          jGate: null,
+          times: {},
+          bar: {
+            phase: 'compare',
+            index: 3,
+            phases: 19,
+            done: 1505,
+            total: 61064,
+            bytesDone: null,
+            bytesTotal: null,
+            secondsLeft: 3 * 3600,
+            part: { index, count: 6, stage }
+          }
+        }
+      })!;
+    const measuring = run('measure', 4);
+    expect(measuring.label).toBe(
+      'Step 4 of 19: Comparing them with the library, part 5 of 6: measuring the pairs with the same text (1,505 of 61,064)'
+    );
+    // Only deciding (minutes) is left after measuring: the time left is the whole step's.
+    expect(measuring.eta).toBe('about 3 h left');
+    // Before measuring, the later parts' size is not known yet: the time left is this part's.
+    const reading = run('text', 2);
+    expect(reading.label).toContain('part 3 of 6: reading the new books');
+    expect(reading.eta).toBe('about 3 h left in this part');
+  });
+
   it('says what the last run did, Preview and On', () => {
     expect(arrivalsSummary(base)).toBe('No run yet.');
     const report = {

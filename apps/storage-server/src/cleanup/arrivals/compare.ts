@@ -31,7 +31,7 @@ import {
   type QualityFacts,
 } from '../stage3-rules';
 import { sketchToBlob } from '../stage3-sketch';
-import { SourcePacer, hashSource } from './sources-fs';
+import { SourcePacer } from './sources-fs';
 
 /** A new book's text facts (as stage 3 keeps them in text_facts). */
 export interface NewText {
@@ -408,7 +408,11 @@ export async function libraryQuality(
   });
 }
 
-/** A file's quality facts read now (cover, layout, pictures, SHA-256), read only. */
+/**
+ * A file's quality facts read now (cover, layout, pictures), read only. No SHA-256: no rule reads
+ * it, and hashing read every file a second time through the read pace (WP20g, 2026-11-24: about
+ * half of the measuring's paced bytes, which held it to ~44 books a minute).
+ */
 export async function qualityOfFile(
   file: string,
   base: {
@@ -424,7 +428,6 @@ export async function qualityOfFile(
   try {
     const counted = { bytes: 0 };
     const meta = await readFileMetadata(file, { text: false, cover: true, layout: true, counted });
-    const hashed = await hashSource(file, base.pacer);
     const images = await epubImageFacts(
       file,
       (meta.layout?.images ?? []).map((i) => i.entry),
@@ -441,7 +444,7 @@ export async function qualityOfFile(
       coverSide: meta.cover ? Math.max(meta.cover.width, meta.cover.height) : null,
       customTags: base.customTags,
       addedAt: base.addedAt,
-      sha256: hashed?.sha256 ?? null,
+      sha256: null,
     };
   } catch {
     return null;

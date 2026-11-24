@@ -26,6 +26,7 @@
   import Fa from 'svelte-fa';
   import { faChevronDown, faChevronUp, faEllipsis } from '@fortawesome/free-solid-svg-icons';
   import DropdownMenu from '$lib/components/dropdown-menu.svelte';
+  import LanguagePicker from './language-picker.svelte';
   import { confirmDestructive } from '$lib/confirm/confirm';
   import {
     deleteSummaryCopy,
@@ -376,6 +377,17 @@
               >
             {/each}
           </div>
+          <!-- Phones: a small dropdown, so more languages never take more room. -->
+          <div class="langs-select">
+            <LanguagePicker
+              {choices}
+              {lang}
+              label="Summary language"
+              testid="summary-lang-menu"
+              disabled={(c) => editing && !c.original}
+              on:choose={(e) => chooseLanguage(e.detail)}
+            />
+          </div>
         {/if}
       </div>
     {/if}
@@ -586,6 +598,18 @@
     gap: 0.375rem;
     margin-left: auto;
     max-width: 100%;
+  }
+  .langs-select {
+    display: none;
+    margin-left: auto;
+  }
+  @media (max-width: 40rem) {
+    .langs {
+      display: none;
+    }
+    .langs-select {
+      display: block;
+    }
   }
   .actions {
     display: flex;

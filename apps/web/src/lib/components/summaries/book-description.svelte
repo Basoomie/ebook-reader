@@ -20,6 +20,7 @@
    */
   import { onDestroy, onMount } from 'svelte';
   import { logger } from '$lib/data/logger';
+  import LanguagePicker from './language-picker.svelte';
   import { isUnreachable } from '$lib/library/offline/offline-source';
   import { getSyncEngine } from '$lib/sync/sync-service';
   import { descriptionViewLang$, summaryLanguages$ } from '$lib/summaries/settings';
@@ -87,8 +88,13 @@
     timer = null;
     const want = lang;
     if (!want || want === bookLang || !description) return;
-    cached = await getDescriptionTranslation(bookId, want);
-    if (destroyed || loadingFor !== key) return;
+    // The device's copy is read beside the server's answer, never before it: a blocked
+    // IndexedDB upgrade (an older tab holds the database) must not stop the translation.
+    void getDescriptionTranslation(bookId, want)
+      .then((c) => {
+        if (!destroyed && loadingFor === key) cached = c;
+      })
+      .catch(() => undefined);
     try {
       api ??= await summaryApi();
       if (!api || offline) {
@@ -210,6 +216,16 @@
         >
       {/each}
     </div>
+    <!-- Phones: a small dropdown, so more languages never take more room. -->
+    <div class="langs-select">
+      <LanguagePicker
+        {choices}
+        {lang}
+        label="Description language"
+        testid="description-lang-menu"
+        on:choose={(e) => choose(e.detail)}
+      />
+    </div>
   {/if}
 </div>
 <div
@@ -262,6 +278,23 @@
   }
   .langs .c-chip {
     min-height: var(--c-btn-h);
+  }
+  .langs-select {
+    display: none;
+    margin-left: auto;
+  }
+  @media (max-width: 40rem) {
+    .langs {
+      display: none;
+    }
+    .langs-select {
+      display: block;
+    }
+    /* The picker sits to the right of the heading, on the same line. */
+    .head {
+      flex-wrap: nowrap;
+      justify-content: space-between;
+    }
   }
   /* About six lines of the description until "More". */
   .c-clamped {

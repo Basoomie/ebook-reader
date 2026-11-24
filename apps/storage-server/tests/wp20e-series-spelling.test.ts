@@ -228,6 +228,29 @@ describe('series proposals with the chosen spelling', () => {
   });
 });
 
+describe('a series merged into another name (series under two names)', () => {
+  const merged = new Map([[seriesKey('十津川警部'), new Set([seriesKey('十津川警部シリーズ')])]]);
+  it("keeps Calibre's name when the decision names the series merged into it", () => {
+    const at = (index: number) =>
+      seriesOf(
+        proposeStage4({
+          ...input('十津川警部シリーズ', { series: '十津川警部', seriesIndex: index }),
+          mergedSeries: merged,
+        }),
+      );
+    // Same number: nothing to do (it would have moved the book back to the full name).
+    expect(at(3)).toBeUndefined();
+    // Another number: only the number changes.
+    expect(at(56)).toMatchObject({ new: { name: '十津川警部', index: 3 } });
+    // Without the merge the full name would come back.
+    expect(
+      seriesOf(
+        proposeStage4(input('十津川警部シリーズ', { series: '十津川警部', seriesIndex: 3 })),
+      ),
+    ).toMatchObject({ new: { name: '十津川警部シリーズ' } });
+  });
+});
+
 describe("the AI step's spelling phase", () => {
   it("chooses after deciding, proposes those series' books again, then runs the gate", async () => {
     const { Stage4Ai, STAGE4_EVIDENCE_BUILD } = await import('../src/cleanup/stage4/ai-step');

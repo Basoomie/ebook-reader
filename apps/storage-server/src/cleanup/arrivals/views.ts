@@ -6,7 +6,9 @@
 import type Database from 'better-sqlite3';
 import { getSettings } from '../settings';
 import {
+  COMPARE_STAGES,
   RUN_PHASES,
+  type CompareStage,
   type BookArrivals,
   type RunPhase,
   type RunProgress,
@@ -35,6 +37,12 @@ export interface Bar {
   bytesDone: number | null;
   bytesTotal: number | null;
   secondsLeft: number | null;
+  /**
+   * The compare step's part (it runs six in turn, each counted from its start), so the card says
+   * which one the count and the time left are for (WP20g, 2026-11-24: the bar went from 60 % to
+   * 2 % when the reading part ended and the measuring began, which looked like a restart).
+   */
+  part: { index: number; count: number; stage: CompareStage } | null;
 }
 
 /** The running phase's bar and its time left (from what this phase measured since it started). */
@@ -56,7 +64,17 @@ export function runBar(p: RunProgress, now = Date.now()): Bar {
     total: c.total,
     bytesDone: byBytes ? (c.bytesDone ?? 0) : null,
     bytesTotal: byBytes ? c.bytesTotal! : null,
-    secondsLeft: rate > 0 && total > done ? Math.round((total - done) / rate / 1000) : null,
+    secondsLeft:
+      p.waitingSince === undefined && rate > 0 && total > done
+        ? Math.round((total - done) / rate / 1000)
+        : null,
+    part: sub
+      ? {
+          index: COMPARE_STAGES.indexOf(sub.stage),
+          count: COMPARE_STAGES.length,
+          stage: sub.stage,
+        }
+      : null,
   };
 }
 

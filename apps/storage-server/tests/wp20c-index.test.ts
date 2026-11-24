@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { candidatePairs, type SketchedBook } from '../src/cleanup/stage3-index';
+import {
+  buildLookup,
+  candidatePairs,
+  lookupCandidates,
+  type SketchedBook,
+} from '../src/cleanup/stage3-index';
 
 /** The index as first built (one Map of every pair sharing a sample): the reference. */
 function candidatePairsMap(
@@ -167,5 +172,25 @@ describe('stage 3 candidate index', () => {
     const out = candidatePairs(books, { commonBooks: 50, minShared: 2, minEstimate: 0.05 });
     expect(out.stats.pairsCounted).toBeGreaterThan(2 ** 24);
     expect(out.stats.postings).toBe(1_250_000);
+  });
+});
+
+describe('stage 3 candidate index past 2^17 books (WP20g, 2026-11-24)', () => {
+  it('indexes 140,000 books (the library and a large import together)', () => {
+    // Books 2k and 2k+1 share two samples; every book has one sample of its own.
+    const n = 140_000;
+    const books: SketchedBook[] = Array.from({ length: n }, (_, i) => ({
+      calibreId: i + 1,
+      sketch: Uint32Array.from(
+        [Math.floor(i / 2) * 3, Math.floor(i / 2) * 3 + 1, 4_000_000_000 - i].sort((x, y) => x - y),
+      ),
+    }));
+    const { pairs } = candidatePairs(books, { commonBooks: 50 });
+    expect(pairs).toHaveLength(n / 2);
+    expect(pairs.at(-1)).toMatchObject({ a: n - 1, b: n, shared: 2 });
+    const lookup = buildLookup(books.slice(0, n - 1));
+    expect(
+      lookupCandidates(lookup, books[n - 1].sketch, { commonBooks: 50 }).map((c) => c.b),
+    ).toEqual([n - 1]);
   });
 });

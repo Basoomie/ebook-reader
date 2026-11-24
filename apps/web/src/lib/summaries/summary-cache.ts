@@ -99,7 +99,15 @@ export class SummaryCache {
   ) {}
 
   private get db() {
-    this.dbPromise ??= this.open();
+    this.dbPromise ??= this.open().then((db) => {
+      // A newer version of the app in another tab needs to upgrade the database: step aside
+      // (the next use opens it again) instead of blocking it.
+      db.addEventListener('versionchange', () => {
+        db.close();
+        this.dbPromise = undefined;
+      });
+      return db;
+    });
     return this.dbPromise;
   }
 

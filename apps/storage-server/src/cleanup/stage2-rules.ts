@@ -19,7 +19,7 @@ import {
   repeatsItself,
   titleSort,
 } from './title-rules';
-import { NAME_MAX_BYTES, calibreNameBytes } from './calibre-names';
+import { CALIBRE_AUTHOR_WORDS, NAME_MAX_BYTES, calibreNameBytes } from './calibre-names';
 import { fitTitle } from './title-fit';
 
 export { NAME_MAX_BYTES, calibreNameBytes };
@@ -104,7 +104,17 @@ export interface CalibreFacts {
   illustrators: string[] | null;
   /** The Google run's marks recorded before stage 5 removed them (marks.ts). */
   marks?: readonly string[];
+  /**
+   * Fields whose value Calibre holds now was written by a later cleanup stage (stage 4's online
+   * sources, the user's edits, …): that value is Calibre's own, not the Google run's, so for that
+   * field the book is never treated as "Unknown" or "metadata-processed" (found 2026-11-24: a new
+   * analysis would have written 179 file values back over stage 4's, nearly all wrong).
+   */
+  owned?: readonly Stage2Field[];
 }
+
+/** Calibre's value of this field came from a later cleanup stage and is still there. */
+const owns = (cal: CalibreFacts, field: Stage2Field) => cal.owned?.includes(field) ?? false;
 
 export interface FieldProposal {
   field: Stage2Field;
@@ -189,8 +199,10 @@ const sameList = (a: readonly string[], b: readonly string[]) =>
 
 /** The title group of the measurement (also used for authors when Calibre is Unknown/processed). */
 export function titleGroup(cal: CalibreFacts, file: FileFacts): ApplyGroup {
-  if (calibreAuthorsUnknown(cal.authors)) return 'unknown';
-  if (isProcessed(cal.tags, cal.marks)) return 'processed';
+  if (!owns(cal, 'title')) {
+    if (calibreAuthorsUnknown(cal.authors)) return 'unknown';
+    if (isProcessed(cal.tags, cal.marks)) return 'processed';
+  }
   const names = [...fileAuthors(file), ...cal.authors];
   return N(cleanTitle(file.title, names)) === N(cleanTitle(cal.title, names))
     ? 'agree'
@@ -198,8 +210,10 @@ export function titleGroup(cal: CalibreFacts, file: FileFacts): ApplyGroup {
 }
 
 export function authorGroup(cal: CalibreFacts, file: FileFacts): ApplyGroup {
-  if (calibreAuthorsUnknown(cal.authors)) return 'unknown';
-  if (isProcessed(cal.tags, cal.marks)) return 'processed';
+  if (!owns(cal, 'authors')) {
+    if (calibreAuthorsUnknown(cal.authors)) return 'unknown';
+    if (isProcessed(cal.tags, cal.marks)) return 'processed';
+  }
   const first = fileAuthors(file)[0];
   if (first === undefined) return 'agree';
   // "Already the same after normalization": Calibre's names are exactly the file's first author.
@@ -237,6 +251,8 @@ function titleProposals(cal: CalibreFacts, file: FileFacts): FieldProposal[] {
   });
   const calClean = looksLikeMojibake(cal.title) ? null : cleanTitle(cal.title, names);
   const normalizeOwn = () => {
+    // A later stage's title is left exactly as it wrote it.
+    if (owns(cal, 'title')) return;
     if (calClean && calClean !== cal.title) out.push(proposal(calClean, 'auto', 'normalize', null));
   };
   const raw = file.title ?? '';
@@ -298,6 +314,8 @@ function authorProposals(
     extra: { author_sort: { old: cal.authorSort, new: '' } },
   });
   const normalizeOwn = () => {
+    // A later stage's names are left exactly as it wrote them.
+    if (owns(cal, 'authors')) return;
     if (calibreAuthorsUnknown(cal.authors)) return;
     if (cal.authors.some((a) => looksLikeMojibake(a))) return;
     const own = normalizedNames(cal.authors, spelling);
@@ -316,6 +334,10 @@ function authorProposals(
   // Seen in the dry run (326 books, 1 of 5 labeled right): author and illustrator in one
   // creator, "あずみ圭/マツモトミツアキ", "原作:志倉千代丸/MAGES./Nitroplus".
   else if (/[/／、，,＆]/u.test(first)) fileProblem = "The file's author holds more than one name";
+  // Calibre turns " and " / " with " into two authors (29728 "Tôwa and Huuka Kazabana": the
+  // author and the illustrator in one creator; the write then never showed).
+  else if (CALIBRE_AUTHOR_WORDS.test(first))
+    fileProblem = `The file's author holds more than one name ("and" or "with", which Calibre splits)`;
 
   if (first === undefined) {
     normalizeOwn();
@@ -382,7 +404,7 @@ function coverProposal(
   if (!cc) return null; // Calibre lists a cover we couldn't read: leave it.
   const longest = (c: CoverFacts) => Math.max(c.width, c.height);
   if (longest(fc) >= longest(cc) * o.coverLargerFactor) return make("The file's cover is larger");
-  if (isProcessed(cal.tags, cal.marks)) {
+  if (isProcessed(cal.tags, cal.marks) && !owns(cal, 'cover')) {
     const d = hammingHex(fc.dhash, cc.dhash);
     if (d !== null && d > o.coverSameDistance)
       return make("Calibre's cover is a different picture");

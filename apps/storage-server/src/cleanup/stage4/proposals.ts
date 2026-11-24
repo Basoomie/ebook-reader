@@ -126,6 +126,12 @@ export interface ProposalInput {
   /** The chosen spelling per series key (series-spelling.ts); none = names as decided. */
   seriesSpelling?: ReadonlyMap<string, string> | null;
   /**
+   * Series merged into another name (tier 4, Part 3; series_pair_decisions 'merged'): the kept
+   * name's key -> the keys of the names merged into it. A decision naming one of those keeps the
+   * book's current name (deciding again never moves a merged book back).
+   */
+  mergedSeries?: ReadonlyMap<string, ReadonlySet<string>> | null;
+  /**
    * The series step's choice for this book (series-order.ts, stage4_series_order): its number,
    * a title with its number, a best guess with its reason, or a problem for review.
    */
@@ -638,12 +644,22 @@ export function proposeStage4(input: ProposalInput): Stage4Proposal[] {
       : null;
   const keepWritten =
     !!writtenName && !!decidedSeries && seriesKey(decidedSeries) === seriesKey(writtenName);
-  const series = keepWritten ? writtenName : respell(decidedSeries);
+  // A name merged into the book's current one (series under two names): Calibre's name stays,
+  // only the number may change.
+  const keepMerged =
+    !keepWritten &&
+    !!oldName &&
+    !!decidedSeries &&
+    fse.ai?.source !== 'user' &&
+    !!input.mergedSeries?.get(seriesKey(oldName))?.has(seriesKey(decidedSeries));
+  const series = keepWritten ? writtenName : keepMerged ? oldName : respell(decidedSeries);
   const spelling = keepWritten
     ? { spelling: { asDecided: writtenName } }
-    : series !== decidedSeries
-      ? { spelling: { asDecided: decidedSeries } }
-      : undefined;
+    : keepMerged
+      ? { spelling: { asDecided: decidedSeries, merged: true } }
+      : series !== decidedSeries
+        ? { spelling: { asDecided: decidedSeries } }
+        : undefined;
   // The series step's choice (series-order.ts): the number from what the series' sources print,
   // a best guess marked with its reason, or a problem for review.
   const so = series ? (input.seriesOrder ?? null) : null;

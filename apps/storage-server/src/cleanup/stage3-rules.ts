@@ -261,42 +261,57 @@ export function differentArtwork(
   return { different, matched, a: fa.length, b: fb.length };
 }
 
-function hamming(a: string, b: string): number {
-  let d = 0;
-  for (let i = 0; i < 16; i += 8) {
-    let x = (parseInt(a.slice(i, i + 8), 16) ^ parseInt(b.slice(i, i + 8), 16)) >>> 0;
-    while (x) {
-      d += x & 1;
-      x >>>= 1;
-    }
-  }
-  return d;
-}
-
-/** Each picture of one copy matched with the closest unused picture of the other. */
+/**
+ * Each picture of one copy matched with the closest unused picture of the other: the pairs within
+ * `maxDistance` taken greedily by distance, then a's order, then b's.
+ *
+ * Done one distance at a time (for each distance, each unused picture of a takes the first unused
+ * picture of b at exactly that distance), which takes the same pairs in the same order as sorting
+ * every pair within the distance, without holding that list: a book of ~10,900 scanned pages
+ * against its library copy had ~118 million such pairs and ran the server out of memory (WP20g,
+ * 2026-11-24).
+ */
 export function matchImages(
   a: ImageFact[],
   b: ImageFact[],
   maxDistance: number,
 ): { a: ImageFact; b: ImageFact; distance: number }[] {
-  const candidates: { i: number; j: number; d: number }[] = [];
-  a.forEach((x, i) =>
-    b.forEach((y, j) => {
-      const d = hamming(x.phash, y.phash);
-      if (d <= maxDistance) candidates.push({ i, j, d });
-    }),
-  );
-  candidates.sort((p, q) => p.d - q.d || p.i - q.i || p.j - q.j);
-  const usedA = new Set<number>();
-  const usedB = new Set<number>();
+  // The two 32-bit halves of each hash (parseInt of each 8 hex digits, as the distance always read them).
+  const halves = (xs: ImageFact[]) => {
+    const hi = new Float64Array(xs.length);
+    const lo = new Float64Array(xs.length);
+    xs.forEach((x, i) => {
+      hi[i] = parseInt(x.phash.slice(0, 8), 16);
+      lo[i] = parseInt(x.phash.slice(8, 16), 16);
+    });
+    return { hi, lo };
+  };
+  const ha = halves(a);
+  const hb = halves(b);
+  const usedA = new Uint8Array(a.length);
+  const usedB = new Uint8Array(b.length);
   const out: { a: ImageFact; b: ImageFact; distance: number }[] = [];
-  for (const c of candidates) {
-    if (usedA.has(c.i) || usedB.has(c.j)) continue;
-    usedA.add(c.i);
-    usedB.add(c.j);
-    out.push({ a: a[c.i], b: b[c.j], distance: c.d });
+  for (let d = 0; d <= maxDistance; d++) {
+    for (let i = 0; i < a.length; i++) {
+      if (usedA[i]) continue;
+      for (let j = 0; j < b.length; j++) {
+        if (usedB[j]) continue;
+        if (popcount32((ha.hi[i] ^ hb.hi[j]) >>> 0) + popcount32((ha.lo[i] ^ hb.lo[j]) >>> 0) !== d)
+          continue;
+        usedA[i] = 1;
+        usedB[j] = 1;
+        out.push({ a: a[i], b: b[j], distance: d });
+        break;
+      }
+    }
   }
   return out;
+}
+
+function popcount32(x: number): number {
+  x = x - ((x >>> 1) & 0x55555555);
+  x = (x & 0x33333333) + ((x >>> 2) & 0x33333333);
+  return Math.imul((x + (x >>> 4)) & 0x0f0f0f0f, 0x01010101) >>> 24;
 }
 
 /** One matched picture: larger (≥ 2 %) and better quantized (≥ 1 lower) wins; both ways = trade-off. */

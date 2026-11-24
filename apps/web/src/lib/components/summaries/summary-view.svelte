@@ -17,7 +17,8 @@
   import { readerLinkPath } from '$lib/anki/reader-link';
   import { pagePath } from '$lib/data/env';
   import type { SummaryItemInput } from '$lib/summaries/summary-api';
-  import { quoteLinkText } from '$lib/summaries/summary-page';
+  import { chapterButtonLabel, quoteLinkText } from '$lib/summaries/summary-page';
+  import { einkMode$ } from '$lib/data/store';
   import { volumeHeading } from '$lib/summaries/recap-page';
   import { bookDetailsHref } from '$lib/library/format';
   import type { SummaryCharacterLayout, SummaryRelationshipLayout } from '$lib/summaries/settings';
@@ -119,6 +120,34 @@
       title: g.title ?? `Chapter ${(g.chapter ?? 0) + 1}`
     }));
 
+  /**
+   * Chapter by chapter shows one chapter at a time, chosen with a row of chapter buttons (user,
+   * 2026-11-23: the list ran to dozens of screens), or All. The judging page keeps the whole
+   * list. Opens on the first chapter; a chapter that goes away (an edit) falls back to it.
+   */
+  $: chapterGroups = section.groups.filter((g) => g.items.some(shown));
+  $: chapterButtons = !marks && chapterGroups.length > 1;
+  let chapterPick: number | 'all' | null = null;
+  $: if (
+    chapterPick !== 'all' &&
+    (chapterPick === null || !chapterGroups.some((g) => g.chapter === chapterPick))
+  )
+    chapterPick = chapterGroups[0]?.chapter ?? null;
+  $: shownGroups =
+    !chapterButtons || chapterPick === 'all'
+      ? chapterGroups
+      : chapterGroups.filter((g) => g.chapter === chapterPick);
+  let chapterRow: HTMLElement | undefined;
+  function pickChapter(c: number | 'all', i: number) {
+    chapterPick = c;
+    // Keep the chosen button in view in its row (no animation on E-ink).
+    chapterRow?.querySelectorAll<HTMLElement>('[data-chapter-button]')[i]?.scrollIntoView({
+      block: 'nearest',
+      inline: 'nearest',
+      behavior: $einkMode$ ? 'auto' : 'smooth'
+    });
+  }
+
   function hrefOf(it: SummaryItem): string | null {
     return bookId && it.position !== null && it.showQuote && it.quote
       ? `${pagePath}${readerLinkPath(bookId, it.position)}`
@@ -192,7 +221,37 @@
           />{/if}
       {/each}
     {:else if section.key === 'chapters'}
-      {#each section.groups.filter((g) => g.items.some(shown)) as g (g.chapter)}
+      {#if chapterButtons}
+        <div
+          class="c-strip chapters"
+          role="group"
+          aria-label="Chapters"
+          bind:this={chapterRow}
+          data-testid="summary-chapter-buttons"
+        >
+          {#each chapterGroups as g, i (g.chapter)}
+            <button
+              type="button"
+              class="c-chip c-chip-sm shrink-0"
+              aria-pressed={chapterPick === g.chapter}
+              title={g.title}
+              data-chapter-button
+              data-testid="summary-chapter-button"
+              on:click={() => pickChapter(g.chapter ?? 0, i)}
+              >{chapterButtonLabel(g.title ?? '', g.chapter ?? 0)}</button
+            >
+          {/each}
+          <button
+            type="button"
+            class="c-chip c-chip-sm shrink-0"
+            aria-pressed={chapterPick === 'all'}
+            data-chapter-button
+            data-testid="summary-chapter-all"
+            on:click={() => pickChapter('all', chapterGroups.length)}>All</button
+          >
+        </div>
+      {/if}
+      {#each shownGroups as g (g.chapter)}
         <h3 class="mt-4 font-bold first:mt-0">{g.title}</h3>
         <ul class="mt-1 list-disc pl-5">
           {#each g.items.filter(shown) as it (it.ref)}
@@ -281,7 +340,12 @@
     {:else}
       <ul
         class:cards={section.key === 'characters' && !editing}
-        class:rows={section.key !== 'characters' || editing}
+        class:rows={(section.key !== 'characters' &&
+          section.key !== 'terms' &&
+          section.key !== 'threads') ||
+          editing}
+        class:glossary={section.key === 'terms'}
+        class:threads={section.key === 'threads'}
       >
         {#each flat as it (it.ref)}
           <li
@@ -371,6 +435,16 @@
 </section>
 
 <style>
+  .chapters {
+    display: flex;
+    gap: 0.5rem;
+    padding-bottom: 0.25rem;
+    margin-bottom: 0.5rem;
+  }
+  /* 48 px on touch and E-ink, like the buttons. */
+  .chapters .c-chip {
+    min-height: var(--c-btn-h);
+  }
   .tab {
     min-height: var(--c-btn-h);
     flex-shrink: 0;
@@ -414,5 +488,74 @@
   }
   .overview {
     white-space: pre-line;
+  }
+  /* Terms: the name in a left column, the definition beside it, a hairline between entries. */
+  .glossary > li {
+    display: grid;
+    grid-template-columns: minmax(7rem, 11rem) minmax(0, 1fr);
+    column-gap: 1.25rem;
+    padding: 0.75rem 0;
+    border-top: var(--c-border-width) solid var(--c-line);
+  }
+  .glossary > li:first-child {
+    border-top: none;
+  }
+  .glossary > li > :global(h3) {
+    grid-column: 1;
+    grid-row: 1 / span 20;
+  }
+  .glossary > li > :global(:not(h3)) {
+    grid-column: 2;
+  }
+  .glossary > li > :global(p) {
+    margin-top: 0;
+  }
+  @media (max-width: 40rem) {
+    .glossary > li {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .glossary > li > :global(h3),
+    .glossary > li > :global(:not(h3)) {
+      grid-column: 1;
+      grid-row: auto;
+    }
+    .glossary > li > :global(p) {
+      margin-top: 0.25rem;
+    }
+  }
+  /* Open threads: one numbered card each. */
+  .threads {
+    counter-reset: thread;
+  }
+  .threads > li {
+    counter-increment: thread;
+    display: grid;
+    grid-template-columns: 1.75rem minmax(0, 1fr);
+    column-gap: 0.75rem;
+    margin-bottom: 0.5rem;
+    padding: 0.75rem 0.875rem;
+    border-radius: 10px;
+    background: var(--c-raised);
+    border: var(--c-border-width) solid var(--c-line);
+  }
+  .threads > li::before {
+    content: counter(thread);
+    grid-column: 1;
+    grid-row: 1 / span 20;
+    align-self: start;
+    margin-top: 0.15rem;
+    width: 1.5rem;
+    height: 1.5rem;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.75rem;
+    font-weight: 500;
+    background: var(--c-line);
+    color: var(--c-muted, inherit);
+  }
+  .threads > li > :global(*) {
+    grid-column: 2;
   }
 </style>

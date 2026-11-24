@@ -51,6 +51,7 @@ import {
   bookmeterBar,
   stage4Finished,
 } from './stage4/bookmeter-more';
+import { SeriesPairs, seriesPairsAnalysisId } from './series-pairs/pass';
 import { CALIBRE_FETCH_SITES, type FetchSite } from './settings';
 import {
   BUILT_STAGES,
@@ -219,6 +220,9 @@ export class CleanupService {
   /** More Bookmeter coverage, step 2: the pass over stage 4's stored Bookmeter answers. */
   readonly bookmeter: BookmeterMore | null;
   private bookmeterRunning: Promise<void> | null = null;
+  /** Series under a short and a full name (tier 4, Part 3): the merges and the review list. */
+  readonly seriesPairs: SeriesPairs | null;
+  private seriesPairsRunning: Promise<void> | null = null;
   private bookmeterCache: { at: number; value: unknown } | null = null;
   /** Calibre metadata editing from the reader: the user's edits, their history and Undo. */
   readonly edits: EditService;
@@ -439,6 +443,20 @@ export class CleanupService {
             log: this.log,
           })
         : null;
+    const a4 = this.analysis4;
+    this.seriesPairs = a4
+      ? new SeriesPairs({
+          db: opts.cleanup,
+          source: {
+            books: (lib) => a4.seriesPairBooks(lib),
+            facts: (lib, uuid) => a4.seriesPairFacts(lib, uuid),
+          },
+          batches: this.batches.stage4,
+          targetLibrary: () => this.targetLibrary(),
+          writeWait: (lib) => this.bookmeterWriteWait(lib),
+          log: this.log,
+        })
+      : null;
     // Stage 4's covers are the stores' pictures, read from the fetch cache.
     this.batches.stage4.setStoreCover((url) => {
       const r = opts.cleanup
@@ -1035,6 +1053,75 @@ export class CleanupService {
     await this.round5(target);
     this.runArrivals();
     this.runBookmeter();
+    this.runSeriesPairs();
+  }
+
+  /**
+   * Series under two names: its pass in its own loop (each step works about 25 ms), once stage 4
+   * has finished (the pass reads stage 4's stored answers). Woken by the 5 s round.
+   */
+  runSeriesPairs(): void {
+    if (this.seriesPairsRunning || this.stopped || !this.seriesPairs) return;
+    if (!stage4Finished(this.db, this.stage4Ai?.isDone() ?? false)) return;
+    const pass = this.seriesPairs;
+    this.seriesPairsRunning = (async () => {
+      try {
+        for (let i = 0; i < 100_000; i++) {
+          if (this.stopped) break;
+          const r = await pass.step();
+          if (r === 'idle' || r === 'wait') break;
+          await new Promise((res) => setImmediate(res));
+        }
+      } catch (err) {
+        this.logError('Cleanup: series under two names failed:', err);
+      } finally {
+        this.seriesPairsRunning = null;
+      }
+    })();
+  }
+
+  /** The card's status: mode, phase, bar with the time left, counts. */
+  seriesPairsStatus(target: string | null, now = Date.now()): unknown {
+    const pass = this.seriesPairs;
+    if (!pass) return null;
+    const st = pass.state();
+    const p = st.progress;
+    const proposals = target ? pass.proposalCounts(target) : {};
+    const written = (proposals.applied ?? 0) + (proposals.skipped ?? 0);
+    const toWrite = (proposals.proposed ?? 0) + (proposals.queued ?? 0);
+    const bar =
+      p.phase === 'signals' && p.pairs
+        ? { label: 'pairs', done: p.done, total: p.pairs, startedAt: p.phaseStartedAt }
+        : p.phase === 'write' && st.mode === 'on' && written + toWrite > 0
+          ? {
+              label: 'books',
+              done: written,
+              total: written + toWrite,
+              // The pace of this write: from its first batch, books written since (WP20 lessons
+              // 4; the phase may have waited in Preview for hours before On).
+              startedAt: p.write.startedAt ?? null,
+              base: p.write.writtenAtStart ?? 0,
+            }
+          : null;
+    const base = bar && 'base' in bar ? (bar.base ?? 0) : 0;
+    const left =
+      bar && bar.startedAt && bar.done - base > 0 && bar.done < bar.total
+        ? Math.round(((now - bar.startedAt) / (bar.done - base)) * (bar.total - bar.done))
+        : null;
+    return {
+      mode: st.mode,
+      pausedReason: st.pausedReason,
+      stage4Done: stage4Finished(this.db, this.stage4Ai?.isDone() ?? false),
+      analysisId: seriesPairsAnalysisId(p.run),
+      progress: p,
+      bar: bar ? { ...bar, leftMs: left } : null,
+      proposals,
+    };
+  }
+
+  /** After the user's change on the page: work at once. */
+  seriesPairsChanged(): void {
+    this.runSeriesPairs();
   }
 
   /**

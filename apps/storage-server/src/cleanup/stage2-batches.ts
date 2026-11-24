@@ -23,7 +23,7 @@ import fs from 'fs';
 import path from 'path';
 import { snapshotFile } from '../calibre/indexer';
 import { parseCalibreDate } from '../calibre/ingest';
-import { liveTitleSort } from '../calibre/live-lookup';
+import { currentCalibreEpub, liveTitleSort } from '../calibre/live-lookup';
 import { getLibrary } from '../calibre/libraries';
 import { readSourceFile, resolveInside, statFile } from '../calibre/source-fs';
 import { BatchError, type BatchRow, type BatchService, type ItemState } from './batches';
@@ -36,6 +36,7 @@ import { illustratorIsNames, readStage2Snapshot, type Stage2Book } from './stage
 import { readStage4Extras, type Stage4Extras } from './stage4/snapshot4';
 import { LONG_AUTHOR_REASON, NAME_MAX_BYTES, calibreNameBytes } from './stage2-rules';
 import { fitTitle } from './title-fit';
+import { CALIBRE_AUTHOR_WORDS } from './calibre-names';
 import { currentAnalysisId, pauseStage } from './stages';
 import { EDIT_STAGE } from './field-stages';
 import { aiYoursAfterWrite } from './edits/yours';
@@ -433,6 +434,8 @@ async function folderExists(dir: string): Promise<boolean> {
 export const NO_FOLDER_REASON =
   "The book has no folder in Calibre's library (a record without files)";
 export const SPLIT_NAME_REASON = 'A name contains &, which Calibre splits into two names';
+export const SPLIT_WORD_REASON =
+  'A name contains "and" or "with", which Calibre splits into two names';
 export const LONG_NAME_REASON = "Too long for a folder name in Calibre's library";
 export const PROPOSED_TWICE_REASON = 'The same change was proposed twice; it is written once';
 export const TWO_VALUES_REASON =
@@ -517,11 +520,15 @@ export class Stage2Batches {
    * never shows and the book fails). Such author or illustrator changes go to review.
    */
   private reviewSplitNames(libraryId: string, now = Date.now()): void {
+    // " and " / " with " too (calibre's string_to_authors), but not in your own edits: what you
+    // typed is yours (the editor handles its names itself).
+    const words = this.stage !== EDIT_STAGE;
     const rows = this.db
       .prepare(
         `SELECT id, new_json FROM proposed_changes
          WHERE stage = ${this.stage} AND library_id = ? AND state = 'proposed' AND class = 'auto'
-           AND field IN ('authors', 'illustrator') AND new_json LIKE '%&%'`,
+           AND field IN ('authors', 'illustrator')
+           AND (new_json LIKE '%&%'${words ? " OR new_json LIKE '%and%' OR new_json LIKE '%with%'" : ''})`,
       )
       .all(libraryId) as { id: number; new_json: string }[];
     const mark = this.db.prepare(
@@ -529,9 +536,11 @@ export class Stage2Batches {
     );
     for (const r of rows) {
       const v = JSON.parse(r.new_json) as unknown;
-      if (Array.isArray(v) && v.some((n) => typeof n === 'string' && n.includes('&'))) {
-        mark.run(SPLIT_NAME_REASON, now, r.id);
-      }
+      if (!Array.isArray(v)) continue;
+      const names = v.filter((n): n is string => typeof n === 'string');
+      if (names.some((n) => n.includes('&'))) mark.run(SPLIT_NAME_REASON, now, r.id);
+      else if (words && names.some((n) => CALIBRE_AUTHOR_WORDS.test(n)))
+        mark.run(SPLIT_WORD_REASON, now, r.id);
     }
   }
 
@@ -1762,9 +1771,16 @@ export class Stage2Batches {
     const ev = JSON.parse(r.evidence_json) as Evidence2;
     if (!ev.cover || !ev.epub) throw new BatchError(404, 'not_found', 'No cover facts');
     const libDir = this.libDir(batch.libraryId);
-    const bytes = await readCoverBytes(resolveInside(libDir, ev.epub.path), ev.cover.entry).catch(
-      () => null,
-    );
+    // Where the analysis read the EPUB, else where the book is now: every Calibre write can
+    // move its folder (seen 2026-11-15: 38253, 38349, 38350 lost their covers this way). The
+    // picture's SHA-256 below proves it is the analysed cover either way.
+    const read = (rel: string) =>
+      readCoverBytes(resolveInside(libDir, rel), ev.cover!.entry).catch(() => null);
+    let bytes = await read(ev.epub.path);
+    if (!bytes) {
+      const now = await currentCalibreEpub(libDir, r.calibre_uuid);
+      if (now && now !== ev.epub.path) bytes = await read(now);
+    }
     if (!bytes) throw new BatchError(409, 'cover_gone', "The EPUB's cover can't be read any more");
     if (createHash('sha256').update(bytes).digest('hex') !== ev.cover.sha256) {
       throw new BatchError(409, 'cover_changed', "The EPUB's cover changed since the analysis");
@@ -1787,13 +1803,18 @@ export class Stage2Batches {
     const book = snap.books.get(calibreId);
     if (!book || !book.hasCover)
       throw new BatchError(404, 'not_found', 'Calibre lists no cover for this book');
-    try {
-      return await readSourceFile(
-        resolveInside(this.libDir(batch.libraryId), `${book.path}/cover.jpg`),
-      );
-    } catch {
-      throw new BatchError(404, 'not_found', "Calibre's cover.jpg can't be read");
+    const libDir = this.libDir(batch.libraryId);
+    const read = (folder: string) =>
+      readSourceFile(resolveInside(libDir, `${folder}/cover.jpg`)).catch(() => null);
+    // The folder the reader's index knows, else the book's folder now (a write may have moved it).
+    let bytes = await read(book.path);
+    if (!bytes) {
+      const now = await currentCalibreEpub(libDir, book.uuid);
+      const folder = now ? path.posix.dirname(now) : null;
+      if (folder && folder !== book.path) bytes = await read(folder);
     }
+    if (!bytes) throw new BatchError(404, 'not_found', "Calibre's cover.jpg can't be read");
+    return bytes;
   }
 
   /** Taken in when the reader's index shows each written book's new last_modified. */

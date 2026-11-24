@@ -17,6 +17,7 @@ import {
   decideSets,
   DEFAULT_DUPLICATE_SETTINGS,
   matchImages,
+  type ImageFact,
   omnibusByText,
   type PairBook,
   type QualityFacts,
@@ -568,5 +569,87 @@ describe.skipIf(!REF)('edition kinds on the 800 labeled books', () => {
         .join('\n'),
     );
     expect(missed).toEqual([]);
+  });
+});
+
+describe('matchImages without the list of every close pair (WP20g, 2026-11-24)', () => {
+  // The rule as it was: every pair within the distance, sorted, taken greedily.
+  const hamming = (a: string, b: string) => {
+    let d = 0;
+    for (let i = 0; i < 16; i += 8) {
+      let x = (parseInt(a.slice(i, i + 8), 16) ^ parseInt(b.slice(i, i + 8), 16)) >>> 0;
+      while (x) {
+        d += x & 1;
+        x >>>= 1;
+      }
+    }
+    return d;
+  };
+  const before = (a: ImageFact[], b: ImageFact[], max: number) => {
+    const c: { i: number; j: number; d: number }[] = [];
+    a.forEach((x, i) =>
+      b.forEach((y, j) => {
+        const d = hamming(x.phash, y.phash);
+        if (d <= max) c.push({ i, j, d });
+      }),
+    );
+    c.sort((p, q) => p.d - q.d || p.i - q.i || p.j - q.j);
+    const ua = new Set<number>();
+    const ub = new Set<number>();
+    const out: { a: ImageFact; b: ImageFact; distance: number }[] = [];
+    for (const x of c) {
+      if (ua.has(x.i) || ub.has(x.j)) continue;
+      ua.add(x.i);
+      ub.add(x.j);
+      out.push({ a: a[x.i], b: b[x.j], distance: x.d });
+    }
+    return out;
+  };
+  let seed = 11;
+  const rand = (n: number) => {
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+    return seed % n;
+  };
+  // Hashes near a few bases (many pairs within the distance, many ties), and some far ones.
+  const bases = ['0000000000000000', 'ffffffff00000000', '0f0f0f0f0f0f0f0f', 'a5a5a5a5a5a5a5a5'];
+  const near = (base: string) => {
+    const hex = base.split('').map((c) => parseInt(c, 16));
+    for (let k = rand(14); k > 0; k--) hex[rand(16)] ^= 1 << rand(4);
+    return hex.map((v) => v.toString(16)).join('');
+  };
+  const img = (n: number): ImageFact[] =>
+    Array.from({ length: n }, (_, i) => ({
+      entry: `p${i}.jpg`,
+      phash: rand(5) === 0 ? 'zzzzzzzzzzzzzzzz' : near(bases[rand(bases.length)]),
+      side: 1000,
+      quant: null,
+    })) as ImageFact[];
+
+  it('takes the same pairs in the same order as sorting every close pair', () => {
+    for (let round = 0; round < 200; round++) {
+      const a = img(rand(40));
+      const b = img(rand(40));
+      const max = rand(14);
+      expect(matchImages(a, b, max)).toEqual(before(a, b, max));
+    }
+  });
+
+  it('matches two copies of a book of 12,000 near-identical pages without running out of memory', () => {
+    // Every page within 5 bits of one base: any two pages are within 10, all can be matched.
+    const page = (i: number) => {
+      const hex = Array.from({ length: 16 }, () => 0);
+      for (let k = rand(6); k > 0; k--) hex[rand(16)] |= 1 << rand(4);
+      return {
+        entry: `p${i}.jpg`,
+        phash: hex.map((v) => v.toString(16)).join(''),
+        side: 1000,
+        quant: null,
+      } as ImageFact;
+    };
+    const a = Array.from({ length: 12_000 }, (_, i) => page(i));
+    const b = Array.from({ length: 12_000 }, (_, i) => page(i));
+    const t = Date.now();
+    expect(matchImages(a, b, 10)).toHaveLength(12_000);
+    expect(Date.now() - t).toBeLessThan(60_000);
   });
 });
