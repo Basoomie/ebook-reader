@@ -7,8 +7,12 @@
 
   /**
    * The language choice of the summary and the description on a phone: a small button that
-   * shows the language's name and opens a menu of the choices. Not a native <select>: Yomitan
-   * reads the text of a select under the finger and opened its popup on a tap.
+   * shows the language's name and opens a menu of the choices.
+   *
+   * Yomitan scans the text under a touch, also inside buttons and selects, and when it finds
+   * some it opens its popup and cancels the tap (the menu never opens). So the visible names
+   * are not text in the page: each is drawn by CSS from a data attribute (`.lp-text`), and
+   * the real name sits off screen for screen readers (`sr-only`), nowhere near a finger.
    */
   import { createEventDispatcher } from 'svelte';
   import Fa from 'svelte-fa';
@@ -44,7 +48,8 @@
   let:close
 >
   <svelte:fragment slot="button">
-    <span class="select-none">{short(current)}</span>
+    <span class="lp-text" aria-hidden="true" data-text={short(current)} />
+    <span class="sr-only">{label}: {short(current)}</span>
     <Fa icon={open ? faChevronUp : faChevronDown} size="xs" />
   </svelte:fragment>
   <div class="flex flex-col gap-1">
@@ -58,8 +63,17 @@
         on:click={() => {
           dispatch('choose', c.lang);
           close();
-        }}>{c.label}</button
+        }}
       >
+        <span class="lp-text" aria-hidden="true" data-text={c.label} />
+        <span class="sr-only">{c.label}</span>
+      </button>
     {/each}
   </div>
 </DropdownMenu>
+
+<style>
+  .lp-text::before {
+    content: attr(data-text);
+  }
+</style>
