@@ -94,6 +94,20 @@ export function disconnectCopy(): ConfirmCopy {
   };
 }
 
+/** Search history (2026-11-24): Settings' Clear buttons. */
+export function clearSearchHistoryCopy(where: 'library' | 'books', count: number): ConfirmCopy {
+  const what =
+    where === 'library'
+      ? `${count === 1 ? '1 remembered library search' : `${count} remembered library searches`}`
+      : `${count === 1 ? '1 remembered search' : `${count} remembered searches`} in books`;
+  return {
+    title: where === 'library' ? 'Clear library search history?' : 'Clear search history in books?',
+    message: [`Removes ${what}, on every device.`],
+    confirmLabel: 'Clear history',
+    irreversible: true
+  };
+}
+
 export function deleteThemeCopy(name: string): ConfirmCopy {
   return {
     title: `Delete the theme ${quoted(name)}?`,

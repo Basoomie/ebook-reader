@@ -2138,6 +2138,14 @@
               sections: sectionList$.getValue(),
               limit: SEARCH_LIMIT,
               search: (query: string) => searchBook(getSearchIndex(), query, SEARCH_LIMIT),
+              // Search history (2026-11-24): this book's remembered searches first.
+              historyBook: $rawBookData$
+                ? {
+                    serverBookId: stateBookId,
+                    localId: $rawBookData$.id,
+                    title: $rawBookData$.title ?? ''
+                  }
+                : null,
               resolver
             }
           }

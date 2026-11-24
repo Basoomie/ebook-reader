@@ -70,7 +70,17 @@
   import { BlurMode } from '$lib/data/blur-mode';
   import { dialogManager } from '$lib/data/dialog-manager';
   import { confirmDestructive } from '$lib/confirm/confirm';
-  import { deleteThemeCopy } from '$lib/confirm/confirm-copy';
+  import { clearSearchHistoryCopy, deleteThemeCopy } from '$lib/confirm/confirm-copy';
+  import {
+    bookSearchHistoryLimit$,
+    bookSearchHistoryOn$,
+    historyLimit,
+    searchHistoryLimit$,
+    searchHistoryOn$,
+    SEARCH_HISTORY_LIMIT_MAX,
+    SEARCH_HISTORY_LIMIT_MIN
+  } from '$lib/search-history/settings';
+  import { searchHistoryApi } from '$lib/sync/sync-service';
   import { LocalFont } from '$lib/data/fonts';
   import type { FuriganaStyle } from '$lib/data/furigana-style';
   import { ImportHTMLFixMode } from '$lib/data/import-html-fix-mode';
@@ -283,6 +293,30 @@
           : { existingThemes: optionsForTheme }
       }
     ]);
+  }
+
+  // Search history (2026-11-24): the Clear buttons and the limits.
+  const searchHistory = searchHistoryApi();
+  const searchHistoryEntries = searchHistory.entries;
+  $: libraryHistoryCount = $searchHistoryEntries.filter((e) => e.scope === 'lib').length;
+  $: bookHistoryCount = $searchHistoryEntries.filter((e) => e.scope === 'book').length;
+
+  async function clearSearchHistory(where: 'library' | 'books') {
+    const count = where === 'library' ? libraryHistoryCount : bookHistoryCount;
+    if (!count) return;
+    const confirmed = await confirmDestructive({
+      ...clearSearchHistoryCopy(where, count),
+      testid: 'search-history-clear-confirm',
+      confirmTestid: 'search-history-clear-confirm-button'
+    });
+    if (!confirmed) return;
+    await searchHistory.clear(where === 'library' ? 'lib' : 'book');
+  }
+
+  /** A limit field left: a bad value goes back to the default; a lower one removes the oldest. */
+  function fixHistoryLimit(subject: typeof searchHistoryLimit$, fallback: number) {
+    subject.next(historyLimit(subject.getValue(), fallback));
+    void searchHistory.pruneNow();
   }
 
   async function deleteTheme(themeId: string) {
@@ -825,6 +859,44 @@
           />
         </SettingField>
       </SettingRow>
+      <!-- Search history (2026-11-24): "Search in this book". -->
+      <SettingRow
+        id="book-search-history-on"
+        layout="inline"
+        settingKey="bookSearchHistoryOn"
+        let:labelId
+      >
+        <SettingSwitch
+          bind:checked={$bookSearchHistoryOn$}
+          labelledby={labelId}
+          testid="book-search-history-on"
+        />
+      </SettingRow>
+      <SettingRow id="book-search-history-limit" settingKey="bookSearchHistoryLimit" let:labelId>
+        <SettingField unit="searches">
+          <input
+            type="number"
+            step="1"
+            min={SEARCH_HISTORY_LIMIT_MIN}
+            max={SEARCH_HISTORY_LIMIT_MAX}
+            aria-labelledby={labelId}
+            data-testid="book-search-history-limit"
+            bind:value={$bookSearchHistoryLimit$}
+            on:change={() => fixHistoryLimit(bookSearchHistoryLimit$, 20)}
+          />
+        </SettingField>
+      </SettingRow>
+      <SettingRow id="book-search-history-clear" layout="inline">
+        <button
+          type="button"
+          class="c-btn c-btn-secondary"
+          disabled={!bookHistoryCount}
+          data-testid="book-search-history-clear"
+          on:click={() => clearSearchHistory('books')}
+        >
+          {bookHistoryCount ? `Clear ${bookHistoryCount}` : 'Nothing to clear'}
+        </button>
+      </SettingRow>
     </SettingsGroup>
 
     <SettingsGroup id="reader-opening">
@@ -1005,6 +1077,41 @@
           bind:value={$libraryLook$}
           labelledby={labelId}
         />
+      </SettingRow>
+    </SettingsGroup>
+    <!-- Search history (2026-11-24): after Look. -->
+    <SettingsGroup id="library-search">
+      <SettingRow id="search-history-on" layout="inline" settingKey="searchHistoryOn" let:labelId>
+        <SettingSwitch
+          bind:checked={$searchHistoryOn$}
+          labelledby={labelId}
+          testid="search-history-on"
+        />
+      </SettingRow>
+      <SettingRow id="search-history-limit" settingKey="searchHistoryLimit" let:labelId>
+        <SettingField unit="searches">
+          <input
+            type="number"
+            step="1"
+            min={SEARCH_HISTORY_LIMIT_MIN}
+            max={SEARCH_HISTORY_LIMIT_MAX}
+            aria-labelledby={labelId}
+            data-testid="search-history-limit"
+            bind:value={$searchHistoryLimit$}
+            on:change={() => fixHistoryLimit(searchHistoryLimit$, 30)}
+          />
+        </SettingField>
+      </SettingRow>
+      <SettingRow id="search-history-clear" layout="inline">
+        <button
+          type="button"
+          class="c-btn c-btn-secondary"
+          disabled={!libraryHistoryCount}
+          data-testid="search-history-clear"
+          on:click={() => clearSearchHistory('library')}
+        >
+          {libraryHistoryCount ? `Clear ${libraryHistoryCount}` : 'Nothing to clear'}
+        </button>
       </SettingRow>
     </SettingsGroup>
     <SettingsGroup id="library-book-page">
