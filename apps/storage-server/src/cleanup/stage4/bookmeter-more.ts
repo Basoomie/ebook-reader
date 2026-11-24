@@ -29,10 +29,10 @@
  */
 import type Database from 'better-sqlite3';
 import { createHash } from 'crypto';
-import type { AiRunner } from '../../ai/runner';
+import type { AiCounts, AiItem, AiRunner } from '../../ai/runner';
 import { runSpend } from '../../ai/spend';
 import type { AiStageSpec } from '../../ai/types';
-import { waitIsNote, waitNeedsUser, waitText } from '../../ai/waits';
+import { waitIsNote, waitNeedsUser, waitText, type AiWait } from '../../ai/waits';
 import { getSettings } from '../settings';
 import { loadGold, mapLabeledIds } from '../stage2-gate';
 import type { Stage2Batches } from '../stage2-batches';
@@ -133,6 +133,61 @@ export const NEAR_SPEC: AiStageSpec<NearEvidence, 'primary' | 'secondary'> = {
   evidenceText: (e) => JSON.stringify(e),
 };
 
+/**
+ * Near misses with several results that each fail only one check (user, 2026-11-23, after the
+ * live Preview: shown only the closest, both models took 富士見ミステリー文庫's print edition of
+ * Dクラッカーズ・ショートII for the 富士見ファンタジア文庫 e-book whose own entry was among the
+ * results). Every such result is shown, with the book's own store titles (they name its label);
+ * a match only when both models choose the same result.
+ */
+export interface NearMultiEvidence {
+  book: NearEvidence['book'] & { storeTitles: string[] };
+  results: {
+    id: string;
+    title: string;
+    authors: string[];
+    pages: number | null;
+    failedCheck: Check;
+  }[];
+}
+
+const NEAR_MULTI_SYSTEM = `You compare a Japanese e-book in a personal library with several search results from Bookmeter (読書メーター), a Japanese book-cataloguing site, and decide which result, if any, is the same book: the same work AND the same volume AND the same edition (a different volume, a different book in the same series, a collection or omnibus, a different translation, a manga adaptation of a novel, or a special edition such as 大活字/新装版 that the library book is not, are all not the same book).
+"storeTitles" are the library book's own titles at e-book stores (Amazon, BOOK☆WALKER) when they were found; they usually name its label. A result in another label is another edition of the work (for example a print edition in 富士見ミステリー文庫 when the library book is the 富士見ファンタジア文庫 edition), so it is not the same book; prefer the result whose label agrees with the store titles.
+Bookmeter's titles usually end with the publisher's label in brackets, e.g. "(電撃文庫 す 9-5)" or "(GAノベル)"; the letters and numbers inside a label are a catalogue code, not a volume number. Bookmeter may add the series name after the title, list the illustrator or translator as authors, write a name with a space where the book has ・, or use an older kanji form of a name (國/国).
+Each result's "failedCheck" says which automatic check it failed: title (the titles differ after cleaning), author (no author name in common), volume (the numbers in the titles differ) or edition (the result names an edition the book does not).
+Answer with the "id" of the one result that is the same book only when you are confident; "none" when no result is the same book; "unsure" otherwise. Give a short reason.`;
+
+/** The candidates' check (prompt bm-near-2, its own queue key): both models choose one id. */
+export const NEAR_MULTI_SPEC: AiStageSpec<NearMultiEvidence, 'primary' | 'secondary'> = {
+  stage: 'bookmeter-near2',
+  promptVersion: 'bm-near-2',
+  tasks: { primary: 'stage4.primary', secondary: 'stage4.secondary' },
+  system: NEAR_MULTI_SYSTEM,
+  userText: (e) => JSON.stringify(e),
+  schema: {
+    type: 'object',
+    properties: { match: { type: 'string' }, reason: { type: 'string' } },
+    required: ['match', 'reason'],
+    additionalProperties: false,
+  },
+  schemaName: 'bookmeter_match',
+  parseAnswer: (raw) => {
+    const r = raw as { match?: unknown; reason?: unknown } | null;
+    if (!r || typeof r.match !== 'string' || r.match.trim() === '') return null;
+    return { match: r.match.trim(), reason: typeof r.reason === 'string' ? r.reason : '' };
+  },
+  evidenceText: (e) => JSON.stringify(e),
+};
+
+/**
+ * The near-miss rules' version: 2 = several one-check results go to NEAR_MULTI_SPEC. A Preview
+ * finished before it asks those books again once (reaskStep).
+ */
+export const NEAR_VERSION = 2;
+const MULTI = 'several';
+/** Phases after the AI check and before any write: a finished Preview there is asked again. */
+const REASK_PHASES = new Set<string>(['second', 'stores', 'propose', 'spot']);
+
 // ---------------------------------------------------------------- state
 
 /** What a book's row remembers of its Bookmeter result. */
@@ -148,6 +203,8 @@ export interface BmHit {
   query?: 'stored' | 'q1' | 'q2';
   /** The ASIN stage 4 identified (Natively's lookup at proposing). */
   asin?: string | null;
+  /** Several results failing only one check: all of them (NEAR_MULTI_SPEC). */
+  candidates?: (BookmeterHit & { failed: Check })[];
 }
 
 interface Rate {
@@ -197,6 +254,10 @@ export interface BmProgress {
   /** Milliseconds of work per phase (the NAS timing). */
   times: Record<string, number>;
   finishedAt: number | null;
+  /** NEAR_VERSION the near misses were decided with (missing = 1). */
+  nearVersion?: number;
+  /** The one-time re-ask of a finished Preview's near misses (reaskStep). */
+  reask?: { cursor: string; asked: number } | null;
 }
 
 export function emptyBmProgress(run = 1, libraryId: string | null = null): BmProgress {
@@ -237,6 +298,8 @@ export function emptyBmProgress(run = 1, libraryId: string | null = null): BmPro
     labeled: null,
     times: {},
     finishedAt: null,
+    nearVersion: NEAR_VERSION,
+    reask: null,
   };
 }
 
@@ -263,7 +326,8 @@ export function getBmState(db: Database.Database): BmState {
   return {
     libraryId: r.library_id,
     mode: r.mode,
-    progress: stored.phase ? { ...base, ...stored } : base,
+    // A run saved before NEAR_VERSION existed was decided with version 1 (not the default).
+    progress: stored.phase ? { ...base, ...stored, nearVersion: stored.nearVersion ?? 1 } : base,
     pausedReason: r.paused_reason,
     pausedDetail: r.paused_detail,
     updatedAt: r.updated_at,
@@ -393,7 +457,10 @@ export class BookmeterMore {
     const t = performance.now();
     let r: BmStep;
     try {
-      r = await this.phaseStep(st, p, lib, shouldStop);
+      r =
+        (p.nearVersion ?? 1) < NEAR_VERSION && REASK_PHASES.has(p.phase)
+          ? this.reaskStep(p, lib)
+          : await this.phaseStep(st, p, lib, shouldStop);
     } finally {
       p.times[p.phase] = (p.times[p.phase] ?? 0) + (performance.now() - t);
       saveProgress(this.db, p);
@@ -521,6 +588,7 @@ export class BookmeterMore {
       .update(
         JSON.stringify([
           NEAR_SPEC.promptVersion,
+          NEAR_MULTI_SPEC.promptVersion,
           s.models['stage4.primary'],
           s.models['stage4.secondary'],
           s.ai.labeledOnly,
@@ -530,13 +598,36 @@ export class BookmeterMore {
       .slice(0, 16);
   }
 
+  /** Both questions' counts in this run (the card's bar). */
+  aiCounts(runId: string): AiCounts {
+    const a = this.deps.runner.counts(NEAR_SPEC.stage, runId);
+    const b = this.deps.runner.counts(NEAR_MULTI_SPEC.stage, runId);
+    return {
+      queued: a.queued + b.queued,
+      sent: a.sent + b.sent,
+      answered: a.answered + b.answered,
+      blocked: a.blocked + b.blocked,
+      invalid: a.invalid + b.invalid,
+      failed: a.failed + b.failed,
+    };
+  }
+
+  /** The AI check's spending in this run (both questions). */
+  aiCost(runId: string): number {
+    return (
+      runSpend(this.db, NEAR_SPEC.stage, runId).costUsd +
+      runSpend(this.db, NEAR_MULTI_SPEC.stage, runId).costUsd
+    );
+  }
+
   private async aiStep(p: BmProgress, lib: string, shouldStop: () => boolean): Promise<BmStep> {
     const db = this.db;
     const runner = this.deps.runner;
     const runId = bookmeterAnalysisId(p.run);
     const key = this.aiKey();
     if (p.ai.askKey !== key) {
-      // The evidence of every near miss, then the questions (labeled books first).
+      // The evidence of every near miss, then the questions (labeled books first): one result
+      // with step 1's question, several results with the candidates' question.
       const a = this.deps.analysis;
       a.loadSnapshot(lib);
       const rows = db
@@ -548,60 +639,82 @@ export class BookmeterMore {
         calibre_uuid: string;
         labeled: number;
         hit_json: string;
-        failed_check: Check;
+        failed_check: string;
       }[];
       for (let at = 0; at < rows.length; at += 200) {
-        const items = rows.slice(at, at + 200).flatMap((r) => {
+        const one: AiItem<NearEvidence>[] = [];
+        const several: AiItem<NearMultiEvidence>[] = [];
+        for (const r of rows.slice(at, at + 200)) {
           const f = a.bookmeterFacts(lib, r.calibre_uuid);
-          if (!f) return [];
-          return [
-            {
-              key: `${lib}:${r.calibre_uuid}`,
-              labeled: r.labeled === 1,
-              evidence: nearEvidence(f, JSON.parse(r.hit_json) as BmHit, r.failed_check),
-            },
-          ];
-        });
-        runner.putItems(NEAR_SPEC, items, 1);
-        const keys = items.map((i) => i.key);
-        runner.enqueue(NEAR_SPEC, 'primary', keys, runId);
-        runner.enqueue(NEAR_SPEC, 'secondary', keys, runId);
+          if (!f) continue;
+          const hit = JSON.parse(r.hit_json) as BmHit;
+          const item = { key: `${lib}:${r.calibre_uuid}`, labeled: r.labeled === 1 };
+          if (r.failed_check === MULTI)
+            several.push({ ...item, evidence: nearMultiEvidence(f, hit) });
+          else one.push({ ...item, evidence: nearEvidence(f, hit, r.failed_check as Check) });
+        }
+        if (one.length) {
+          runner.putItems(NEAR_SPEC, one, 1);
+          const keys = one.map((i) => i.key);
+          runner.enqueue(NEAR_SPEC, 'primary', keys, runId);
+          runner.enqueue(NEAR_SPEC, 'secondary', keys, runId);
+        }
+        if (several.length) {
+          runner.putItems(NEAR_MULTI_SPEC, several, 1);
+          const keys = several.map((i) => i.key);
+          runner.enqueue(NEAR_MULTI_SPEC, 'primary', keys, runId);
+          runner.enqueue(NEAR_MULTI_SPEC, 'secondary', keys, runId);
+        }
         await new Promise((res) => setImmediate(res));
       }
-      p.ai.items = rows.length;
+      // Every near miss of the run (a re-ask asks only some of them again).
+      p.ai.items = (
+        db
+          .prepare(
+            `SELECT COUNT(*) AS n FROM bookmeter_more_books WHERE library_id = ? AND failed_check IS NOT NULL`,
+          )
+          .get(lib) as { n: number }
+      ).n;
       p.ai.askKey = key;
       p.ai.rate = null;
     }
-    const counts = () => {
-      const c = runner.counts(STAGE_KEY, runId);
+    const done = () => {
+      const c = this.aiCounts(runId);
       return c.answered + c.blocked + c.invalid + c.failed;
     };
-    p.ai.rate ??= { at: Date.now(), done: counts() };
+    p.ai.rate ??= { at: Date.now(), done: done() };
+    const open = [NEAR_SPEC, NEAR_MULTI_SPEC].filter((s) => runner.pending(s.stage, runId) > 0);
     // Nothing to ask (no near misses, or every answer in): decide at once.
-    if (runner.pending(STAGE_KEY, runId) === 0) return this.aiDecide(p, lib);
-    const r = await runner.step(NEAR_SPEC, runId, shouldStop);
-    p.ai.costUsd = runSpend(db, STAGE_KEY, runId).costUsd;
-    if (r.wait) {
-      p.ai.wait = waitText(r.wait);
-      if (waitNeedsUser(r.wait)) {
-        const st = this.state();
-        if (st.pausedReason !== 'ai' || st.pausedDetail !== p.ai.wait) {
-          setPause(db, 'ai', p.ai.wait);
-          this.deps.log?.(`More Bookmeter matches: ${p.ai.wait}`);
-        }
-        return 'wait';
-      }
-      if (r.pending > 0)
-        return waitIsNote(r.wait) && (r.sent > 0 || r.answered > 0) ? 'more' : 'wait';
-    } else {
-      p.ai.wait = null;
-      if (this.state().pausedReason === 'ai') setPause(db, null, null);
-      if (r.pending > 0) return r.sent > 0 || r.answered > 0 ? 'more' : 'wait';
+    if (!open.length) return this.aiDecide(p, lib);
+    let moved = false;
+    let wait: AiWait | null = null;
+    let pending = 0;
+    for (const spec of open) {
+      const r = await runner.step(spec as AiStageSpec<unknown>, runId, shouldStop);
+      pending += r.pending;
+      if (r.sent > 0 || r.answered > 0) moved = true;
+      if (r.wait && !wait) wait = r.wait;
     }
+    p.ai.costUsd = this.aiCost(runId);
+    if (wait && waitNeedsUser(wait)) {
+      p.ai.wait = waitText(wait);
+      const st = this.state();
+      if (st.pausedReason !== 'ai' || st.pausedDetail !== p.ai.wait) {
+        setPause(db, 'ai', p.ai.wait);
+        this.deps.log?.(`More Bookmeter matches: ${p.ai.wait}`);
+      }
+      return 'wait';
+    }
+    p.ai.wait = wait ? waitText(wait) : null;
+    if (!wait && this.state().pausedReason === 'ai') setPause(db, null, null);
+    if (pending > 0) return moved && (!wait || waitIsNote(wait)) ? 'more' : 'wait';
     return this.aiDecide(p, lib);
   }
 
-  /** Every question answered (or given up): both models yes = a match. */
+  /**
+   * Every question answered (or given up): both models yes = a match (one result); both models
+   * the same result's id = that result (several).
+   */
   private aiDecide(p: BmProgress, lib: string): BmStep {
     const db = this.db;
     const runner = this.deps.runner;
@@ -610,9 +723,10 @@ export class BookmeterMore {
     p.ai.wait = null;
     const near = db
       .prepare(
-        `SELECT calibre_uuid, hit_json FROM bookmeter_more_books WHERE library_id = ? AND state = 'near'`,
+        `SELECT calibre_uuid, hit_json, failed_check FROM bookmeter_more_books
+         WHERE library_id = ? AND state = 'near'`,
       )
-      .all(lib) as { calibre_uuid: string; hit_json: string }[];
+      .all(lib) as { calibre_uuid: string; hit_json: string; failed_check: string }[];
     const upd = db.prepare(
       `UPDATE bookmeter_more_books SET state = ?, source = ?, hit_json = ?, updated_at = ?
        WHERE library_id = ? AND calibre_uuid = ?`,
@@ -620,23 +734,110 @@ export class BookmeterMore {
     db.transaction(() => {
       for (const n of near) {
         const k = `${lib}:${n.calibre_uuid}`;
-        const a1 = runner.answerOf(NEAR_SPEC, 'primary', k);
-        const a2 = runner.answerOf(NEAR_SPEC, 'secondary', k);
-        const yes = a1?.answer?.same_book === 'yes' && a2?.answer?.same_book === 'yes';
         const hit = JSON.parse(n.hit_json) as BmHit;
-        if (yes) p.ai.accepted++;
-        else p.ai.notAccepted++;
+        let chosen: BmHit | null = null;
+        if (n.failed_check === MULTI) {
+          const m1 = runner.answerOf(NEAR_MULTI_SPEC, 'primary', k)?.answer?.match;
+          const m2 = runner.answerOf(NEAR_MULTI_SPEC, 'secondary', k)?.answer?.match;
+          const c =
+            typeof m1 === 'string' && m1 === m2
+              ? hit.candidates?.find((x) => x.id === m1)
+              : undefined;
+          if (c)
+            chosen = {
+              ...plainHit(c),
+              asin: hit.asin,
+              candidates: hit.candidates,
+              reason: `both models chose this result of ${hit.candidates?.length ?? 0} (it fails the ${c.failed} check)`,
+            };
+        } else {
+          const a1 = runner.answerOf(NEAR_SPEC, 'primary', k);
+          const a2 = runner.answerOf(NEAR_SPEC, 'secondary', k);
+          if (a1?.answer?.same_book === 'yes' && a2?.answer?.same_book === 'yes')
+            chosen = { ...hit, reason: `both models: the same book (${hit.reason ?? ''})` };
+        }
         upd.run(
-          yes ? 'matched' : 'none',
-          yes ? 'ai' : null,
-          JSON.stringify({ ...hit, reason: `both models: the same book (${hit.reason ?? ''})` }),
+          chosen ? 'matched' : 'none',
+          chosen ? 'ai' : null,
+          JSON.stringify(chosen ?? hit),
           Date.now(),
           lib,
           n.calibre_uuid,
         );
       }
     })();
+    // Counted from the table: a re-ask decides some books again.
+    const count = (sql: string) =>
+      (
+        db
+          .prepare(`SELECT COUNT(*) AS n FROM bookmeter_more_books WHERE library_id = ? AND ${sql}`)
+          .get(lib) as { n: number }
+      ).n;
+    p.ai.accepted = count(`source = 'ai'`);
+    p.ai.notAccepted = count(`state = 'none' AND failed_check IS NOT NULL`);
     this.next(p, 'second');
+    return 'more';
+  }
+
+  // ------------------------------------------------------------ the one-time re-ask
+
+  /**
+   * NEAR_VERSION 2 on a Preview that finished its AI check with version 1: the near misses with
+   * several one-check results (accepted or not) are asked again with every candidate; their open
+   * proposals and the spot check are set aside, then the pass goes on from the AI step (store
+   * lists of new matches, proposals again, a new spot check). Never once writing has started.
+   */
+  private reaskStep(p: BmProgress, lib: string): BmStep {
+    const db = this.db;
+    const a = this.deps.analysis;
+    a.loadSnapshot(lib);
+    const r0 = (p.reask ??= { cursor: '', asked: 0 });
+    const rows = db
+      .prepare(
+        `SELECT calibre_uuid, hit_json FROM bookmeter_more_books
+         WHERE library_id = ? AND failed_check IS NOT NULL AND failed_check <> ?
+           AND (source = 'ai' OR state = 'none') AND calibre_uuid > ?
+         ORDER BY calibre_uuid LIMIT 200`,
+      )
+      .all(lib, MULTI, r0.cursor) as { calibre_uuid: string; hit_json: string }[];
+    if (!rows.length) {
+      const aid = bookmeterAnalysisId(p.run);
+      db.transaction(() => {
+        db.prepare('DELETE FROM bookmeter_more_spot').run();
+        // Open proposals of the books asked again (a match chosen now is proposed again).
+        db.prepare(
+          `DELETE FROM proposed_changes WHERE stage = 4 AND field = 'identifiers' AND analysis_id = ?
+             AND state = 'proposed' AND batch_id IS NULL AND library_id = ? AND calibre_uuid IN (
+               SELECT calibre_uuid FROM bookmeter_more_books WHERE library_id = ? AND state = 'near')`,
+        ).run(aid, lib, lib);
+      })();
+      this.deps.log?.(
+        `More Bookmeter matches: ${r0.asked} near misses with several close results are asked again with every result`,
+      );
+      p.nearVersion = NEAR_VERSION;
+      p.reask = null;
+      p.spot = { drawnAt: null, size: 0, notified: false };
+      p.stores.enqueued = false;
+      p.stores.rate = null;
+      p.ai.askKey = null;
+      this.next(p, 'ai');
+      return 'more';
+    }
+    const set = db.prepare(
+      `UPDATE bookmeter_more_books SET state = 'near', source = NULL, failed_check = ?, hit_json = ?,
+         stores_json = NULL, stores_failed = 0, updated_at = ? WHERE library_id = ? AND calibre_uuid = ?`,
+    );
+    const t0 = performance.now();
+    for (const r of rows) {
+      if (performance.now() - t0 > SLICE_MS) break;
+      r0.cursor = r.calibre_uuid;
+      const f = a.bookmeterFacts(lib, r.calibre_uuid);
+      if (!f) continue;
+      const d = decideStored(f, this.deps.queue);
+      if (d.state !== 'near' || d.failed !== MULTI || !d.hit) continue;
+      set.run(MULTI, JSON.stringify({ ...d.hit, asin: f.asin }), Date.now(), lib, r.calibre_uuid);
+      r0.asked++;
+    }
     return 'more';
   }
 
@@ -988,6 +1189,8 @@ export class BookmeterMore {
          WHERE library_id = ? AND state = 'ready' AND calibre_uuid > ? ORDER BY calibre_uuid LIMIT 200`,
       )
       .all(lib, p.cursor) as { calibre_uuid: string }[];
+    // Counted afresh by each pass (a re-ask proposes every book again).
+    if (p.cursor === '') p.propose = { proposed: 0, held: 0, nothing: 0, yours: 0 };
     if (!rows.length) {
       this.labeledLine(p, lib);
       this.next(p, 'spot');
@@ -1206,6 +1409,21 @@ export class BookmeterMore {
     const ai =
       row.source === 'ai'
         ? (['primary', 'secondary'] as const).map((role) => {
+            // Several candidates: the result each model chose; one: its yes or no.
+            if (hit.candidates?.length) {
+              const x = this.deps.runner.answerOf(NEAR_MULTI_SPEC, role, k);
+              const m = (x?.answer?.match as string | undefined) ?? null;
+              return {
+                model: x?.model ?? null,
+                answer:
+                  m === null
+                    ? null
+                    : m === hit.id
+                      ? `chose this result (of ${hit.candidates.length})`
+                      : `chose ${m}`,
+                reason: (x?.answer?.reason as string | undefined) ?? null,
+              };
+            }
             const x = this.deps.runner.answerOf(NEAR_SPEC, role, k);
             return {
               model: x?.model ?? null,
@@ -1330,6 +1548,29 @@ export class BookmeterMore {
     return out;
   }
 
+  /**
+   * The write's pace from its last finished batches (at most 5, the waits between them included,
+   * so the time left is wall-clock; a restart long ago falls out of the window): the time from
+   * the first one's planning to the last one's end, and their items. Null before one finished.
+   */
+  writePace(batchIds: string[]): { ms: number; items: number } | null {
+    const recent = batchIds.slice(-12);
+    if (!recent.length) return null;
+    const rows = this.db
+      .prepare(
+        `SELECT created_at, finished_at, item_count FROM batches
+         WHERE id IN (${recent.map(() => '?').join(', ')}) AND finished_at IS NOT NULL
+         ORDER BY finished_at DESC LIMIT 5`,
+      )
+      .all(...recent) as { created_at: number; finished_at: number; item_count: number }[];
+    if (!rows.length) return null;
+    const first = Math.min(...rows.map((r) => r.created_at));
+    const items = rows.reduce((a, r) => a + r.item_count, 0);
+    return rows[0].finished_at > first && items > 0
+      ? { ms: rows[0].finished_at - first, items }
+      : null;
+  }
+
   /** The open requests of a phase (its waiters not answered yet). */
   openRequests(steps: ('q1' | 'q2' | 'stores')[]): number {
     const inList = steps.map(() => '?').join(', ');
@@ -1351,6 +1592,39 @@ export class BookmeterMore {
         )
         .get(...steps) as { n: number }
     ).n;
+  }
+
+  /** The AI check's batches still at a provider (the card says what it waits for). */
+  openAiBatches(): {
+    model: string;
+    provider: string;
+    requests: number;
+    submittedAt: number;
+    providerStatus: string | null;
+    stalled: boolean;
+  }[] {
+    return (
+      this.db
+        .prepare(
+          `SELECT model, provider, requests, submitted_at, provider_status, error FROM ai_batches
+           WHERE state = 'submitted' AND stage IN (?, ?) ORDER BY submitted_at`,
+        )
+        .all(NEAR_SPEC.stage, NEAR_MULTI_SPEC.stage) as {
+        model: string;
+        provider: string;
+        requests: number;
+        submitted_at: number;
+        provider_status: string | null;
+        error: string | null;
+      }[]
+    ).map((b) => ({
+      model: b.model,
+      provider: b.provider,
+      requests: b.requests,
+      submittedAt: b.submitted_at,
+      providerStatus: b.provider_status,
+      stalled: (b.error ?? '').startsWith('stalled'),
+    }));
   }
 
   /** Is there work in the queue that only this pass waits on (the fetch helper's alert). */
@@ -1414,7 +1688,7 @@ export function decideStored(
 ): {
   state: 'matched' | 'near' | 'second' | 'none' | 'left-out';
   hit?: BmHit;
-  failed?: Check;
+  failed?: Check | typeof MULTI;
 } {
   const stored = f.bookmeter.hits ?? [];
   if (!stored.length) {
@@ -1434,7 +1708,7 @@ export function decideStored(
     .filter((t): t is string => typeof t === 'string')
     .map((t) => nfkc(t));
   const edOk = (title: string) => !editionNotes(title).some((n) => !own.some((t) => t.includes(n)));
-  const c = chosenDecision(
+  const decided = chosenDecision(
     hits.map((h) => ({
       ...h,
       title: h.listTitle ?? h.title,
@@ -1442,7 +1716,23 @@ export function decideStored(
     })),
     { ...f.input.chosen!, title: f.input.title, authors: f.input.authors },
     edOk,
-  ).closest;
+  );
+  const c = decided.closest;
+  // Several results that each fail only one check: the AI check sees all of them.
+  const candidates = hits.flatMap((h, i) =>
+    decided.failed[i].length === 1 ? [{ ...plainHit(h), failed: decided.failed[i][0] }] : [],
+  );
+  if (c && c.failed.length === 1 && candidates.length > 1) {
+    return {
+      state: 'near',
+      hit: {
+        ...plainHit(hits[c.index]),
+        reason: `${candidates.length} results fail only one check`,
+        candidates,
+      },
+      failed: MULTI,
+    };
+  }
   if (c && c.failed.length === 1) {
     const orig = hits[c.index];
     return {
@@ -1468,6 +1758,20 @@ export function nearEvidence(f: BookmeterFacts, hit: BmHit, failed: Check): Near
     },
     result: { title: hit.title, authors: hit.authors, pages: hit.pages },
     failedCheck: failed,
+  };
+}
+
+/** The candidates' question evidence: the book with its store titles, every one-check result. */
+export function nearMultiEvidence(f: BookmeterFacts, hit: BmHit): NearMultiEvidence {
+  return {
+    book: { ...nearEvidence(f, hit, 'title').book, storeTitles: f.storeTitles },
+    results: (hit.candidates ?? []).map((c) => ({
+      id: c.id,
+      title: c.title,
+      authors: c.authors,
+      pages: c.pages,
+      failedCheck: c.failed,
+    })),
   };
 }
 
@@ -1537,10 +1841,14 @@ export function bookmeterBar(
       invalid: number;
       failed: number;
     };
+    /** Questions in batches still at a provider (their answers come all at once, or never). */
+    aiInBatches?: number;
     openSearches: number;
     openQ1: number;
     openStores: number;
     intervalSeconds: number;
+    /** The write: books written or skipped, all of the run's proposals, the recent batches' pace. */
+    write?: { done: number; total: number; pace: { ms: number; items: number } | null };
   },
 ): BmBar | null {
   const since = (at: number | null) => (at === null ? 0 : Math.max(0, now - at));
@@ -1567,11 +1875,16 @@ export function bookmeterBar(
       const total = done + x.ai.queued + x.ai.sent;
       const n = p.ai.rate ? done - p.ai.rate.done : 0;
       const ok = !!p.ai.rate && n >= MIN_MEASURED;
+      // A batch at a provider answers all at once (or, stalled, is cancelled and asked again
+      // one call each): the measured rate says nothing about it, so only the questions outside
+      // batches are timed, and none while only batches are left (found live 2026-11-23: "about
+      // 1 min left" for 40 min while gpt-6-luna's batch of 500 sat at OpenAI).
+      const rest = Math.max(0, total - done - (x.aiInBatches ?? 0));
       return {
         phase: 'ai',
         done,
         total,
-        leftMs: ok ? (since(p.ai.rate!.at) / n) * (total - done) : null,
+        leftMs: ok && rest > 0 ? (since(p.ai.rate!.at) / n) * rest : null,
         measured: ok,
       };
     }
@@ -1594,6 +1907,18 @@ export function bookmeterBar(
         total: p.stores.asked,
         leftMs: p.stores.enqueued ? x.openStores * sp.ms : null,
         measured: sp.measured,
+      };
+    }
+    case 'write': {
+      const w = x.write;
+      if (!w) return null;
+      const ok = !!w.pace && w.pace.items >= MIN_MEASURED;
+      return {
+        phase: 'write',
+        done: w.done,
+        total: w.total,
+        leftMs: ok ? (w.pace!.ms / w.pace!.items) * Math.max(0, w.total - w.done) : null,
+        measured: ok,
       };
     }
     case 'propose':

@@ -19,6 +19,7 @@
  */
 import type Database from 'better-sqlite3';
 import { getUserByName, OWNER_NAME } from '../db/users';
+import { globalSetting } from '../sync/global-setting';
 import { ReportKind } from './stats-events';
 import {
   ReadThrough,
@@ -49,26 +50,6 @@ export const DEFAULT_CALENDAR: StatsCalendar = { dayStartHour: 0, weekStart: 1 }
 /** The single user's id (the app is single-user: OWNER_NAME), or null. */
 export function ownerId(db: Database.Database): string | null {
   return getUserByName(db, OWNER_NAME)?.id ?? null;
-}
-
-/**
- * A global setting's raw value as the settings source stored it (the localStorage text),
- * or null (no record, deleted, or never set on the source = the default).
- */
-function globalSetting(db: Database.Database, userId: string, key: string): string | null {
-  const row = db
-    .prepare(
-      `SELECT data FROM sync_records WHERE user_id = ? AND kind = 'setting' AND id = ?
-         AND deleted_at IS NULL`,
-    )
-    .get(userId, `global:${key}`) as { data: string | null } | undefined;
-  if (!row?.data) return null;
-  try {
-    const value = (JSON.parse(row.data) as { value?: unknown }).value;
-    return typeof value === 'string' ? value : null;
-  } catch {
-    return null;
-  }
 }
 
 /** The day-start hour and week start the Stats page uses (read like the web app reads them). */

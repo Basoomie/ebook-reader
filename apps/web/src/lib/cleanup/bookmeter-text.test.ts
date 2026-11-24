@@ -5,8 +5,10 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import { etaText } from './cleanup-text';
 import {
   addedText,
+  aiBatchLines,
   bookmeterBar,
   bookmeterLines,
   sourceText,
@@ -66,6 +68,20 @@ describe('More Bookmeter matches: the card text', () => {
     expect(bookmeterBar(status({ mode: 'off' }))).toBeNull();
   });
 
+  it('shows the write to Calibre with its count, and the time left once measured', () => {
+    const write = (leftMs: number | null) =>
+      status({
+        mode: 'on',
+        bar: { phase: 'write', done: 1500, total: 27267, leftMs, measured: leftMs !== null }
+      });
+    expect(bookmeterBar(write(null))).toEqual({
+      label: 'Writing to Calibre (1,500 of 27,267)',
+      fraction: 1500 / 27267,
+      eta: null
+    });
+    expect(bookmeterBar(write(80 * 60_000))?.eta).toBe(etaText(80 * 60_000));
+  });
+
   it('says what was found by source and what is left alone', () => {
     const lines = bookmeterLines(status());
     expect(lines[0]).toBe(
@@ -90,6 +106,38 @@ describe('More Bookmeter matches: the card text', () => {
     ).toBe('Spot check: 50 of 50 marked, 1 wrong. Passed: On can be switched on.');
     expect(spotLine(status({ spot: { size: 50, right: 48, wrong: 2, open: 0 } }))).toContain(
       'On stays off'
+    );
+  });
+
+  it('says what the AI check waits for while a batch is at a provider', () => {
+    const at = Date.UTC(2026, 10, 23, 19, 44);
+    const s = status({
+      aiBatches: [
+        {
+          model: 'gpt-6-luna',
+          provider: 'openai',
+          requests: 500,
+          submittedAt: at,
+          providerStatus: 'cancelling',
+          stalled: true
+        }
+      ],
+      batchStallMinutes: 30
+    });
+    expect(aiBatchLines(s)).toEqual([]); // only in the AI step
+    s.progress.phase = 'ai';
+    const [line] = aiBatchLines(s, at + 37 * 60_000);
+    expect(line).toContain("gpt-6-luna's batch of 500 questions at OpenAI");
+    expect(line).toContain('(37 min ago)');
+    expect(line).toContain('nothing answered in 30 min, so it is being cancelled');
+    s.aiBatches![0].stalled = false;
+    expect(aiBatchLines(s, at + 5 * 60_000)[0]).toContain(
+      'If it answers nothing in 30 min, it is cancelled'
+    );
+    // OpenAI's batches have their own limit (book summaries session 3).
+    s.batchStallMinutesOpenai = 180;
+    expect(aiBatchLines(s, at + 5 * 60_000)[0]).toContain(
+      'If it answers nothing in 180 min, it is cancelled'
     );
   });
 

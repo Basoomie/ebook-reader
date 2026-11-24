@@ -14,12 +14,14 @@ import { AnkiConnect, type NoteInfo } from './anki-connect';
 import { coverFileName, coverJpegBase64 } from './cover';
 import {
   describeResult,
+  describeResultLines,
   EnrichError,
   enrichLastCard,
   enrichNote,
   WaitError,
   type EnrichInput,
   type EnrichResult,
+  type NoticeLine,
   type MediaFile,
   type Unavailable,
   type Waiting
@@ -85,6 +87,9 @@ export interface ReaderEnrichContext {
 export interface ReaderEnrichOutcome {
   ok: boolean;
   message: string;
+  /** The card's name and the result as skimmable rows (the banner shows these when present). */
+  title?: string;
+  lines?: NoticeLine[];
   /** The note type has no fields set up. */
   unmapped?: boolean;
   /** The note that was changed (or found to need nothing). */
@@ -455,6 +460,8 @@ export async function enrichFromReader(
     return {
       ok: true,
       message: describeResult(result),
+      title: result.word ? `「${result.word}」` : 'The last card',
+      lines: describeResultLines(result),
       unmapped: result.unmapped,
       noteId: result.noteId
     };

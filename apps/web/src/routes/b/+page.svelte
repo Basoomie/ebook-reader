@@ -312,6 +312,8 @@
   let lookupCapture: LookupCapture | undefined;
   let ankiNotice = '';
   let ankiNoticeSetup = false;
+  let ankiRows: ReaderEnrichOutcome[] = [];
+  let ankiRowsFor = '';
   let ankiBusy = false;
   let ankiNoticeTimer: ReturnType<typeof setTimeout> | undefined;
   // Phase 8: a card made with Yomitan is enriched by itself (lib/anki/auto-enrich.ts; loaded
@@ -338,6 +340,9 @@
 
   function showAnkiOutcome(outcomes: ReaderEnrichOutcome[]) {
     ankiNotice = outcomes.map((o) => o.message).join(' ');
+    // The rows are shown only while the notice still says this (any other message replaces them).
+    ankiRowsFor = ankiNotice;
+    ankiRows = outcomes.filter((o) => o.lines?.length);
     ankiNoticeSetup = outcomes.some((o) => o.unmapped);
 
     // The card was updated: the message closes by itself (problems stay until closed).
@@ -4248,7 +4253,25 @@
     role="status"
     data-testid="anki-notice"
   >
-    <span class="grow px-1" data-testid="anki-notice-text">{ankiNotice}</span>
+    {#if ankiRows.length && ankiRowsFor === ankiNotice}
+      <div class="grow px-1" data-testid="anki-notice-text">
+        {#each ankiRows as o}
+          <div class="anki-card">
+            {#if o.title}<p class="font-bold">{o.title}</p>{/if}
+            <ul>
+              {#each o.lines ?? [] as line}
+                <li class="anki-row anki-{line.kind}">
+                  <span class="anki-label">{line.label}</span>
+                  <span class="anki-text">{line.text}</span>
+                </li>
+              {/each}
+            </ul>
+          </div>
+        {/each}
+      </div>
+    {:else}
+      <span class="grow px-1" data-testid="anki-notice-text">{ankiNotice}</span>
+    {/if}
     {#if ankiNoticeSetup}
       <button
         class="c-btn c-btn-secondary c-btn-sm shrink-0 px-3"
@@ -4590,5 +4613,45 @@
   .ttu-bar-hidden :global(.ttu-whispersync-container),
   .ttu-bar-hidden :global(.ttu-whispersync-dialog) {
     visibility: visible;
+  }
+
+  /* The Anki banner: one row per outcome, a coloured label then the parts. */
+  .anki-card + .anki-card {
+    margin-top: 0.5rem;
+  }
+  .anki-row {
+    display: flex;
+    gap: 0.75rem;
+    padding: 0.375rem 0;
+    line-height: 1.35;
+  }
+  /* A thin line between the sections, in the notice's own text colour. */
+  .anki-row + .anki-row {
+    border-top: 1px solid var(--c-line);
+  }
+  .anki-label {
+    flex: none;
+    width: 5.25rem;
+    font-weight: 600;
+  }
+  .anki-card > p {
+    padding-bottom: 0.25rem;
+  }
+  .anki-text {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  /* The app's own tokens, so light, dark and E-ink all follow the theme. */
+  .anki-added .anki-label,
+  .anki-replaced .anki-label {
+    color: var(--c-label);
+  }
+  .anki-kept .anki-label,
+  .anki-info .anki-label,
+  .anki-waiting .anki-label {
+    color: var(--c-muted);
+  }
+  .anki-skipped .anki-label {
+    color: var(--c-danger);
   }
 </style>

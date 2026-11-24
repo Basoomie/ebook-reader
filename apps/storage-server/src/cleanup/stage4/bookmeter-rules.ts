@@ -576,7 +576,12 @@ export function chosenDecision(
   hits: ChosenHit[],
   book: ChosenBook,
   edOk: (title: string) => boolean,
-): { hit: Hit | null; closest: { hit: Hit; failed: Check[]; index: number } | null } {
+): {
+  hit: Hit | null;
+  closest: { hit: Hit; failed: Check[]; index: number } | null;
+  /** Every result's failed checks, in Bookmeter's order (the AI check's candidates). */
+  failed: Check[][];
+} {
   const r = makeRules(CHOSEN_RULES);
   const row: BookRow = {
     uuid: '',
@@ -600,5 +605,9 @@ export function chosenDecision(
     stores: null,
     searchFile: null,
   };
-  return { hit: acceptWith(r, row), closest: closestWith(r, row, CHOSEN_RULES) };
+  return {
+    hit: acceptWith(r, row),
+    closest: closestWith(r, row, CHOSEN_RULES),
+    failed: row.hits.map((h) => failedWith(r, row, h)),
+  };
 }

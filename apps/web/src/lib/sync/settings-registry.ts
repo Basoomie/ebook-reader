@@ -212,6 +212,19 @@ export const SETTINGS_REGISTRY: Record<string, SettingSpec> = {
   bookLinksMoreAs: d('String'),
   bookLinksSearch: d('Boolean'),
 
+  // --- lib/summaries/settings.ts (book summaries: languages and spoiler blur the same on every
+  // device; the Characters and Relationships layouts per device; the last language chosen
+  // stays on the device) ---
+  summaryLanguages: g('Array'),
+  summarySpoilerBlur: g('String'),
+  summaryCharacterLayout: d('String'),
+  summaryRelationshipLayout: d('String'),
+  summaryViewLang: l('String'),
+  // Session 4b: the automatic-summaries switch (every device; the server reads it too) and the
+  // description's own last language (this device only).
+  summaryAutoOnFirstCompletion: g('Boolean'),
+  descriptionViewLang: l('String'),
+
   // --- lib/calibre-edit/settings.ts (per device: Calibre metadata editing, Settings > Library) ---
   bookEditAs: d('String'),
   seriesEditAs: d('String'),

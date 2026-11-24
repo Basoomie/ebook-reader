@@ -23,13 +23,14 @@ import type { AiCore } from './core';
 import { dropHold, putHold, recordedRefs, recordSpendMany, resetHolds } from './ledger';
 import {
   FinalError,
+  FlexUnavailableError,
   providerOf,
   RetryableError,
   type CallInput,
   type CallResult,
   type ProviderClient,
 } from './providers';
-import type { AiSettings } from './settings';
+import { stallMinutesOf, type AiMode, type AiSettings } from './settings';
 import {
   costOf,
   expectedListCost,
@@ -44,7 +45,7 @@ import { waitIsNote, waitText, type AiWait } from './waits';
 export type { AiWait } from './waits';
 
 /** How a model is asked (settings ai.modes; a model not listed: batch). */
-export function modeOf(s: AiSettings, model: string): 'batch' | 'direct' {
+export function modeOf(s: AiSettings, model: string): AiMode {
   return s.modes[model] ?? 'batch';
 }
 
@@ -488,8 +489,10 @@ export class AiRunner {
         }
         // Batches the provider keeps refusing: wait before the next (batch-health.ts), or with
         // the fallback ask this run's questions one call each.
-        const hold = modeOf(s, m.model) === 'batch' ? this.core.batchHold(m.model, runId) : null;
-        const batchMode = modeOf(s, m.model) === 'batch' && !hold?.direct;
+        // A stage that asks for direct calls (session 4b) never uses the model's batches.
+        const batchModel = modeOf(s, m.model) === 'batch' && !spec.request?.direct;
+        const hold = batchModel ? this.core.batchHold(m.model, runId) : null;
+        const batchMode = batchModel && !hold?.direct;
         // Questions a stalled batch gave back are always asked directly.
         const d = await this.sendDirect(
           spec,
@@ -634,6 +637,9 @@ export class AiRunner {
       ...(o?.effort ? { effort: o.effort } : {}),
       ...(o?.maxTokens ? { outputLimit: o.maxTokens } : {}),
       ...(o?.stream ? { stream: true } : {}),
+      ...(modeOf(s, row.model) === 'flex' && providerOf(row.model) === 'openai'
+        ? { serviceTier: 'flex' as const }
+        : {}),
     };
   }
 
@@ -857,7 +863,9 @@ export class AiRunner {
     if (!calls.length) return { sent: 0, answered: 0, wait: null };
     const avgChars =
       calls.reduce((a, x) => a + x.call.system.length + x.call.user.length, 0) / calls.length;
-    const f = this.fits(model, calls.length, avgChars, false, s, undefined, spec);
+    // Flex is billed at the batch price (the estimate; the cost recorded is the tier charged).
+    const flex = modeOf(s, model) === 'flex';
+    const f = this.fits(model, calls.length, avgChars, flex, s, undefined, spec);
     if (f.fit === 0) {
       // Room held by calls in flight comes back when they are recorded: no pause for it.
       if (this.core.callsInFlight() > 0) return { sent: 0, answered: 0, wait: null };
@@ -896,6 +904,21 @@ export class AiRunner {
       .run(stage, runId).changes;
   }
 
+  /**
+   * A run's questions not sent yet are given up ("withdrawn"; book summaries session 3: a setup
+   * the summaries leave for the next one in their fallback route). Questions at a provider are
+   * still collected and counted. A later run asks a withdrawn question again (as a failed one).
+   * Returns how many.
+   */
+  withdraw(runId: string): number {
+    return this.db
+      .prepare(
+        `UPDATE ai_requests SET state = 'failed', error = 'withdrawn', answered_at = ?
+         WHERE run_id = ? AND state = 'queued'`,
+      )
+      .run(this.now(), runId).changes;
+  }
+
   /** One call with its tries; records the result (never throws). */
   private async runCall<E>(
     spec: AiStageSpec<E>,
@@ -909,13 +932,17 @@ export class AiRunner {
   ): Promise<void> {
     const ended = () => this.endedSince.set(spec.stage, (this.endedSince.get(spec.stage) ?? 0) + 1);
     let attempts = row.attempts;
+    // Flex refusals for capacity (not charged) don't use up tries; after flexRetries of them in
+    // this call it goes at the normal price.
+    let flexRefusals = 0;
+    let input = call;
     try {
       for (;;) {
         attempts++;
         this.db.prepare('UPDATE ai_requests SET attempts = ? WHERE id = ?').run(attempts, row.id);
         try {
           const res = await client.call(
-            call,
+            input,
             (spec.request?.timeoutSeconds ?? s.requestTimeoutSeconds) * 1000,
           );
           this.record(spec, row.id, model, res, false, s);
@@ -933,6 +960,29 @@ export class AiRunner {
               this.db.prepare(`UPDATE ai_requests SET state = 'queued' WHERE id = ?`).run(row.id);
             } else this.finish(row.id, 'failed', null, null, null, err.message, false, s);
             return;
+          }
+          if (err instanceof FlexUnavailableError) {
+            attempts--;
+            this.db
+              .prepare('UPDATE ai_requests SET attempts = ? WHERE id = ?')
+              .run(attempts, row.id);
+            flexRefusals++;
+            if (shouldStop()) {
+              this.db.prepare(`UPDATE ai_requests SET state = 'queued' WHERE id = ?`).run(row.id);
+              return;
+            }
+            if (flexRefusals > s.flexRetries) {
+              this.deps.log?.(
+                `AI: ${model} flex refused ${flexRefusals} times for capacity: this call goes at the normal price`,
+              );
+              const { serviceTier: _flex, ...normal } = input;
+              input = normal;
+              continue;
+            }
+            await this.sleep(
+              Math.min(120_000, err.retryAfterMs ?? 15_000 * 2 ** (flexRefusals - 1)),
+            );
+            continue;
           }
           const e = err as RetryableError;
           if (e.busy) {
@@ -980,7 +1030,9 @@ export class AiRunner {
     s: AiSettings,
   ): void {
     const price = priceOf(s, model);
-    const cost = price ? costOf(price, res.usage, batch, s.batchPriceFactor) : null;
+    // A Flex answer is billed at the Batch API's price (OpenAI's pricing page, 2026-11-23).
+    const flex = !batch && res.tier === 'flex';
+    const cost = price ? costOf(price, res.usage, batch || flex, s.batchPriceFactor) : null;
     if (res.kind === 'answered') {
       const parsed = spec.parseAnswer(res.json);
       if (parsed) {
@@ -999,11 +1051,18 @@ export class AiRunner {
         );
       }
     } else this.finish(id, res.kind, null, res.text, res.usage, res.detail, batch, s, cost);
-    if (cost !== null) this.recordSpend(spec.stage, id, model, batch, cost);
+    if (cost !== null)
+      this.recordSpend(spec.stage, id, model, batch ? 'batch' : flex ? 'flex' : 'direct', cost);
   }
 
   /** The paid answer's row in the shared ledger (right after the feature's own record). */
-  private recordSpend(stage: string, id: number, model: string, batch: boolean, cost: number) {
+  private recordSpend(
+    stage: string,
+    id: number,
+    model: string,
+    mode: 'batch' | 'direct' | 'flex',
+    cost: number,
+  ) {
     try {
       this.core.record({
         source: this.deps.source,
@@ -1012,7 +1071,7 @@ export class AiRunner {
         stage,
         provider: providerOf(model),
         model,
-        mode: batch ? 'batch' : 'direct',
+        mode,
         costUsd: cost,
         at: this.now(),
       });
@@ -1087,10 +1146,12 @@ export class AiRunner {
           // The stall guard: nothing answered after batchStallMinutes -> cancelled; the answers
           // it has are kept and the rest asked directly (measured 2026-11-19: OpenAI ran no
           // gpt-6-luna batch at all).
-          const limitMs = s.batchStallMinutes * 60_000;
+          // Per provider (book summaries session 3): OpenAI's batches take far longer.
+          const stallMin = stallMinutesOf(s, b.provider);
+          const limitMs = stallMin * 60_000;
           if (limitMs > 0 && !stalled && st.done === 0 && this.now() - m.submitted_at >= limitMs) {
             await client.cancelBatch(b.id);
-            const why = `stalled: nothing answered in ${s.batchStallMinutes} min; cancelled, its questions asked directly`;
+            const why = `stalled: nothing answered in ${stallMin} min; cancelled, its questions asked directly`;
             this.db.prepare('UPDATE ai_batches SET error = ? WHERE id = ?').run(why, b.id);
             this.deps.log?.(`AI: batch ${b.id} (${b.provider}) ${why}`);
           }

@@ -60,7 +60,7 @@ import {
   rdbCandidates,
   rdbSeries,
 } from './parse';
-import { bwAsAmazon, bwSettles, STANDIN, titleStem } from './bw-standin';
+import { bwAsAmazon, bwIdentified, bwSettles, STANDIN, titleStem } from './bw-standin';
 import { NEXT_STEPS, type FollowUps } from './eta';
 import { ASIN_RE, pickByVolume, pyQuote, queryTitle, sim } from './pick';
 import { amazonFacts, bwFacts, isMangaRecord, replaces, type BookFacts } from './record-judge';
@@ -75,7 +75,9 @@ import { FetchQueue, LABELED_PRIORITY } from './queue';
 import { readRefEpub, type RefFile } from './ref-epub';
 import { nfkc } from './ref-text';
 import type { RefRecord } from './rules-v3';
-import { spellingOf } from './series-spelling';
+import { seriesKey, spellingOf } from './series-spelling';
+import { commonName } from '../series-pairs/pairs';
+import type { SpFacts, SpLibraryBook } from '../series-pairs/pass';
 import { sameTitle, type PoolEntry, type SeriesBook, type ValueFrom } from './series-order';
 import { seriesChoiceOf } from './series-order-store';
 import { N } from '../title-rules';
@@ -2063,17 +2065,26 @@ export class Stage4Analysis {
     const decision = decideStage4(record);
     const applied = new Map<string, unknown>();
     const appliedLastModified = new Map<string, string | null>();
+    // The values written as a best guess (the first On wrote the models' unconfirmed values): a
+    // confirmed value may replace them (2026-11-23: (仮)花嫁's volume 3 written 2 and volume 8
+    // written with no number were kept by the rules-9 guard on written values).
+    const appliedGuess = new Set<string>();
     for (const a of this.db
       .prepare(
-        'SELECT field, value_json, last_modified_after FROM applied_values WHERE library_id = ? AND calibre_uuid = ?',
+        `SELECT a.field, a.value_json, a.last_modified_after,
+           json_extract(c.evidence_json, '$.unconfirmed') AS guess
+         FROM applied_values a LEFT JOIN proposed_changes c ON c.id = a.change_id
+         WHERE a.library_id = ? AND a.calibre_uuid = ?`,
       )
       .all(p.libraryId, uuid) as {
       field: string;
       value_json: string;
       last_modified_after: string | null;
+      guess: number | null;
     }[]) {
       applied.set(a.field, JSON.parse(a.value_json));
       appliedLastModified.set(a.field, a.last_modified_after);
+      if (a.guess) appliedGuess.add(a.field);
     }
     // Every name the proposals ask for: the final authors too, which may be the models' (a book
     // whose authors stage 4 changed got no reading: 487 books, among them 西尾維新's whose Calibre
@@ -2109,15 +2120,130 @@ export class Stage4Analysis {
       cover,
       applied,
       appliedLastModified,
+      appliedGuess,
       calibreCover,
       ai: ai === undefined ? storedAiValues(this.db, `${p.libraryId}:${uuid}`) : ai,
       spelling: this.snapshot ? spellingLookup(this.snapshot.names) : undefined,
       seriesSpelling: this.seriesSpelling(p),
+      mergedSeries: this.mergedSeries(p.libraryId),
       seriesOrder: seriesChoiceOf(this.db, p.libraryId, uuid),
       sameDistance: settings.covers.sameDistance,
       smallCoverPx: settings.fetch.smallCoverPx,
     });
     return { proposals, decision };
+  }
+
+  private mergedCache: { lib: string; stamp: string; map: Map<string, Set<string>> } | null = null;
+  /**
+   * The series merged into another name (tier 4, Part 3: series under two names, and the series
+   * editor's merges): the kept name's key -> the merged names' keys. Read again when a merge is
+   * recorded (the count and the latest time stand in for a change; one indexed read per book).
+   */
+  mergedSeries(libraryId: string): Map<string, Set<string>> | null {
+    const stamp = this.db
+      .prepare(
+        `SELECT COUNT(*) || ':' || IFNULL(MAX(decided_at), 0) AS s FROM series_pair_decisions
+         WHERE library_id = ? AND decision = 'merged'`,
+      )
+      .get(libraryId) as { s: string };
+    if (this.mergedCache?.lib === libraryId && this.mergedCache.stamp === stamp.s)
+      return this.mergedCache.map;
+    const map = new Map<string, Set<string>>();
+    for (const r of this.db
+      .prepare(
+        `SELECT name_a, name_b FROM series_pair_decisions WHERE library_id = ? AND decision = 'merged'`,
+      )
+      .all(libraryId) as { name_a: string; name_b: string }[]) {
+      const [short, long] =
+        seriesKey(r.name_a).length <= seriesKey(r.name_b).length
+          ? [r.name_a, r.name_b]
+          : [r.name_b, r.name_a];
+      const kept = seriesKey(commonName(short, long).name);
+      const other = kept === seriesKey(short) ? seriesKey(long) : seriesKey(short);
+      map.set(kept, (map.get(kept) ?? new Set()).add(other));
+    }
+    this.mergedCache = { lib: libraryId, stamp: stamp.s, map };
+    return map;
+  }
+
+  /**
+   * Series under two names (tier 4, Part 3): every book of the library with its series as
+   * Calibre holds it now (the reader's snapshot), or null before the snapshot is read.
+   */
+  seriesPairBooks(libraryId: string): SpLibraryBook[] | null {
+    let snap: Stage2Snapshot;
+    try {
+      snap = this.loadSnapshot(libraryId);
+    } catch {
+      return null;
+    }
+    const out: SpLibraryBook[] = [];
+    for (const b of snap.books.values()) {
+      const ex = this.extras?.get(b.calibreId);
+      out.push({
+        uuid: b.uuid,
+        calibreId: b.calibreId,
+        title: b.title,
+        authors: b.authors,
+        identifiers: b.identifiers,
+        series: ex?.series ?? null,
+        index: ex?.series ? (ex.seriesIndex ?? null) : null,
+      });
+    }
+    return out;
+  }
+
+  /**
+   * One book's stage-4 facts for the series pairs: its kind and own titles as the series order
+   * reads them, and the store records stage 4 accepted as the book (a rejected search pick is
+   * another book: stop 1 found a magazine issue saved for ナポレオン・ソロ).
+   */
+  seriesPairFacts(libraryId: string, uuid: string): SpFacts | null {
+    const p = this.progress();
+    const book = this.book(uuid);
+    if (!p || !book) return null;
+    const ex = this.extras?.get(book.calibreId);
+    const sb = ex?.series
+      ? this.seriesBook(p, uuid, {
+          name: ex.series,
+          index: ex.seriesIndex ?? null,
+          title: book.title,
+          proposedSeries: true,
+        })
+      : null;
+    const ref = this.loadRef(libraryId, uuid)?.file ?? null;
+    const ev = ref ? this.loadOnline(libraryId, uuid) : null;
+    if (!ref || !ev)
+      return sb
+        ? {
+            kind: sb.kind,
+            own: sb.own,
+            amazonSeries: null,
+            ranobedbSeries: null,
+            bookwalkerUrl: null,
+            asin: null,
+          }
+        : null;
+    const rec = this.record(book, ref, ev);
+    const trace = decideStage4(rec).trace;
+    const product = trace.amazonIdentified ? (ev.amazon.product ?? null) : null;
+    const rdbId = trace.ranobedbIdentified ? ev.ranobedb.book?.series?.id : undefined;
+    const rdbName = trace.ranobedbIdentified
+      ? (ev.ranobedb.series?.title_orig ?? ev.ranobedb.book?.series?.title_orig)
+      : null;
+    return {
+      kind: sb?.kind ?? 'full',
+      own: sb?.own ?? [book.title],
+      amazonSeries: product?.series
+        ? product.series.replace(/^全\d+冊中\d+番目の本\s*/u, '').trim() || null
+        : null,
+      ranobedbSeries:
+        rdbId !== undefined && rdbId !== null
+          ? { id: String(rdbId), name: typeof rdbName === 'string' ? rdbName : null }
+          : null,
+      bookwalkerUrl: bwIdentified(rec) ? (ev.bookwalker.detail?.url ?? null) : null,
+      asin: (product?.asin as string | null | undefined) ?? null,
+    };
   }
 
   private spellingCache: { at: number; map: Map<string, string> } | null = null;
@@ -2519,6 +2645,15 @@ export class Stage4Analysis {
       queryTitle: queryTitle(ref.opf_title || book.title),
       bookmeter: ev.bookmeter,
       searchRequest: ev.requests['bookmeter-search'] ?? null,
+      // The book's own store titles, which name its label or edition (the AI check's
+      // candidates, 2026-11-23): the Amazon record the rules identified, the BOOK☆WALKER page
+      // whose title is the book's (as proposeStage4 takes its id).
+      storeTitles: [
+        d.trace.amazonIdentified ? (rec.amazon?.product?.title as string | undefined) : null,
+        d.trace.cleaned.bookwalker && N(d.trace.cleaned.bookwalker) === N(d.values.t)
+          ? (ev.bookwalker.detail?.title ?? null)
+          : null,
+      ].filter((t): t is string => typeof t === 'string' && t !== ''),
       asin:
         (d.trace.amazonIdentified ? ((ev.amazon.product?.asin as string | null) ?? null) : null) ??
         book.identifiers.amazon_jp ??
@@ -3435,6 +3570,8 @@ export interface BookmeterFacts {
   bookmeter: OnlineEvidence['bookmeter'];
   /** The stored search's request id (fetch_requests). */
   searchRequest: number | null;
+  /** The book's own store titles (Amazon identified, BOOK☆WALKER with the book's title). */
+  storeTitles: string[];
   /** The ASIN stage 4 identified (Natively's lookup, as proposalsFor). */
   asin: string | null;
 }

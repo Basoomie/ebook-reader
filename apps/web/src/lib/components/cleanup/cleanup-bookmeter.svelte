@@ -18,6 +18,7 @@
     BOOKMETER_MODE_LABELS,
     BOOKMETER_PHASES,
     SOURCE_LABELS,
+    aiBatchLines,
     bookmeterBar,
     bookmeterLines,
     spotLine,
@@ -51,6 +52,7 @@
   $: bar = bookmeterBar(status);
   $: lines = bookmeterLines(status);
   $: spotText = spotLine(status);
+  $: batchLines = aiBatchLines(status);
 
   async function refresh() {
     clearTimeout(timer);
@@ -193,6 +195,9 @@
         {BOOKMETER_PHASES[status.progress.phase]}
       </p>
     {/if}
+    {#each batchLines as line}
+      <p class="text-sm text-c-muted" data-testid="bookmeter-ai-batch">{line}</p>
+    {/each}
     {#if status.progress.ai.wait && status.progress.phase === 'ai'}
       <p class="text-sm text-c-muted">{status.progress.ai.wait}</p>
     {/if}

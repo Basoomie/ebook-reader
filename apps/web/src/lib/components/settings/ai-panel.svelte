@@ -83,6 +83,15 @@
   }[] = [
     { key: 'batchStallMinutes', id: 'ai-stall', unit: 'minutes', min: 0, max: 1440, step: 1 },
     {
+      key: 'batchStallMinutesOpenai',
+      id: 'ai-stall-openai',
+      unit: 'minutes',
+      min: 0,
+      max: 1440,
+      step: 1
+    },
+    { key: 'flexRetries', id: 'ai-flex-retries', unit: 'tries', min: 0, max: 10, step: 1 },
+    {
       key: 'batchFailWaitMinutes',
       id: 'ai-fail-wait',
       unit: 'minutes',
@@ -207,7 +216,7 @@
   }
 
   function setMode(model: string, mode: string) {
-    if (!status || (mode !== 'batch' && mode !== 'direct')) return;
+    if (!status || (mode !== 'batch' && mode !== 'direct' && mode !== 'flex')) return;
     void save({ modes: { ...status.settings.modes, [model]: mode } });
   }
 
@@ -465,6 +474,9 @@
               >
                 <option value="batch">Batches (half price)</option>
                 <option value="direct">One call each</option>
+                {#if m.flex}
+                  <option value="flex">Flex (half price, normal price as backup)</option>
+                {/if}
               </select>
               {#if m.mode === 'batch'}
                 <label class="ai-queue" title={QUEUE_HINT}>

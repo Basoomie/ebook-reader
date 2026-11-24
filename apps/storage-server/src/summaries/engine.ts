@@ -35,7 +35,7 @@ import {
   EXTRACT_CHAPTER_SPEC,
   EXTRACT_SPEC,
   MATCH_SPEC,
-  MODELS,
+  modelOfRole,
   SUPPORT_CHAPTER_SPEC,
   SUPPORT_SPEC,
   TRANSLATE_SPEC,
@@ -53,10 +53,13 @@ export const EVIDENCE_VERSION = 1;
 
 /** The setups compared in the accuracy test (book-summaries.md "Step A"). */
 export type CloudSetup = 'two' | 'opus' | 'mixed';
-export const SETUPS: Record<
-  CloudSetup,
-  { label: string; extract: ModelRole[]; writer: ModelRole; matcher: ModelRole | null }
-> = {
+/** Who finds the items (one or two models), who matches the two lists, who writes. */
+export interface SetupConf {
+  extract: ModelRole[];
+  writer: ModelRole;
+  matcher: ModelRole | null;
+}
+export const SETUPS: Record<CloudSetup, SetupConf & { label: string }> = {
   two: {
     label: 'Sonnet 5.5 + GPT-6.1 Sol',
     extract: ['sonnet', 'sol'],
@@ -170,7 +173,8 @@ export class Pump {
 
 export interface EngineDeps {
   runner: AiRunner;
-  pump: Pump;
+  /** What answers wait on: the test's Pump, or the server's run of a job (service.ts). */
+  pump: { readonly isStopped: boolean; tick(): Promise<void> };
   runId: string;
   /** Called with each question asked (the run's report). */
   onAsk?: (a: Asked) => void;
@@ -185,7 +189,7 @@ export async function ask<E>(
   evidence: E,
 ): Promise<StoredAnswer> {
   d.runner.putItems(spec as AiStageSpec<E>, [{ key, evidence, labeled: false }], EVIDENCE_VERSION);
-  d.onAsk?.({ stage: spec.stage, key, model: MODELS[role] });
+  d.onAsk?.({ stage: spec.stage, key, model: modelOfRole(role) });
   let a = d.runner.answerOf(spec, role, key);
   if (a && a.state !== 'failed') return a;
   d.runner.enqueue(spec, role, [key], d.runId);
@@ -242,7 +246,7 @@ async function extractOne(
     ),
     EXTRACT_SPEC.stage,
   ) as unknown as ExtractAnswer;
-  const first = checkExtraction(role, MODELS[role], book, index, whole, new Map());
+  const first = checkExtraction(role, modelOfRole(role), book, index, whole, new Map());
   const follow = new Map<number, { not_story: boolean; items: RawItem[] }>();
   await Promise.all(
     first.emptyChapters.map(async (ch) => {
@@ -257,7 +261,7 @@ async function extractOne(
         follow.set(ch, a.answer as unknown as { not_story: boolean; items: RawItem[] });
     }),
   );
-  return checkExtraction(role, MODELS[role], book, index, whole, follow);
+  return checkExtraction(role, modelOfRole(role), book, index, whole, follow);
 }
 
 /** The support check of `items` by `checker`. */
@@ -316,14 +320,28 @@ async function support(
   return out;
 }
 
-/** One cloud setup on one book: extract, quote check, cross-check, write, check. */
-export async function runCloudSetup(
+/** One cloud setup of the test on one book (runSetup with the test's setup names). */
+export function runCloudSetup(
   d: EngineDeps,
   b: BookInput,
   setup: CloudSetup,
   now: () => number = Date.now,
 ): Promise<{ summary: Summary; report: RunReport }> {
-  const conf = SETUPS[setup];
+  return runSetup(d, b, SETUPS[setup], setup, now);
+}
+
+/**
+ * One setup on one book: extract, quote check, cross-check, write, check. `tag` names the setup
+ * in the writing step's key (the finders' steps are shared by every setup with the same finders,
+ * so a fallback to another writer asks only the writing step again).
+ */
+export async function runSetup(
+  d: EngineDeps,
+  b: BookInput,
+  conf: SetupConf,
+  tag: string,
+  now: () => number = Date.now,
+): Promise<{ summary: Summary; report: RunReport }> {
   const { book, index, ruby } = prepared(b, await japaneseDictionary());
   const bg = b.background ? 'bg1' : 'bg0';
   const refusals: RunReport['refusals'] = [];
@@ -341,7 +359,7 @@ export async function runCloudSetup(
     }),
   );
   if (!roles.length)
-    throw new Refused(EXTRACT_SPEC.stage, conf.extract.map((r) => MODELS[r]).join(', '));
+    throw new Refused(EXTRACT_SPEC.stage, conf.extract.map((r) => modelOfRole(r)).join(', '));
   roles.sort((x, y) => conf.extract.indexOf(x) - conf.extract.indexOf(y));
 
   let cross: CrossCheck;
@@ -400,11 +418,11 @@ export async function runCloudSetup(
     d,
     WRITE_SPEC,
     writer,
-    `${b.key}|${bg}|${setup}|${roles.join('+')}`,
+    `${b.key}|${bg}|${tag}|${roles.join('+')}`,
     writeEvidence(b.title, book, cross.items, b.background),
   );
   const answer = usable(w, WRITE_SPEC.stage) as unknown as WriteAnswer;
-  const models = [...new Set([...roles.map((r) => MODELS[r]), MODELS[writer]])];
+  const models = [...new Set([...roles.map((r) => modelOfRole(r)), modelOfRole(writer)])];
   const checked = checkWritten(
     answer,
     cross.items,

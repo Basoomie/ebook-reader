@@ -146,6 +146,9 @@ import {
   type GlobalSettingsDeps
 } from '$lib/sync/settings-source';
 import { SyncApi } from '$lib/sync/sync-api';
+import { startSummarySync } from '$lib/summaries/summary-sync';
+import { skipWhenAutoOff } from '$lib/summaries/auto-switch';
+import { summaryAutoOnFirstCompletion$ } from '$lib/summaries/settings';
 import type { LocalRecord } from '$lib/sync/sync-db';
 import { SyncEngine } from '$lib/sync/sync-engine';
 import { SyncRunner, type RunnerEnv } from '$lib/sync/sync-runner';
@@ -286,6 +289,8 @@ export function startSync(): void {
         void refreshLegacySwitch();
         void reportDeviceSoon();
         void publishDeviceBooks();
+        // Book summaries (session 3): the current summaries kept on this device.
+        startSummarySync(engine);
       })
       .catch((error) => warn(`Sync: not started: ${(error as Error)?.message ?? error}`));
   } catch (error) {
@@ -690,10 +695,27 @@ export function noteReaderFirstPageTurn(localId: number, title: string): void {
   );
 }
 
+/**
+ * Book summaries session 4b: while "Make a summary when a book is first completed" is off, a
+ * "summary-skip" for each book goes before its completion (same push). Never rejects.
+ */
+async function noAutomaticSummaryWhenOff(bookIds: readonly string[]): Promise<void> {
+  if (summaryAutoOnFirstCompletion$.getValue()) return;
+  try {
+    await skipWhenAutoOff(await getSyncEngine(), bookIds, false, warn);
+  } catch (error) {
+    warn(`Summaries: ${(error as Error)?.message ?? error}`);
+  }
+}
+
 /** The reader's Complete Book. Never rejects; resolves once the read-through is saved. */
 export function noteReaderBookCompleted(localId: number, title: string): Promise<void> {
   return bookIdForLocalBook(localId, title)
-    .then((bookId) => (bookId ? noteReaderCompletion(bookId, bookStateDeps) : undefined))
+    .then(async (bookId) => {
+      if (!bookId) return;
+      await noAutomaticSummaryWhenOff([bookId]);
+      await noteReaderCompletion(bookId, bookStateDeps);
+    })
     .catch((error) => warn(`Book state: ${(error as Error)?.message ?? error}`));
 }
 
@@ -715,8 +737,10 @@ export function bookStateApi() {
     setFavorite: (bookId: string, favorite: boolean) =>
       setBookFavorite(bookId, favorite, bookStateDeps),
     setBlur: (bookId: string, blur: BookBlur) => setBookBlur(bookId, blur, bookStateDeps),
-    markCompleted: (books: MarkCompletedBook[], finishedOn: string | null) =>
-      markBooksCompleted(books, finishedOn, bookStateDeps),
+    markCompleted: async (books: MarkCompletedBook[], finishedOn: string | null) => {
+      await noAutomaticSummaryWhenOff(books.map((b) => b.bookId));
+      return markBooksCompleted(books, finishedOn, bookStateDeps);
+    },
     setStatusMany: (bookIds: readonly string[], status: BookStatus) =>
       setBooksStatus(bookIds, status, bookStateDeps),
     setFavoriteMany: (bookIds: readonly string[], favorite: boolean) =>

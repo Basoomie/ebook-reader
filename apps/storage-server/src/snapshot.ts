@@ -20,10 +20,14 @@ export const SNAPSHOT_PATTERN = /^ttsu-(\d{8})-(\d{6})Z\.db$/;
  * WP20a: cleanup.db gets its own nightly snapshots in the same folder,
  * cleanup-YYYYMMDD-HHMMSSZ.db, pruned separately (same keep count).
  */
-export type SnapshotPrefix = 'ttsu' | 'cleanup';
+export type SnapshotPrefix = 'ttsu' | 'cleanup' | 'summaries';
 
 function patternFor(prefix: SnapshotPrefix): RegExp {
-  return prefix === 'ttsu' ? SNAPSHOT_PATTERN : /^cleanup-(\d{8})-(\d{6})Z\.db$/;
+  if (prefix === 'ttsu') return SNAPSHOT_PATTERN;
+  // Book summaries session 3: summaries.db (the summaries and the user's edits) the same way.
+  return prefix === 'summaries'
+    ? /^summaries-(\d{8})-(\d{6})Z\.db$/
+    : /^cleanup-(\d{8})-(\d{6})Z\.db$/;
 }
 /** A nightly snapshot older than this means a scheduled run was missed. */
 const NIGHTLY_MS = 24 * 60 * 60 * 1000;

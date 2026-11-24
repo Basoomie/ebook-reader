@@ -25,6 +25,14 @@
     timeLeftRecentMinutes$
   } from '$lib/data/store';
   import SettingsGroup from '$lib/components/settings/settings-group.svelte';
+  import SummaryLanguageSettings from '$lib/components/settings/summary-language-settings.svelte';
+  import SummaryModelSettings from '$lib/components/settings/summary-model-settings.svelte';
+  import {
+    summaryAutoOnFirstCompletion$,
+    summaryCharacterLayout$,
+    summaryRelationshipLayout$,
+    summarySpoilerBlur$
+  } from '$lib/summaries/settings';
   import SettingRow from '$lib/components/settings/setting-row.svelte';
   import SettingSwitch from '$lib/components/settings/setting-switch.svelte';
   import SettingChoice from '$lib/components/settings/setting-choice.svelte';
@@ -1044,6 +1052,58 @@
           labelledby={labelId}
           testid="book-rating-empty"
         />
+      </SettingRow>
+    </SettingsGroup>
+    <!-- Book summaries session 4: after Book page. -->
+    <SettingsGroup id="library-summaries">
+      <!-- Session 4b: the automatic summaries switch, first in the group. -->
+      <SettingRow id="summary-auto" settingKey="summaryAutoOnFirstCompletion" let:labelId>
+        <SettingSwitch
+          bind:checked={$summaryAutoOnFirstCompletion$}
+          labelledby={labelId}
+          testid="summary-auto"
+        />
+      </SettingRow>
+      <SettingRow id="summary-languages" settingKey="summaryLanguages" layout="stack">
+        <SummaryLanguageSettings />
+      </SettingRow>
+      <SettingRow id="summary-spoiler-blur" settingKey="summarySpoilerBlur" let:labelId>
+        <SettingChoice
+          options={[
+            { id: 'completed', text: 'Show for Completed books' },
+            { id: 'always', text: 'Always blur' },
+            { id: 'never', text: 'Always show' }
+          ]}
+          bind:value={$summarySpoilerBlur$}
+          labelledby={labelId}
+          testid="summary-spoiler-blur"
+        />
+      </SettingRow>
+      <SettingRow id="summary-character-layout" let:labelId>
+        <SettingChoice
+          options={[
+            { id: 'list', text: 'List' },
+            { id: 'cards', text: 'Cards' },
+            { id: 'carousel', text: 'Carousel' }
+          ]}
+          bind:value={$summaryCharacterLayout$}
+          labelledby={labelId}
+          testid="summary-character-layout"
+        />
+      </SettingRow>
+      <SettingRow id="summary-relationship-layout" let:labelId>
+        <SettingChoice
+          options={[
+            { id: 'list', text: 'List' },
+            { id: 'diagram', text: 'Diagram' }
+          ]}
+          bind:value={$summaryRelationshipLayout$}
+          labelledby={labelId}
+          testid="summary-relationship-layout"
+        />
+      </SettingRow>
+      <SettingRow id="summary-models" shared layout="stack">
+        {#if browser}<SummaryModelSettings />{/if}
       </SettingRow>
     </SettingsGroup>
     <SettingsGroup id="library-links" card={false}>

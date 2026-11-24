@@ -95,6 +95,8 @@ describe('Settings › Library (calibre-metadata-display.md)', () => {
     expect(SETTINGS_SECTIONS.filter((s) => s.tab === 'Library').map((s) => s.title)).toEqual([
       'Look',
       'Book page',
+      // Book summaries session 4: after Book page.
+      'Summaries',
       'Links',
       // Calibre metadata editing (design 2026-11-23): a new section after Links.
       'Editing',

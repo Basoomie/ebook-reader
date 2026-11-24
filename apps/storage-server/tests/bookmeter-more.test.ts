@@ -78,6 +78,8 @@ interface Book {
   fmt?: string;
   series?: string | null;
   hits: BookmeterHit[] | undefined;
+  /** The book's own store titles (the candidates' question). */
+  storeTitles?: string[];
   /** The search's query (stage 4's: the file's title); the decided title when not given. */
   query?: string;
   accepted?: { id: string; reason: string } | null;
@@ -114,6 +116,7 @@ function standIn(books: Map<string, Book>): Stage4Analysis {
       queryTitle: b.query ?? b.title,
       bookmeter: { hits: b.hits, accepted: b.accepted ?? null },
       searchRequest: b.search,
+      storeTitles: b.storeTitles ?? [],
       asin: null,
     };
   };
@@ -131,8 +134,14 @@ class FakeRunner {
   answers = new Map<string, { primary: string; secondary: string }>();
   asked = new Set<string>();
   queued = new Set<string>();
-  putItems(_spec: unknown, items: { key: string }[]): number {
-    for (const i of items) this.queued.add(i.key);
+  /** The evidence each item was asked with, and by which question. */
+  evidence = new Map<string, { stage: string; evidence: unknown }>();
+  putItems(spec: { stage: string }, items: { key: string; evidence: unknown }[]): number {
+    for (const i of items) {
+      this.queued.add(i.key);
+      this.asked.delete(i.key);
+      this.evidence.set(i.key, { stage: spec.stage, evidence: i.evidence });
+    }
     return items.length;
   }
   enqueue(): number {
@@ -149,9 +158,12 @@ class FakeRunner {
   counts() {
     return { queued: 0, sent: 0, answered: this.asked.size * 2, blocked: 0, invalid: 0, failed: 0 };
   }
-  answerOf(_spec: unknown, role: 'primary' | 'secondary', key: string) {
+  answerOf(spec: { stage: string }, role: 'primary' | 'secondary', key: string) {
     const a = this.answers.get(key);
     if (!a || !this.asked.has(key)) return null;
+    // The candidates' question answers with a result's id.
+    if (spec.stage === 'bookmeter-near2')
+      return { model: role, state: 'answered', answer: { match: a[role], reason: 'r' } };
     return { model: role, state: 'answered', answer: { same_book: a[role], reason: 'r' } };
   }
 }
@@ -304,6 +316,22 @@ describe('More Bookmeter coverage: pure parts', () => {
     expect(r.ids).toMatchObject({ isbn: '9780000000000', bookwalker: 'old', bookmeter: '123' });
   });
 
+  it('times only the questions outside batches; none while only a batch at a provider is left', () => {
+    const p = emptyBmProgress(1, LIB);
+    p.phase = 'ai';
+    p.ai.rate = { at: T0, done: 0 };
+    const ai = { queued: 0, sent: 500, answered: 13256, blocked: 0, invalid: 0, failed: 0 };
+    const base = { openSearches: 0, openQ1: 0, openStores: 0, intervalSeconds: 5 };
+    // Found live: the 500 left were one batch at OpenAI; the old bar said "about 1 min left".
+    expect(bookmeterBar(p, T0 + 16 * 60_000, { ...base, ai })?.leftMs).toBeGreaterThan(0);
+    expect(bookmeterBar(p, T0 + 16 * 60_000, { ...base, ai, aiInBatches: 500 })?.leftMs).toBeNull();
+    // 1,000 asked one call each besides the batch: timed at the measured rate.
+    const more = { ...ai, queued: 1000 };
+    expect(bookmeterBar(p, T0 + 16 * 60_000, { ...base, ai: more, aiInBatches: 500 })?.leftMs).toBe(
+      ((16 * 60_000) / 13256) * 1000,
+    );
+  });
+
   it("counts the store lists' time at Bookmeter's pace until 30 answers are measured", () => {
     const p = emptyBmProgress(1, LIB);
     p.phase = 'stores';
@@ -322,6 +350,34 @@ describe('More Bookmeter coverage: pure parts', () => {
       measured: true,
     });
   });
+
+  it("times the write from its recent batches' pace, none before a batch finished", () => {
+    const p = emptyBmProgress(1, LIB);
+    p.phase = 'write';
+    const x = {
+      ai: { queued: 0, sent: 0, answered: 0, blocked: 0, invalid: 0, failed: 0 },
+      openSearches: 0,
+      openQ1: 0,
+      openStores: 0,
+      intervalSeconds: 5,
+    };
+    // Before the proposals are made again: no bar.
+    expect(bookmeterBar(p, T0, x)).toBeNull();
+    expect(bookmeterBar(p, T0, { ...x, write: { done: 0, total: 27267, pace: null } })).toEqual({
+      phase: 'write',
+      done: 0,
+      total: 27267,
+      leftMs: null,
+      measured: false,
+    });
+    // 1,500 written in 3 batches over 270 s: the 25,767 left at 0.18 s each.
+    expect(
+      bookmeterBar(p, T0, {
+        ...x,
+        write: { done: 1500, total: 27267, pace: { ms: 270_000, items: 1500 } },
+      }),
+    ).toMatchObject({ leftMs: (270_000 / 1500) * 25767, measured: true });
+  });
 });
 
 describe('More Bookmeter coverage: the pass', () => {
@@ -331,6 +387,35 @@ describe('More Bookmeter coverage: the pass', () => {
   let books: Map<string, Book>;
   let runner: FakeRunner;
   let planned: string[];
+  let add: (b: Omit<Book, 'search'> & { page?: string }) => void;
+  /** Dクラッカーズ・ショートII as found live: two results fail only the title check. */
+  const pageM = searchPage([
+    {
+      id: '81',
+      whole: 'Dクラッカーズ・ショート 2 (富士見ミステリー文庫 7-8)',
+      authors: ['あざの 耕平'],
+    },
+    {
+      id: '82',
+      whole:
+        'Dクラッカーズ・ショートII　過日―roots―（富士見ファンタジア文庫） Dクラッカーズショート',
+      authors: ['あざの 耕平,村崎 久都'],
+    },
+  ]);
+  const addM = (uuid: string, id: number) =>
+    add({
+      uuid,
+      id,
+      title: 'Dクラッカーズ・ショートII 過日─roots─',
+      authors: ['あざの耕平'],
+      hits: parseBookmeterSearch(pageM).map((h) => ({
+        ...h,
+        title: h.listTitle!,
+        listTitle: undefined,
+      })),
+      page: pageM,
+      storeTitles: ['Dクラッカーズ・ショートII　過日―roots―（富士見ファンタジア文庫）'],
+    });
   let clock = Date.now();
   /** The fetcher's clock: a second per claim, so Bookmeter's pace never holds a test. */
   const tick = () => (clock += 1000);
@@ -400,7 +485,7 @@ describe('More Bookmeter coverage: the pass', () => {
     runner = new FakeRunner();
     planned = [];
     books = new Map();
-    const add = (b: Omit<Book, 'search'> & { page?: string }) => {
+    add = (b) => {
       const search = b.page !== undefined ? store(`search-jp:${b.query ?? b.title}`, b.page) : null;
       books.set(b.uuid, { ...b, search });
       db.prepare(
@@ -582,6 +667,94 @@ describe('More Bookmeter coverage: the pass', () => {
     expect(JSON.parse(props[1].new_json)).toMatchObject({ bookmeter: '92', isbn: '9784000000002' });
   });
 
+  it('asks every candidate when several results fail one check; both models must choose the same one', async () => {
+    addM('m', 9);
+    addM('n', 10);
+    runner.answers.set(`${LIB}:m`, { primary: '82', secondary: '82' });
+    runner.answers.set(`${LIB}:n`, { primary: '82', secondary: '81' });
+    const p = pass();
+    await runUntil(p, (ph) => ph === 'second');
+    const ev = runner.evidence.get(`${LIB}:m`) as {
+      stage: string;
+      evidence: { book: { storeTitles: string[] }; results: { id: string; failedCheck: string }[] };
+    };
+    expect(ev.stage).toBe('bookmeter-near2');
+    expect(ev.evidence.results.map((r) => [r.id, r.failedCheck])).toEqual([
+      ['81', 'title'],
+      ['82', 'title'],
+    ]);
+    expect(ev.evidence.book.storeTitles[0]).toContain('富士見ファンタジア文庫');
+    const row = (u: string) =>
+      db
+        .prepare(
+          `SELECT state, source, failed_check, hit_json FROM bookmeter_more_books WHERE calibre_uuid = ?`,
+        )
+        .get(u) as { state: string; source: string | null; failed_check: string; hit_json: string };
+    expect(row('m')).toMatchObject({ state: 'matched', source: 'ai', failed_check: 'several' });
+    expect(JSON.parse(row('m').hit_json).id).toBe('82');
+    // The models disagree: no match.
+    expect(row('n')).toMatchObject({ state: 'none', source: null });
+    // Single-result near misses keep step 1's question.
+    expect(runner.evidence.get(`${LIB}:b`)?.stage).toBe('bookmeter-near');
+  });
+
+  it('asks a finished Preview again once: several candidates, their proposals and the spot check set aside', async () => {
+    addM('m', 9);
+    runner.answers.set(`${LIB}:m`, { primary: '82', secondary: '82' });
+    const p = pass();
+    // As the live Preview left it: m accepted by step 1's question (the closest, the print edition).
+    db.prepare(
+      `INSERT INTO bookmeter_more_books (library_id, calibre_uuid, calibre_id, labeled, state, source, hit_json, failed_check, stores_json, updated_at)
+       VALUES (?, 'm', 9, 0, 'ready', 'ai', ?, 'title', '{"isbn":"9784829162156"}', 0)`,
+    ).run(
+      LIB,
+      JSON.stringify({
+        id: '81',
+        title: 'Dクラッカーズ・ショート 2',
+        authors: ['あざの 耕平'],
+        pages: 410,
+      }),
+    );
+    expect(p.proposeOne(LIB, 1, 'm')).toBe('proposed');
+    db.prepare(
+      `INSERT INTO bookmeter_more_spot (library_id, calibre_uuid, position, source) VALUES (?, 'm', 0, 'ai')`,
+    ).run(LIB);
+    // Saved as the live Preview was, before the version existed (no nearVersion field).
+    const st: Partial<ReturnType<typeof emptyBmProgress>> & ReturnType<typeof emptyBmProgress> = {
+      ...emptyBmProgress(1, LIB),
+      phase: 'spot' as const,
+    };
+    delete st.nearVersion;
+    st.spot = { drawnAt: Date.now(), size: 1, notified: false };
+    st.second.enqueued = true;
+    st.stores.enqueued = true;
+    db.prepare(
+      'UPDATE bookmeter_more_state SET progress_json = ?, library_id = ? WHERE id = 1',
+    ).run(JSON.stringify(st), LIB);
+    await runUntil(p, () => false); // re-ask, AI, second, stores (waits for the new store list)
+    expect(p.state().progress.nearVersion).toBe(2);
+    expect(db.prepare('SELECT COUNT(*) AS n FROM bookmeter_more_spot').get()).toEqual({ n: 0 });
+    expect(
+      db
+        .prepare(
+          `SELECT COUNT(*) AS n FROM proposed_changes WHERE calibre_uuid = 'm' AND state = 'proposed'`,
+        )
+        .get(),
+    ).toEqual({ n: 0 });
+    fetchAll(() => storesJson('9784000000082'));
+    await runUntil(p, (ph) => ph === 'spot');
+    await p.step(); // draws again
+    const prop = db
+      .prepare(
+        `SELECT new_json FROM proposed_changes WHERE calibre_uuid = 'm' AND state = 'proposed'`,
+      )
+      .get() as { new_json: string };
+    expect(JSON.parse(prop.new_json)).toMatchObject({ bookmeter: '82', isbn: '9784000000082' });
+    expect(db.prepare('SELECT calibre_uuid FROM bookmeter_more_spot').all()).toEqual([
+      { calibre_uuid: 'm' },
+    ]);
+  });
+
   it('rebuilds a row stage 4 deleted, holds a book with another open change, never re-proposes an undone one', async () => {
     const p = pass();
     // Straight to proposals: a ready book.
@@ -662,6 +835,27 @@ describe('More Bookmeter coverage: the pass', () => {
     const [c] = q.claim(tick()).requests;
     q.report(c.id, c.leaseToken, answer('{}'), clock);
     expect(db.prepare('SELECT ready FROM bookmeter_more_waiters').get()).toEqual({ ready: 1 });
+  });
+
+  it("measures the write's pace from its last 5 finished batches", () => {
+    expect(pass().writePace([])).toBeNull();
+    const add = db.prepare(
+      `INSERT INTO batches (id, stage, library_id, kind, state, item_count, created_at, finished_at, updated_at)
+       VALUES (?, 4, ?, 'apply', ?, 500, ?, ?, 0)`,
+    );
+    const ids: string[] = [];
+    // Batch 0 long before a restart; then one batch every 100 s; the last one still applying.
+    add.run('w0', LIB, 'applied', 0, 50_000);
+    ids.push('w0');
+    for (let i = 1; i <= 6; i++) {
+      add.run(`w${i}`, LIB, 'applied', 10_000_000 + (i - 1) * 100_000, 10_000_000 + i * 100_000);
+      ids.push(`w${i}`);
+    }
+    add.run('w7', LIB, 'claimed', 10_600_000, null);
+    ids.push('w7');
+    expect(pass().writePace(ids.slice(0, 1))).toEqual({ ms: 50_000, items: 500 });
+    // w2-w6: from w2's planning to w6's end.
+    expect(pass().writePace(ids)).toEqual({ ms: 500_000, items: 2500 });
   });
 
   it('reads its polled counts by index (no scan of a table that grows with the pass)', () => {

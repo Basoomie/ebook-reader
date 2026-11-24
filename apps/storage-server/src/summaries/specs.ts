@@ -21,17 +21,25 @@ export const MODELS = {
   sol: 'gpt-6.1-sol',
   opus: 'claude-opus-5-5',
 } as const;
-export type ModelRole = keyof typeof MODELS;
-export const TASKS: Record<ModelRole, string> = {
-  sonnet: `summaries.${MODELS.sonnet}`,
-  sol: `summaries.${MODELS.sol}`,
-  opus: `summaries.${MODELS.opus}`,
-};
-export function modelForTask(task: string): string {
-  return task.startsWith('summaries.') ? task.slice('summaries.'.length) : '';
+/**
+ * Who is asked: the test's short names (sonnet, sol, opus) or, since session 3, any model id
+ * from the summaries' settings (the route of setups). A role's task is "summaries.<role>".
+ */
+export type ModelRole = string;
+export type TestRole = keyof typeof MODELS;
+/** The model a role names: the test's short names, else the role is the model id itself. */
+export function modelOfRole(role: ModelRole): string {
+  return Object.prototype.hasOwnProperty.call(MODELS, role) ? MODELS[role as TestRole] : role;
 }
-export function roleOf(model: string): ModelRole {
-  const r = (Object.keys(MODELS) as ModelRole[]).find((k) => MODELS[k] === model);
+/** Every role's task ("summaries.<role>"), for any role (model ids of the settings included). */
+export const TASKS: Record<ModelRole, string> = new Proxy({} as Record<ModelRole, string>, {
+  get: (_t, role) => (typeof role === 'string' ? `summaries.${role}` : undefined),
+});
+export function modelForTask(task: string): string {
+  return task.startsWith('summaries.') ? modelOfRole(task.slice('summaries.'.length)) : '';
+}
+export function roleOf(model: string): TestRole {
+  const r = (Object.keys(MODELS) as TestRole[]).find((k) => MODELS[k] === model);
   if (!r) throw new Error(`not a test model: ${model}`);
   return r;
 }
@@ -427,7 +435,10 @@ const writeSchema = {
     also_mentioned: { type: 'array', items: { type: 'string' } },
     relationships: {
       type: 'array',
-      items: withFields({ a: { type: 'string' }, b: { type: 'string' } }, ['a', 'b']),
+      items: withFields(
+        { a: { type: 'string' }, b: { type: 'string' }, label: { type: 'string' } },
+        ['a', 'b', 'label'],
+      ),
     },
     terms: { type: 'array', items: withFields({ term: { type: 'string' } }, ['term']) },
     threads: { type: 'array', items: writtenItem },
@@ -445,7 +456,8 @@ export interface WriteAnswer {
   chapters: { chapter: number; items: WrittenItem[] }[];
   characters: (WrittenItem & { name: string })[];
   also_mentioned: string[];
-  relationships: (WrittenItem & { a: string; b: string })[];
+  /** label: one or two words naming it ('' when the answer had none). */
+  relationships: (WrittenItem & { a: string; b: string; label: string })[];
   terms: (WrittenItem & { term: string })[];
   threads: WrittenItem[];
 }
@@ -488,7 +500,12 @@ export function parseWrite(raw: unknown): Record<string, unknown> | null {
     relationships: list(r.relationships, (c) => {
       const w = written(c);
       return w && typeof c.a === 'string' && typeof c.b === 'string'
-        ? { ...w, a: c.a.trim(), b: c.b.trim() }
+        ? {
+            ...w,
+            a: c.a.trim(),
+            b: c.b.trim(),
+            label: typeof c.label === 'string' ? c.label.trim() : '',
+          }
         : null;
     }),
     terms: list(r.terms, (c) => {
@@ -505,15 +522,16 @@ export const WRITE_SPEC: AiStageSpec<WriteEvidence, ModelRole> = {
   // The writing has its own version since 2026-11-23 (w3: turning points kept, where things end
   // up, threads checked against later items; w4: who said what to whom, no unstated "first" or
   // "only", a thread the book points the answer to is not unknown, headings for unnamed
-  // characters), so changing it asks nothing before it again.
-  promptVersion: `${PROMPT_VERSION}.${EFFORT}.w4`,
+  // characters; w5, session 4: a short label per relationship for the diagram's lines), so
+  // changing it asks nothing before it again.
+  promptVersion: `${PROMPT_VERSION}.${EFFORT}.w5`,
   tasks: TASKS,
   system: `You write a book's summary for a reader who has read it and wants to remember it: when continuing the series after a long break, or when the book comes up in conversation. You get checked facts from the book (ITEMS, each with an id, its chapter and a quote). Write only from them.
 Sections (leave a section empty when it isn't relevant to this book; nonfiction gets what fits it):
 - overview: the book in a few sentences: the setting, the main characters, what happens from the beginning through the middle to the end, and how it ends. The main line only, no small details.
 - chapters: per chapter, what happens, as short items in order. Complete: every event of the chapter that matters, with who did it and the detail that gives it its meaning. A small scene gets one short item at most.
 - characters: one entry per character a reader needs to follow the book, the most important first. The entry is about the person: looks, age, personality, role, and every name they go by (nicknames, online handles: a handle goes into its owner's entry, never an entry of its own once the book reveals the owner), then only the few story facts that define them. Their story belongs in chapters and their ties in relationships: don't retell those here. No fixed fields; say what the items give for that character. Characters who are only mentioned go into also_mentioned as names only.
-- relationships: only relationships that matter (they drive the plot or the feeling of scenes). How the two are connected (family, classmates, living together, ...), how each sees the other, and how it changed in this book. Don't repeat what a character entry already says.
+- relationships: only relationships that matter (they drive the plot or the feeling of scenes). How the two are connected (family, classmates, living together, ...), how each sees the other, and how it changed in this book. Don't repeat what a character entry already says. label: one or two words naming the relationship as it stands at the end of this book (師弟, 幼なじみ, 敵対), shown on a line between the two names.
 - terms: words of this book's own world a reader must know (invented words, groups, organizations, companies, places, powers, rules of the story), and what they mean. Not ordinary words, not real-world things the book only mentions, not characters (a handle or alias goes into its owner's character entry).
 - threads: only questions, promises and dangers still open when the book ends: never something the book resolves, never a plain statement of fact. When it matters for later volumes, say who doesn't know a key fact (e.g. a character unaware of where something is).
 - Never leave out a turning point: a vow, a confession, a betrayal, a reveal of who someone really is or of what a character has found out. The last chapters often hold the book's biggest reveals (an epilogue, one character's monologue): they belong in chapters, and in the overview and threads when they change what a reader expects next.
@@ -551,18 +569,26 @@ export interface TranslateEvidence {
   from: string;
   to: string;
   title: string;
-  items: { ref: string; heading: string | null; text: string }[];
+  items: { ref: string; heading: string | null; label?: string | null; text: string }[];
+}
+
+/** A translation's items; LABEL only on relationships that have one (session 4). */
+function translateUserText(e: TranslateEvidence): string {
+  return `BOOK: ${e.title}\nFROM: ${e.from}\nTO: ${e.to}\n\n${e.items
+    .map(
+      (i) =>
+        `${i.ref}${i.heading ? ` HEADING: ${i.heading}` : ''}${i.label ? `\nLABEL: ${i.label}` : ''}\nTEXT: ${i.text}`,
+    )
+    .join('\n\n')}`;
 }
 
 export const TRANSLATE_SPEC: AiStageSpec<TranslateEvidence, ModelRole> = {
   stage: 'sum.translate',
-  promptVersion: `${PROMPT_VERSION}.${EFFORT}`,
+  // t2 (session 4): relationships' labels translated too.
+  promptVersion: `${PROMPT_VERSION}.${EFFORT}.t2`,
   tasks: TASKS,
-  system: `Translate each item of a book summary. Translate every item on its own, keeping its meaning exactly: add nothing, leave nothing out. Keep each item's ref. A heading is a name or an invented term: give its usual reading or translation (romanize Japanese names in Hepburn with macrons, given order as the book uses it). Quotes are not part of the text and are not translated.`,
-  userText: (e) =>
-    `BOOK: ${e.title}\nFROM: ${e.from}\nTO: ${e.to}\n\n${e.items
-      .map((i) => `${i.ref}${i.heading ? ` HEADING: ${i.heading}` : ''}\nTEXT: ${i.text}`)
-      .join('\n\n')}`,
+  system: `Translate each item of a book summary. Translate every item on its own, keeping its meaning exactly: add nothing, leave nothing out. Keep each item's ref. A heading is a name or an invented term: give its usual reading or translation (romanize Japanese names in Hepburn with macrons, given order as the book uses it). A LABEL names a relationship in one or two words: translate it as one or two words; give label "" for an item without one. Quotes are not part of the text and are not translated.`,
+  userText: translateUserText,
   schema: {
     type: 'object',
     additionalProperties: false,
@@ -573,10 +599,11 @@ export const TRANSLATE_SPEC: AiStageSpec<TranslateEvidence, ModelRole> = {
         items: {
           type: 'object',
           additionalProperties: false,
-          required: ['ref', 'heading', 'text'],
+          required: ['ref', 'heading', 'label', 'text'],
           properties: {
             ref: { type: 'string' },
             heading: { type: 'string' },
+            label: { type: 'string' },
             text: { type: 'string' },
           },
         },
@@ -593,6 +620,7 @@ export const TRANSLATE_SPEC: AiStageSpec<TranslateEvidence, ModelRole> = {
         .map((x) => ({
           ref: x.ref as string,
           heading: typeof x.heading === 'string' ? x.heading : '',
+          label: typeof x.label === 'string' ? x.label : '',
           text: x.text as string,
         })),
     };
@@ -605,6 +633,127 @@ export const TRANSLATE_SPEC: AiStageSpec<TranslateEvidence, ModelRole> = {
     effort: EFFORT,
     stream: true,
     expectedOutputTokens: 20_000,
+  },
+};
+
+// ---------------------------------------------------------------------------------------------
+// Labels for relationships written before labels existed (session 4, `cli summaries label`)
+
+export interface LabelEvidence {
+  title: string;
+  lang: string;
+  items: { ref: string; between: [string, string]; text: string }[];
+}
+
+export const LABEL_SPEC: AiStageSpec<LabelEvidence, ModelRole> = {
+  stage: 'sum.label',
+  promptVersion: `${PROMPT_VERSION}.${EFFORT}.l1`,
+  tasks: TASKS,
+  system: `Each item is one relationship from a book summary: the two people and what the summary says about them. Give each item a label: one or two words naming the relationship as it stands at the end of the book (師弟, 幼なじみ, 敵対), in the summary's language, taken only from what the item says. Keep each item's ref.`,
+  userText: (e) =>
+    `BOOK: ${e.title}\nLANGUAGE: ${e.lang}\n\n${e.items
+      .map((i) => `${i.ref} BETWEEN: ${i.between[0]} / ${i.between[1]}\nTEXT: ${i.text}`)
+      .join('\n\n')}`,
+  schema: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['items'],
+    properties: {
+      items: {
+        type: 'array',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['ref', 'label'],
+          properties: { ref: { type: 'string' }, label: { type: 'string' } },
+        },
+      },
+    },
+  },
+  schemaName: 'labels',
+  parseAnswer: (raw) => {
+    const r = raw as { items?: unknown };
+    if (!r || !Array.isArray(r.items)) return null;
+    return {
+      items: (r.items as Record<string, unknown>[])
+        .filter((x) => x && typeof x.ref === 'string' && typeof x.label === 'string')
+        .map((x) => ({ ref: x.ref as string, label: (x.label as string).trim() })),
+    };
+  },
+  evidenceText: () => '',
+  onLimit: 'queue',
+  request: {
+    maxTokens: 8_000,
+    timeoutSeconds: 600,
+    effort: EFFORT,
+    expectedOutputTokens: 1_000,
+  },
+};
+
+// ---------------------------------------------------------------------------------------------
+// A book's description, translated like a summary (session 4b): its paragraphs and lines kept
+
+export interface DescriptionEvidence {
+  from: string;
+  to: string;
+  title: string;
+  /** The description as the book page shows it: paragraphs of lines. */
+  paragraphs: string[][];
+}
+
+export interface DescriptionAnswer {
+  paragraphs: string[][];
+}
+
+export const DESCRIPTION_SPEC: AiStageSpec<DescriptionEvidence, ModelRole> = {
+  stage: 'sum.translate-desc',
+  promptVersion: `${PROMPT_VERSION}.${EFFORT}.d1`,
+  tasks: TASKS,
+  system: `Translate a book's description (the publisher's text about the book). Keep its meaning exactly: add nothing, leave nothing out, explain nothing. Keep the layout: the same paragraphs in the same order, and in each paragraph one translated line for each original line, in order (a line that is only a mark or a symbol stays as it is). Names and invented terms get their usual reading or translation (romanize Japanese names in Hepburn with macrons, given order as the book uses it).`,
+  userText: (e) =>
+    `BOOK: ${e.title}\nFROM: ${e.from}\nTO: ${e.to}\n\n${e.paragraphs
+      .map(
+        (p, i) =>
+          `PARAGRAPH ${i + 1} (${p.length} ${p.length === 1 ? 'line' : 'lines'}):\n${p.join('\n')}`,
+      )
+      .join('\n\n')}`,
+  schema: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['paragraphs'],
+    properties: {
+      paragraphs: {
+        type: 'array',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['lines'],
+          properties: { lines: { type: 'array', items: { type: 'string' } } },
+        },
+      },
+    },
+  },
+  schemaName: 'description',
+  parseAnswer: (raw) => {
+    const r = raw as { paragraphs?: unknown };
+    if (!r || !Array.isArray(r.paragraphs)) return null;
+    const out: string[][] = [];
+    for (const p of r.paragraphs as unknown[]) {
+      const lines = (p as { lines?: unknown })?.lines;
+      if (!Array.isArray(lines) || lines.some((l) => typeof l !== 'string')) return null;
+      out.push((lines as string[]).map((l) => l.replace(/\s*\n\s*/g, ' ').trim()));
+    }
+    return { paragraphs: out };
+  },
+  evidenceText: () => '',
+  onLimit: 'queue',
+  request: {
+    // Asked while the user waits on the book page: one direct call (decided 2026-11-23).
+    direct: true,
+    maxTokens: 8_000,
+    timeoutSeconds: 300,
+    effort: EFFORT,
+    expectedOutputTokens: 1_500,
   },
 };
 

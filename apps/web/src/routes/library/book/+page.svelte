@@ -33,6 +33,8 @@
   import AppHeader from '$lib/components/app-nav/app-header.svelte';
   import AddToCollectionDialog from '$lib/components/collections/add-to-collection-dialog.svelte';
   import AudioLinkSection from '$lib/components/audio/audio-link-section.svelte';
+  import SummarySection from '$lib/components/summaries/summary-section.svelte';
+  import BookDescription from '$lib/components/summaries/book-description.svelte';
   import BookDownloadMenu from '$lib/components/library/book-download-menu.svelte';
   import BookLinks from '$lib/components/library/book-links.svelte';
   import BookIllustrations from '$lib/components/library/book-illustrations.svelte';
@@ -59,7 +61,7 @@
     type CoverRules
   } from '$lib/library/cover-blur';
   import type { Collection, CollectionItem } from '$lib/collections/collections';
-  import { coverGrid } from '$lib/library/cover-size';
+  import { coverSize } from '$lib/library/cover-size';
   import { descriptionParagraphs } from '$lib/library/description';
   import {
     authorHref,
@@ -149,7 +151,6 @@
   let collectionItems = new Map<string, CollectionItem[]>();
   let positions = new Map<string, LocalRecord[]>();
   let revealed = new Set<string>();
-  let descriptionOpen = false;
   /** Where Back goes: the previous page (history) when the app came from one. */
   let cameFromApp = false;
   let opening: { book: CatalogBook; stage: OpenStage | null; controller: AbortController } | null =
@@ -177,7 +178,6 @@
   $: refused = notWritten(editStatus);
   $: showRating = !!shown && (!!shown.rating || $bookRatingEmpty$ === 'show');
   $: paragraphs = descriptionParagraphs(shown?.description);
-  $: longDescription = paragraphs.join('').length > 220 || paragraphs.length > 3;
   $: rows = shown
     ? detailRows(shown, libraries.find((l) => l.id === shown?.libraryId)?.name ?? '')
     : [];
@@ -210,7 +210,31 @@
   $: coverBlurred = book
     ? !revealed.has(book.id) && isCoverBlurred(state?.blur, book, blurCtx)
     : false;
-  $: gridLayout = coverGrid($libraryCoverSize$);
+  // The Series and Also by rows scroll sideways like Home's rows (2026-11-23): the Library's
+  // cover size, else Home's automatic widths.
+  $: stripSize = coverSize($libraryCoverSize$);
+  $: stripClass = `c-strip grid grid-flow-col gap-4 pb-2 ${
+    stripSize ? '' : 'auto-cols-[7rem] sm:auto-cols-[8.5rem]'
+  }`;
+  $: stripStyle = stripSize ? `grid-auto-columns: ${stripSize}px` : undefined;
+
+  /** Scrolls the Series row sideways so this book's volume is in view (never the page). */
+  function showCurrent(node: HTMLElement, id: string) {
+    const run = (current: string) => {
+      requestAnimationFrame(() => {
+        const card = node.querySelector<HTMLElement>(`[data-book-id="${CSS.escape(current)}"]`);
+        if (!card) return;
+        const box = node.getBoundingClientRect();
+        const at = card.getBoundingClientRect();
+        node.scrollLeft = Math.max(
+          0,
+          node.scrollLeft + (at.left - box.left) - (box.width - at.width) / 2
+        );
+      });
+    };
+    run(id);
+    return { update: run };
+  }
   // Season 2 §6: the device's setting (anything unknown counts as the default).
   $: illustrationsAt = $bookIllustrationsPosition$ === 'cover' ? 'cover' : 'description';
   // Where the links go (Settings > Library, per device; anything unknown is the default).
@@ -356,7 +380,6 @@
     onDeviceHere = false;
     onDeviceChecked = false;
     audioLink = null;
-    descriptionOpen = false;
     series = [];
     alsoBy = [];
     try {
@@ -828,27 +851,15 @@
           style="border-color: var(--c-gold)"
           aria-labelledby="details-desc"
         >
-          <h2 id="details-desc" class="flex items-baseline gap-3">
-            <span class="font-mincho text-lg font-bold text-c-label">内容紹介</span>
-            <span class="text-sm text-c-muted">Description</span>
-          </h2>
-          <div
-            class="mt-2 flex flex-col gap-3 text-[15px] leading-loose"
-            class:c-clamped={longDescription && !descriptionOpen}
-            data-testid="details-description"
-          >
-            {#each paragraphs as p}<p class="whitespace-pre-line">{p}</p>{/each}
-          </div>
-          {#if longDescription}
-            <button
-              class="c-link mt-1 min-h-[2.75rem] text-sm"
-              aria-expanded={descriptionOpen}
-              data-testid="details-more"
-              on:click={() => (descriptionOpen = !descriptionOpen)}
-            >
-              {descriptionOpen ? 'Less' : 'More'}
-            </button>
-          {/if}
+          <!-- The heading, text and More; session 4b: its language buttons. -->
+          <BookDescription
+            bookId={book.id}
+            description={shown?.description}
+            {paragraphs}
+            libraryLanguage={libraries.find((l) => l.id === book?.libraryId)?.language}
+            languages={shown?.languages}
+            {offline}
+          />
         </section>
       {/if}
 
@@ -927,6 +938,8 @@
       />
     {/if}
 
+    <SummarySection book={shown ?? book} status={state?.status} {offline} />
+
     {#if api}
       <AudioLinkSection
         {api}
@@ -952,7 +965,12 @@
             href={libraryHref('series', book.series.name)}>All {series.length} volumes</a
           >
         </div>
-        <ul class="mt-4 {gridLayout.classes}" style={gridLayout.style || undefined}>
+        <ul
+          class="c-dstrip mt-4 {stripClass}"
+          style={stripStyle}
+          data-testid="details-series-books"
+          use:showCurrent={book.id}
+        >
           {#each series as b (b.id)}
             <LibraryBookCard
               book={b}
@@ -995,7 +1013,11 @@
             href={authorHref(pagePath, row.author)}>See all</a
           >
         </div>
-        <ul class="mt-4 {gridLayout.classes}" style={gridLayout.style || undefined}>
+        <ul
+          class="c-dstrip mt-4 {stripClass}"
+          style={stripStyle}
+          data-testid="details-also-by-books"
+        >
           {#each row.books as b (b.id)}
             <LibraryBookCard
               book={b}
@@ -1131,9 +1153,19 @@
       grid-template-areas: 'cover' 'main' 'desc' 'info';
     }
 
+    /* Phones: the cover in the middle (2026-11-23); the rest stays left. */
     .c-dcover {
       max-width: 11rem;
+      align-self: center;
     }
+  }
+
+  /* Room for the covers' hover lift inside the scrolling rows (as Home's), and for this
+     book's outline at either end of the Series row. */
+  .c-dstrip {
+    padding-top: 6px;
+    padding-inline: 5px;
+    margin-inline: -5px;
   }
 
   .c-dcover {
@@ -1201,17 +1233,6 @@
     line-height: 1;
     text-align: center;
     clip-path: polygon(0 0, 100% 0, 100% 100%, 50% 78%, 0 100%);
-  }
-
-  /* About six lines of the description until "More". */
-  .c-clamped {
-    max-height: 12.5rem;
-    overflow: hidden;
-    mask-image: linear-gradient(to bottom, #000 70%, transparent);
-  }
-
-  :global(html.eink) .c-clamped {
-    mask-image: none;
   }
 
   /* The actions: [Read][Status]   [Add to collection][Download][Highlights][⋯], the two
