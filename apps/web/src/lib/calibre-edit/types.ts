@@ -106,6 +106,37 @@ export interface SeriesView {
   pairs: SeriesPair[];
 }
 
+/** Book covers: a picture the book's cover had, kept by the server (oldest first). */
+export interface EarlierCover {
+  sha256: string;
+  width: number | null;
+  height: number | null;
+  bytes: number;
+  firstAt: number;
+  lastAt: number;
+  /** Looks like the cover Calibre has now. */
+  current: boolean;
+}
+
+export interface EarlierCovers {
+  current: { width: number; height: number } | null;
+  covers: EarlierCover[];
+}
+
+export type CoverStore = 'amazon' | 'bookwalker';
+
+/** Book covers: one store's picture, fetched by the server through its fetch queue. */
+export interface StoreCover {
+  store: CoverStore;
+  id: string;
+  state: 'waiting' | 'ready' | 'none' | 'failed';
+  reason: string | null;
+  width: number | null;
+  height: number | null;
+  bytes: number | null;
+  same: boolean;
+}
+
 export type TagGroupId = 'format' | 'genre' | 'subject' | 'tag' | 'adaptation' | 'yours';
 
 export interface TagList {

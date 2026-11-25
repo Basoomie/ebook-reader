@@ -36,6 +36,10 @@ import {
 } from './fields';
 import { markYours, setAiYours, yoursOf } from './yours';
 import { bookHistory, editFieldOf, undoTarget, type HistoryEntry } from './history';
+import { samePicture, type ArchivedCover, type CoverArchive } from './cover-archive';
+import { imageFacts } from '../file-metadata';
+import { getSettings } from '../settings';
+import { hammingHex } from '../stage2-rules';
 
 export type EditSource = 'edit' | 'undo' | 'carried' | 'confirm';
 
@@ -74,7 +78,16 @@ interface EditPlan {
   confirm: UserFieldKey[];
   renames: SharedRename[];
   source: EditSource;
-  extra: { undoOf?: string; coverFrom?: string };
+  extra: EditExtra;
+}
+
+/** How a save came about beyond the form's values. */
+export interface EditExtra {
+  undoOf?: string;
+  /** Undo of a cover made before the cover archive: the picture in the sidecar's quarantine. */
+  coverFrom?: string;
+  /** Book covers: a picture from the cover archive (an earlier cover, or Undo) by its SHA-256. */
+  coverArchive?: string;
 }
 
 export type EditState = 'waiting' | 'writing' | 'written' | 'shown' | 'not_written';
@@ -99,6 +112,8 @@ export interface EditDeps {
   main: Database.Database;
   batches: BatchService;
   cacheDir: string;
+  /** Book covers: the pictures a cover had before it was replaced. */
+  archive?: CoverArchive | null;
 }
 
 export class EditService {
@@ -242,7 +257,7 @@ export class EditService {
     input: SaveInput,
     source: EditSource = 'edit',
     now = Date.now(),
-    extra: { undoOf?: string; coverFrom?: string } = {},
+    extra: EditExtra = {},
   ): SaveResult {
     const plan = this.plan(bookId, input, source, extra);
     const [result] = this.commit([plan], now);
@@ -283,12 +298,7 @@ export class EditService {
     return bookRef(this.deps.main, bookId)?.title ?? 'A book';
   }
 
-  private plan(
-    bookId: string,
-    input: SaveInput,
-    source: EditSource,
-    extra: { undoOf?: string; coverFrom?: string },
-  ): EditPlan {
+  private plan(bookId: string, input: SaveInput, source: EditSource, extra: EditExtra): EditPlan {
     const ref = this.ref(bookId);
     const current = this.currentValues(bookId);
     if (!current) throw new EditError(404, 'not_found', 'No such book');
@@ -315,6 +325,17 @@ export class EditService {
           file: coverFile,
           sha256: createHash('sha256').update(fs.readFileSync(coverFile)).digest('hex'),
         },
+      });
+    } else if (extra.coverArchive) {
+      // Book covers: an earlier picture from the server's own archive (written like an upload).
+      const file = this.deps.archive?.has(ref, extra.coverArchive)
+        ? this.deps.archive.file(extra.coverArchive)
+        : null;
+      if (!file) throw new EditError(410, 'cover_gone', 'That earlier cover is not in the archive');
+      rows.push({
+        field: 'cover',
+        base: ref.hasCover,
+        value: { file, sha256: extra.coverArchive, archive: extra.coverArchive },
       });
     } else if (extra.coverFrom) {
       // Undo of a cover: Calibre's earlier picture, kept in the sidecar's quarantine.
@@ -612,6 +633,45 @@ export class EditService {
     return r.batchId;
   }
 
+  /**
+   * Book covers: every picture the book's cover has had that the archive keeps, oldest first
+   * (the first is the original), each marked when it looks like the cover Calibre has now.
+   */
+  async earlierCovers(bookId: string): Promise<{
+    current: { width: number; height: number } | null;
+    covers: (ArchivedCover & { current: boolean })[];
+  }> {
+    const ref = this.ref(bookId);
+    const list = this.deps.archive?.list(ref) ?? [];
+    const bytes = ref.hasCover && this.readCover ? this.readCover(ref.libraryId, ref.path) : null;
+    const facts = bytes ? await imageFacts(bytes) : null;
+    const sha = bytes ? createHash('sha256').update(bytes).digest('hex') : null;
+    const max = getSettings(this.db).covers.sameDistance;
+    // The cover now is the picture with Calibre's exact bytes. Only when none has them (a picture
+    // Calibre wrote differently) the closest one by its difference hash, within stage 4's
+    // setting: a near look-alike must never hide a picture the user can pick (found in the e2e).
+    let currentSha = list.some((c) => c.sha256 === sha) ? sha : null;
+    if (!currentSha && facts?.dhash) {
+      let best: { sha: string; d: number } | null = null;
+      for (const c of list) {
+        if (!samePicture(c.dhash, facts.dhash, max)) continue;
+        const d = hammingHex(c.dhash, facts.dhash) ?? Infinity;
+        if (!best || d < best.d) best = { sha: c.sha256, d };
+      }
+      currentSha = best?.sha ?? null;
+    }
+    return {
+      current: facts ? { width: facts.width, height: facts.height } : null,
+      covers: list.map((c) => ({ ...c, current: c.sha256 === currentSha })),
+    };
+  }
+
+  /** Book covers: a picture of the book's archive (the form's thumbnails), or null. */
+  archivedPicture(bookId: string, sha256: string): string | null {
+    const ref = this.ref(bookId);
+    return this.deps.archive?.has(ref, sha256) ? this.deps.archive.file(sha256) : null;
+  }
+
   /** Reads a book's cover.jpg from the Calibre library (read only); set by the service. */
   readCover: ((libraryId: string, bookPath: string | null) => Buffer | null) | null = null;
 
@@ -744,7 +804,12 @@ export class EditService {
   /** The book's history of changes, newest first. */
   history(bookId: string): HistoryEntry[] {
     const ref = this.ref(bookId);
-    return bookHistory(this.db, ref, catalogValues(this.deps.main, bookId)!);
+    return bookHistory(
+      this.db,
+      ref,
+      catalogValues(this.deps.main, bookId)!,
+      this.deps.archive ?? null,
+    );
   }
 
   /**
@@ -754,12 +819,18 @@ export class EditService {
   undo(bookId: string, entryId: string, now = Date.now()): SaveResult {
     const ref = this.ref(bookId);
     const current = catalogValues(this.deps.main, bookId)!;
-    const entry = undoTarget(bookHistory(this.db, ref, current), entryId);
+    const entry = undoTarget(
+      bookHistory(this.db, ref, current, this.deps.archive ?? null),
+      entryId,
+    );
     const field = editFieldOf(entry.field)!;
     if (field === 'cover') {
-      const q = (entry.undo.to as { quarantine?: string } | null)?.quarantine;
-      if (!q) throw new EditError(409, 'not_undoable', 'The earlier picture was not kept');
-      return this.save(bookId, {}, 'undo', now, { undoOf: entryId, coverFrom: q });
+      const to = entry.undo.to as { archive?: string; quarantine?: string } | null;
+      if (to?.archive)
+        return this.save(bookId, {}, 'undo', now, { undoOf: entryId, coverArchive: to.archive });
+      if (!to?.quarantine)
+        throw new EditError(409, 'not_undoable', 'The earlier picture was not kept');
+      return this.save(bookId, {}, 'undo', now, { undoOf: entryId, coverFrom: to.quarantine });
     }
     return this.save(
       bookId,
