@@ -15,8 +15,8 @@ import { MOVE_STAGE } from '../src/cleanup/field-stages';
 import { findCalibreSource } from '../src/cleanup/handoff';
 import { decideMove, drawSpot, type MoveCandidate } from '../src/cleanup/move/select';
 import { CALIBRE_AI_STAGES, rekeyCleanupState } from '../src/cleanup/move/rekey';
-import { getMoveState } from '../src/cleanup/move/state';
-import { updateSettings } from '../src/cleanup/settings';
+import { getMoveState, moveArrivalsAnalysisId, setMoveMode } from '../src/cleanup/move/state';
+import { getSettings, updateSettings } from '../src/cleanup/settings';
 import type { LibraryFixture } from './helpers/calibre-fixture';
 import { type CleanupEnv, healthyHeartbeat, makeCleanupEnv } from './helpers/cleanup-env';
 import { makeZip } from './helpers/epub-fixture';
@@ -566,6 +566,107 @@ describe('moving books to the manga library', () => {
       },
     ]);
     expect(r).toMatchObject({ auto: 0, already: 1 });
+  });
+
+  it('a new-arrivals run waits for the reader to count its tagged books before it decides (at most the setting)', async () => {
+    const { A } = await addBooks();
+    const epubN = mangaEpub({ page: 'n' });
+    const n = await env.lib.addBook({
+      title: '新刊',
+      authors: ['作者'],
+      tags: ['マンガ'],
+      epub: epubN,
+    });
+    await env.index();
+    const lib = env.libraryId();
+    const uuidN = (
+      env.lib['open']().prepare('SELECT uuid FROM books WHERE id = ?').get(n) as { uuid: string }
+    ).uuid;
+    const N = { id: n, uuid: uuidN, bookId: findCalibreSource(env.db, lib, uuidN)!.bookId };
+    await heartbeat();
+    setMoveMode(env.cleanupDb, 'on');
+    env.service.arrivals.setMode('on');
+    /** A run of the new arrivals at its move step, with these books as its own. */
+    const startRun = (ids: number[], waitSince: number | null = null) => {
+      const now = Date.now();
+      const p = {
+        phase: 'move',
+        phaseStartedAt: now,
+        phaseStartDone: 0,
+        times: {},
+        counts: {},
+        waiting: null,
+        pairs: [],
+        libraryId: lib,
+        scope: { import: ids, hand: [] },
+        betterOf: {},
+        reviews: 0,
+        stage4: null,
+        ai: null,
+        s5: null,
+        jGate: null,
+        writes: {},
+        check: null,
+        moveCountWaitSince: waitSince,
+        cost: 0,
+      };
+      const id = Number(
+        env.cleanupDb
+          .prepare(
+            `INSERT INTO calibre_arrival_runs (trigger, mode, state, phase, started_at, progress_json)
+             VALUES ('now', 'on', 'running', 'move', ?, ?)`,
+          )
+          .run(now, JSON.stringify(p)).lastInsertRowid,
+      );
+      env.cleanupDb
+        .prepare('UPDATE calibre_arrivals_state SET current_run = ? WHERE id = 1')
+        .run(id);
+      return id;
+    };
+    const proposed = (run: number) =>
+      (
+        env.cleanupDb
+          .prepare(
+            `SELECT calibre_uuid FROM proposed_changes WHERE stage = ${MOVE_STAGE} AND analysis_id = ?`,
+          )
+          .all(moveArrivalsAnalysisId(run)) as { calibre_uuid: string }[]
+      ).map((r) => r.calibre_uuid);
+
+    // N isn't counted yet: the run waits and decides nothing.
+    const run1 = startRun([A.id, N.id]);
+    expect(await env.service.arrivals.step()).toBe('wait');
+    let p = env.service.arrivals.currentRun()!.p;
+    expect(p.waiting).toBe(
+      'Waiting for the reader to count 1 of the 2 manga and image-only books before moving them',
+    );
+    expect(p.move ?? null).toBeNull();
+    expect(proposed(run1)).toEqual([]);
+    // Counted: it decides, and both are moved (none held as "no count").
+    count(N.bookId, 40, epubN.length);
+    await env.service.arrivals.step();
+    p = env.service.arrivals.currentRun()!.p;
+    expect(p.move).toMatchObject({ tagged: 2, auto: 2, held: {} });
+    expect(p.waiting).not.toMatch(/count/);
+    expect(proposed(run1).sort()).toEqual([A.uuid, N.uuid].sort());
+    env.cleanupDb.prepare(`UPDATE calibre_arrival_runs SET state = 'done' WHERE id = ?`).run(run1);
+
+    // Past the setting's wait, a book still uncounted is held (no count), not waited for again.
+    const epubM = mangaEpub({ page: 'm' });
+    const m = await env.lib.addBook({
+      title: '新刊2',
+      authors: ['作者'],
+      tags: ['画像のみ'],
+      epub: epubM,
+    });
+    await env.index();
+    updateSettings(env.cleanupDb, {
+      move: { ...getSettings(env.cleanupDb).move, arrivalsCountWaitMinutes: 30 },
+    });
+    const run2 = startRun([m], Date.now() - 31 * 60_000);
+    await env.service.arrivals.step();
+    p = env.service.arrivals.currentRun()!.p;
+    expect(p.move).toMatchObject({ tagged: 1, auto: 0, held: { no_count: 1 } });
+    expect(proposed(run2)).toHaveLength(1);
   });
 
   it('a field batch written before the move is not undone on a moved book', async () => {

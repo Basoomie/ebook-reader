@@ -97,6 +97,17 @@ export function decideMove(
 }
 
 /**
+ * A decision held only because the reader hasn't counted the book yet: not in the reader's index
+ * yet, no count, or a count of an older file. The counter will get to it; a failed count is final.
+ * New arrivals wait for these before deciding (settings.move.arrivalsCountWaitMinutes).
+ */
+export function waitsForCount(d: MoveDecision): boolean {
+  return (
+    d.hold === 'not_in_reader' || (d.hold === 'no_count' && d.reader?.noCount !== 'count_failed')
+  );
+}
+
+/**
  * The books of a metadata.db snapshot that carry any of the tags (case-insensitive), with what
  * the move needs: formats, the EPUB's path and size, authors in Calibre's order, every tag.
  */

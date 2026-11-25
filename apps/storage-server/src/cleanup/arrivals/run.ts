@@ -94,6 +94,7 @@ import { ArrivalStage4Ai, emptyArrivalAi, type ArrivalAiProgress, type JGate } f
 import { ArrivalStage5, emptyStage5Pass, type Stage5PassProgress } from './stage5-pass';
 import { MOVE_STAGE } from '../field-stages';
 import type { MovePass } from '../move/pass';
+import { waitsForCount } from '../move/select';
 import { getMoveState, moveArrivalsAnalysisId } from '../move/state';
 
 export const DISK_OWNER = 'calibreArrivals';
@@ -254,6 +255,8 @@ export interface RunProgress {
     moved: number;
     note: string | null;
   } | null;
+  /** When the move step began waiting for the reader to count the run's tagged books. */
+  moveCountWaitSince?: number | null;
   cost: number;
 }
 
@@ -2857,6 +2860,22 @@ export class BookArrivals {
     if (!p.move || p.move.batches === undefined) {
       const { decisions } = mv.pass.decide(libraryId);
       const mine = decisions.filter((d) => uuids.has(d.candidate.uuid));
+      // The reader counts new books in the background after its index (about 7,000-8,000 an
+      // hour on the NAS): a book it hasn't counted yet would be held as "no count", so an On run
+      // waits for the counts first, at most settings.move.arrivalsCountWaitMinutes.
+      const uncounted = mine.filter(waitsForCount).length;
+      if (run.mode === 'on' && mode === 'on' && uncounted > 0) {
+        const since = (p.moveCountWaitSince ??= Date.now());
+        const limit = getSettings(this.db).move.arrivalsCountWaitMinutes * 60_000;
+        if (Date.now() - since < limit) {
+          p.waiting = `Waiting for the reader to count ${uncounted.toLocaleString('en-US')} of the ${mine.length.toLocaleString('en-US')} manga and image-only books before moving them`;
+          return 'wait';
+        }
+        this.deps.log?.(
+          `New arrivals: run ${run.id}: ${uncounted} tagged books still uncounted after the wait; they are held for review`,
+        );
+      }
+      p.waiting = null;
       const held: Record<string, number> = {};
       for (const d of mine) if (d.hold) held[d.hold] = (held[d.hold] ?? 0) + 1;
       p.move = {

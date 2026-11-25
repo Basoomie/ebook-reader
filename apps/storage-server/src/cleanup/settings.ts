@@ -461,6 +461,13 @@ export interface MoveSettings {
    * of moved (the user: 5,000, stage 4's own line between a text book and manga/image-only).
    */
   realTextChars: number;
+  /**
+   * New arrivals: the longest the run's move step waits (minutes) for the reader to count the
+   * run's tagged books before it decides; a book still uncounted then is held (no count). The
+   * reader counts new books in the background after the index, about 7,000-8,000 an hour on the
+   * NAS (measured 2026-11-25), so a big run's books may not all be counted when the run gets here.
+   */
+  arrivalsCountWaitMinutes: number;
 }
 
 export const MODEL_TASKS = [
@@ -615,7 +622,12 @@ export const DEFAULT_SETTINGS: CleanupSettings = {
     addBatchSize: 50,
     addLeaseSeconds: 300,
   },
-  move: { targetFolder: 'manga-library', tags: ['マンガ', '画像のみ'], realTextChars: 5000 },
+  move: {
+    targetFolder: 'manga-library',
+    tags: ['マンガ', '画像のみ'],
+    realTextChars: 5000,
+    arrivalsCountWaitMinutes: 360,
+  },
   fetch: {
     // Paces of plan section 6 (Bookmeter and Natively as BookWalker; the cover images as decided
     // in the WP20d plan); Sudachi runs inside the fetch container, no network.
@@ -1186,6 +1198,13 @@ function validate(key: Key, value: unknown, current: CleanupSettings): unknown {
           v.realTextChars,
           1,
           10_000_000,
+          true,
+        ),
+        arrivalsCountWaitMinutes: num(
+          'New arrivals wait at most this many minutes for the reader to count their books',
+          v.arrivalsCountWaitMinutes,
+          0,
+          10_080,
           true,
         ),
       } satisfies MoveSettings;
