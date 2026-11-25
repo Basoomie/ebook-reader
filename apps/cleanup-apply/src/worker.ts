@@ -59,8 +59,11 @@ import { columnShape, MOVE_STAGE, MoveWorker } from './move';
  * a moved book go to its new library), move batches (stage 11, move.ts) move books from one
  * library to another, `#characters` and `timestamp` join set_fields, and the move's target
  * library is checked (`move_target`: the same #illustrator and #characters as the old one).
+ * 1.7.0 (manga part B): an add batch of the new arrivals names its library (the folder's pair:
+ * japanese-library or manga-library) and is added there; #illustrator is checked in every library
+ * the cleanup works on, each result naming its library.
  */
-export const SIDECAR_VERSION = '1.6.3';
+export const SIDECAR_VERSION = '1.7.0';
 
 /** The wait after a batch before asking for the next one (WP20g: the full poll after every batch cost ~1 h of run 7). */
 export const AFTER_BATCH_MS = 1000;
@@ -185,6 +188,8 @@ export class Worker {
   private moveTarget: string | null = null;
   /** Whether the library's #illustrator is a names column (" & " separates its values). */
   private illustratorIsNames = true;
+  /** 1.7.0: the libraries the cleanup works on (their #illustrator is checked too). */
+  private cleanupLibraries: string[] = [];
   private readonly log: Logger;
   private stopped = false;
   private checks: CheckResult[] = [];
@@ -374,6 +379,7 @@ export class Worker {
     const changed = JSON.stringify(answer.calibre) !== JSON.stringify(this.login);
     this.login = answer.calibre;
     this.moveTarget = answer.moveTarget ?? null;
+    this.cleanupLibraries = answer.cleanupLibraries ?? [];
     this.itemDelayMs = Math.max(0, answer.itemDelaySeconds * 1000);
     this.pollMs = Math.max(1000, answer.pollSeconds * 1000);
     if (changed) this.checkedAt = 0;
@@ -476,6 +482,30 @@ export class Worker {
       );
     } catch (err) {
       add('illustrator_column', false, (err as Error).message);
+    }
+    // 1.7.0: the other libraries the cleanup works on, each result naming its library (the
+    // server keeps one per library; the one above is the sidecar's own).
+    for (const other of this.cleanupLibraries) {
+      if (other === login.libraryId) continue;
+      try {
+        const r = await this.calibredb.ok('custom_columns', { ...login, libraryId: other });
+        const ok = hasMultipleTextColumn(r.stdout, 'illustrator');
+        out.push({
+          name: 'illustrator_column',
+          ok,
+          detail: ok
+            ? null
+            : `${other}: #illustrator is missing or not a multiple-value text column`,
+          library: other
+        });
+      } catch (err) {
+        out.push({
+          name: 'illustrator_column',
+          ok: false,
+          detail: shorten((err as Error).message, 300),
+          library: other
+        });
+      }
     }
     // 1.6.0: the move's target library has the same #illustrator and #characters columns.
     if (this.moveTarget) {

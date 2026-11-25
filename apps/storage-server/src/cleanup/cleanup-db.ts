@@ -2859,6 +2859,31 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
           (SELECT id FROM _v37_primary))
         WHERE calibre_id IS NOT NULL;
 
+      -- A statement that names a Calibre book without its library means the file's own library
+      -- (its pair's), as every statement did before; one that names another library sets it.
+      CREATE TRIGGER calibre_arrival_files_library AFTER UPDATE OF calibre_id ON calibre_arrival_files
+      WHEN NEW.calibre_id IS NOT OLD.calibre_id AND NEW.calibre_library_id IS OLD.calibre_library_id
+      BEGIN
+        UPDATE calibre_arrival_files SET calibre_library_id = CASE WHEN NEW.calibre_id IS NULL THEN NULL
+          ELSE (SELECT p.library_id FROM calibre_arrival_pairs p WHERE p.pair_key = NEW.pair_key) END
+        WHERE id = NEW.id;
+      END;
+      CREATE TRIGGER calibre_arrival_batch_items_library AFTER UPDATE OF calibre_id ON calibre_arrival_batch_items
+      WHEN NEW.calibre_id IS NOT NULL AND NEW.calibre_library_id IS NULL
+      BEGIN
+        UPDATE calibre_arrival_batch_items SET calibre_library_id =
+          (SELECT b.library_id FROM calibre_arrival_batches b WHERE b.id = NEW.batch_id)
+        WHERE id = NEW.id;
+      END;
+      CREATE TRIGGER calibre_arrival_reviews_library AFTER INSERT ON calibre_arrival_reviews
+      WHEN NEW.calibre_id IS NOT NULL AND NEW.calibre_library_id IS NULL
+      BEGIN
+        UPDATE calibre_arrival_reviews SET calibre_library_id = COALESCE(
+            (SELECT f.calibre_library_id FROM calibre_arrival_files f WHERE f.id = NEW.file_id),
+            (SELECT r.library_id FROM calibre_arrival_runs r WHERE r.id = NEW.run_id))
+        WHERE id = NEW.id;
+      END;
+
       CREATE TABLE calibre_arrival_books_v37 (
         run_id        INTEGER NOT NULL REFERENCES calibre_arrival_runs(id),
         library_id    TEXT NOT NULL,

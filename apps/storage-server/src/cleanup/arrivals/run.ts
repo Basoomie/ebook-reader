@@ -67,6 +67,8 @@ import {
   BOOKS_PER_COMPARE,
   buildLibraryLookup,
   candidatePairsOf,
+  copyNewSketches,
+  dropCrossSketches,
   dropNewSketches,
   judgePair,
   libraryQuality,
@@ -198,6 +200,9 @@ export interface CompareFacts {
   verdicts?: MeasuredPair[];
   measured?: boolean;
   compared?: boolean;
+  /** Manga part B: the other libraries this file was checked against, and those verdicts. */
+  crossChecked?: string[];
+  crossVerdicts?: (MeasuredPair & { library: string })[];
   [k: string]: unknown;
 }
 
@@ -232,6 +237,16 @@ export interface RunProgress {
   betterOf: Record<string, { calibreId: number; uuid: string; pair: Record<string, unknown> }>;
   /** The compare phase's stage and its own start (the bar's pace). */
   cmp?: { stage: CompareStage; cursor: number; startedAt: number; startDone: number };
+  /**
+   * Manga part B: the check against the other libraries after the run's own (p.otherLibraries):
+   * which library, its part, the cursor, and its candidate pairs (new book, library book).
+   */
+  cross?: {
+    at: number;
+    stage: 'library' | 'identical' | 'text' | 'measure' | 'decide';
+    cursor: number;
+    pairs?: { a: number; b: number }[];
+  };
   /**
    * Since when the run waits for another stage's analysis. The bar shows no time left meanwhile,
    * and the wait is taken out of the pace when the run goes on (WP20g, 2026-11-24: a two-hour
@@ -1590,9 +1605,11 @@ export class BookArrivals {
     const rows = this.db
       .prepare(
         `SELECT id, calibre_id, calibre_uuid FROM calibre_arrival_files INDEXED BY calibre_arrival_files_outcome
-         WHERE outcome = 'added'`,
+         WHERE outcome = 'added' AND (calibre_library_id = ? OR calibre_library_id IS NULL)`,
       )
-      .all() as { id: number; calibre_id: number; calibre_uuid: string }[];
+      // Manga part B: the books added to this library only (another library's are not in its
+      // snapshot and were never removed).
+      .all(libraryId) as { id: number; calibre_id: number; calibre_uuid: string }[];
     const byCleanup = this.db.prepare(
       `SELECT 1 FROM proposed_changes INDEXED BY proposed_changes_book
        WHERE library_id = ? AND calibre_uuid = ? AND field = 'book' AND state = 'applied' LIMIT 1`,
@@ -2074,6 +2091,11 @@ export class BookArrivals {
     // decide
     const part = rows(`AND json_extract(facts_json, '$.compared') IS NULL`, 500);
     if (!part.length) {
+      // Manga part B: then against the other libraries (a run made before has none: run 7).
+      if ((p.otherLibraries ?? []).length) {
+        const r = await this.crossStep(run, p, keys, shouldStop);
+        if (r !== 'done') return r;
+      }
       p.cmp = undefined;
       this.next(run.id, p, 'plan');
       return 'more';
@@ -2173,6 +2195,298 @@ export class BookArrivals {
   }
 
   /**
+   * Manga part B (answer 3 at stop 0): the files still new after their own library's check are
+   * checked against each other library: identical files (stage 1's hashes of that library), then
+   * the same text (that library's candidate index and stage 3's measure and best copy). A file
+   * that is a copy of a book there is recorded (identical or duplicate), never added; a file
+   * better than that library's copy goes to review (nothing is removed from one library because
+   * of a book in another). Resumable: the part and the cursor are kept in the run.
+   */
+  private async crossStep(
+    run: RunRow & { p: RunProgress },
+    p: RunProgress,
+    keys: string[],
+    shouldStop: () => boolean,
+  ): Promise<'more' | 'wait' | 'done'> {
+    const others = p.otherLibraries ?? [];
+    p.cross ??= { at: 0, stage: 'library', cursor: 0 };
+    const x = p.cross;
+    const nextLibrary = () => {
+      x.at++;
+      x.stage = 'library';
+      x.cursor = 0;
+      delete x.pairs;
+    };
+    if (x.at >= others.length) return 'done';
+    const lib = others[x.at];
+    const row = getLibrary(this.deps.main, lib);
+    if (!row || !this.deps.calibreDir || !fs.existsSync(snapshotFile(this.deps.cacheDir, lib))) {
+      nextLibrary();
+      return 'more';
+    }
+    const name = row.name || row.folder;
+    const libDir = path.join(this.deps.calibreDir, row.folder);
+    const books = this.snapshotBooks(lib);
+    const cd = this.compareDeps(lib, libDir, books);
+    const pd = this.passDeps(run.id, lib, libDir);
+    const settings = getSettings(this.db);
+    const srcPacer = new SourcePacer(settings.pacing.readMbPerSecond * 1024 * 1024);
+    const ph = keys.map(() => '?').join(', ');
+    type Row = {
+      id: number;
+      pair_key: string;
+      rel_path: string;
+      size: number;
+      sha256: string | null;
+      facts_json: string | null;
+    };
+    const facts = (r: { facts_json: string | null }) =>
+      (r.facts_json ? JSON.parse(r.facts_json) : {}) as CompareFacts;
+    // The files of this run's folders still new after their own check, not checked against lib.
+    const still = (after: number, limit: number) =>
+      (
+        this.db
+          .prepare(
+            `SELECT id, pair_key, rel_path, size, sha256, facts_json FROM calibre_arrival_files
+             INDEXED BY calibre_arrival_files_outcome
+             WHERE outcome = 'new' AND pair_key IN (${ph}) AND gone_at IS NULL AND id > ?
+               AND json_extract(facts_json, '$.compared') = 1
+             ORDER BY id LIMIT ${limit}`,
+          )
+          .all(...keys, after) as Row[]
+      ).filter((r) => !(facts(r).crossChecked ?? []).includes(lib));
+    const setFacts = this.db.prepare(
+      'UPDATE calibre_arrival_files SET facts_json = ? WHERE id = ?',
+    );
+    const slice = async <T>(fn: () => Promise<T>) => this.withDisk(p, fn, shouldStop);
+
+    if (x.stage === 'library') {
+      p.waiting = `Reading the books of ${name} that stages 1 and 3 have not read yet`;
+      const ok = await slice(() => this.ensureLibraryFacts(cd, pd, books, srcPacer, shouldStop));
+      if (ok === null || ok === false) return 'wait';
+      x.stage = 'identical';
+      x.cursor = 0;
+      return 'more';
+    }
+
+    if (x.stage === 'identical') {
+      const part = still(x.cursor, 200);
+      if (!part.length) {
+        x.stage = 'text';
+        x.cursor = 0;
+        return 'more';
+      }
+      p.waiting = `Looking for identical copies in ${name}`;
+      const libPacer = new Pacer(settings.pacing.readMbPerSecond * 1024 * 1024);
+      const set = this.db.prepare(
+        `UPDATE calibre_arrival_files SET outcome = 'identical', detail = ?, calibre_id = ?,
+           calibre_uuid = ?, calibre_library_id = ?, decided_at = ?, run_id = ? WHERE id = ?`,
+      );
+      const setSha = this.db.prepare(
+        'UPDATE calibre_arrival_files SET sha256 = ?, hashed_at = ? WHERE id = ?',
+      );
+      const ok = await slice(async () => {
+        for (const r of part) {
+          if (shouldStop()) return false;
+          const same = await libraryHashesOfSize(pd, books, r.size, libPacer, shouldStop);
+          let sha = r.sha256;
+          if (!sha && same.length) {
+            const file = this.sourcePath(r.pair_key, r.rel_path);
+            const st = await lstatSource(file);
+            const h =
+              st && st.size === r.size ? await hashSource(file, srcPacer, shouldStop) : null;
+            if (!h && shouldStop()) return false;
+            if (h) {
+              sha = h.sha256;
+              setSha.run(sha, Date.now(), r.id);
+            }
+          }
+          const hit = sha ? same.find((s) => s.sha256 === sha) : undefined;
+          if (hit)
+            set.run(
+              `The same file as ${name} book ${hit.calibreId}`,
+              hit.calibreId,
+              books.get(hit.calibreId)!.uuid,
+              lib,
+              Date.now(),
+              run.id,
+              r.id,
+            );
+          x.cursor = r.id;
+        }
+        return true;
+      });
+      if (ok === null || ok === false) return 'wait';
+      return 'more';
+    }
+
+    const newText = (r: Row): NewText => {
+      const t = facts(r).text!;
+      return {
+        key: -r.id,
+        file: this.sourcePath(r.pair_key, r.rel_path),
+        chars: t.chars,
+        importChars: t.importChars,
+        kind: t.kind,
+        marker: t.marker,
+        imageOnly: t.imageOnly,
+        ruby: t.ruby,
+        toc: t.toc,
+        vertical: t.vertical,
+        imageEntries: [],
+        fileTitle: t.fileTitle,
+        samples: t.samples,
+        error: t.error,
+      };
+    };
+
+    if (x.stage === 'text') {
+      p.waiting = `Finding the books of ${name} with the same text`;
+      const all = still(0, 1_000_000).filter((r) => facts(r).text && !facts(r).text!.error);
+      const news = all.map(newText);
+      // The new books' sketches are under the run's own library; the other library's index
+      // compares them once they are under it too (dropped again when the run finishes).
+      copyNewSketches(
+        cd,
+        p.libraryId ?? '',
+        news.map((n) => n.key),
+      );
+      const pairs = news.length ? await candidatePairsOf(cd, news) : [];
+      // Only a new book with a book of that library: two new books were compared already.
+      x.pairs = pairs.filter((pr) => pr.a < 0 !== pr.b < 0);
+      x.stage = 'measure';
+      x.cursor = 0;
+      return 'more';
+    }
+
+    if (x.stage === 'measure') {
+      const pairs = x.pairs ?? [];
+      if (x.cursor >= pairs.length) {
+        x.stage = 'decide';
+        x.cursor = 0;
+        return 'more';
+      }
+      p.waiting = `Measuring the pairs with the same text in ${name} (${x.cursor} of ${pairs.length})`;
+      const chunk = pairs.slice(x.cursor, x.cursor + 20);
+      const byId = this.db.prepare(
+        'SELECT id, pair_key, rel_path, size, sha256, facts_json FROM calibre_arrival_files WHERE id = ?',
+      );
+      const ok = await slice(async () => {
+        const news = new Map<number, NewText>();
+        for (const pr of chunk)
+          for (const k of [pr.a, pr.b])
+            if (k < 0 && !news.has(k)) {
+              const r = byId.get(-k) as Row | undefined;
+              if (r && facts(r).text) news.set(k, newText(r));
+            }
+        const measured = await measurePairs(
+          cd,
+          news,
+          chunk.filter((pr) => news.has(pr.a < 0 ? pr.a : pr.b)),
+        );
+        const quality = this.qualityOf(cd, news, new Map(), srcPacer);
+        const add = new Map<number, (MeasuredPair & { library: string })[]>();
+        for (const m of measured) {
+          if (!m.m) continue;
+          const k = m.pair.a < 0 ? m.pair.a : m.pair.b;
+          const other = k === m.pair.a ? m.pair.b : m.pair.a;
+          const v = await judgePair(cd, k, other, m.m, news, quality);
+          add.set(k, [...(add.get(k) ?? []), { ...v, library: lib }]);
+        }
+        this.db.transaction(() => {
+          for (const [k, vs] of add) {
+            const r = byId.get(-k) as Row;
+            const fx = facts(r);
+            fx.crossVerdicts = [...(fx.crossVerdicts ?? []), ...vs];
+            setFacts.run(JSON.stringify(fx), r.id);
+          }
+        })();
+        return true;
+      });
+      if (ok === null || ok === false) return 'wait';
+      x.cursor += chunk.length;
+      this.save(run.id, p);
+      return 'more';
+    }
+
+    // decide: each file still new, by its verdicts against this library.
+    const part = still(x.cursor, 500);
+    if (!part.length) {
+      nextLibrary();
+      return 'more';
+    }
+    p.waiting = `Deciding each new book against ${name}`;
+    const set = this.db.prepare(
+      `UPDATE calibre_arrival_files SET outcome = ?, detail = ?, calibre_id = ?, calibre_uuid = ?,
+         calibre_library_id = ?, facts_json = ?, decided_at = ?, run_id = ? WHERE id = ?`,
+    );
+    this.db.transaction(() => {
+      for (const r of part) {
+        const fx = facts(r);
+        const vs = (fx.crossVerdicts ?? []).filter((v) => v.library === lib);
+        fx.crossChecked = [...(fx.crossChecked ?? []), lib];
+        const json = JSON.stringify(fx);
+        const lostTo = vs.find((v) => v.keep === 'other');
+        const tie = lostTo ? undefined : sameTextNoWinner(vs, r.id);
+        const beat = vs.find((v) => v.keep === 'new' && books.get(v.otherKey));
+        const named = lostTo ?? tie;
+        if (named && books.get(named.otherKey)) {
+          set.run(
+            'duplicate',
+            lostTo
+              ? `The same text as ${name} book ${lostTo.otherKey}, which is as good or better (${lostTo.reason})`
+              : `The same text as ${name} book ${named.otherKey}; neither copy is better on every measure`,
+            named.otherKey,
+            books.get(named.otherKey)!.uuid,
+            lib,
+            json,
+            Date.now(),
+            run.id,
+            r.id,
+          );
+        } else if (beat) {
+          const b = books.get(beat.otherKey)!;
+          set.run(
+            'better_review',
+            `Better than ${name} book ${beat.otherKey} (${beat.reason}): a copy in the other library is never replaced by itself`,
+            beat.otherKey,
+            b.uuid,
+            lib,
+            json,
+            Date.now(),
+            run.id,
+            r.id,
+          );
+          this.addReview(
+            run.id,
+            `better:${r.id}:${b.uuid}`,
+            'better_copy',
+            r.id,
+            beat.otherKey,
+            b.uuid,
+            {
+              pair: {
+                aInB: beat.aInB,
+                bInA: beat.bInA,
+                cls: beat.cls,
+                rule: beat.rule,
+                reason: beat.reason,
+                best: beat.best,
+              },
+              title: b.title,
+              library: lib,
+              libraryName: name,
+            },
+            lib,
+          );
+        } else setFacts.run(json, r.id);
+        x.cursor = r.id;
+      }
+    })();
+    return 'more';
+  }
+
+  /**
    * The library's books without stage 1's file facts or stage 3's text facts (books added since
    * those stages' analyses) are stated and read now, so a new file is compared with every book.
    * At most 2,000 a run (the rest the next run); false when stopped.
@@ -2223,7 +2537,11 @@ export class BookArrivals {
 
   private planStep(run: RunRow & { p: RunProgress }, p: RunProgress): void {
     const now = Date.now();
-    this.reapplySameText(run.id);
+    this.reapplySameText(
+      run.id,
+      p.pairs.map((x) => x.key),
+      p.libraryId,
+    );
     for (const pair of p.pairs) {
       // A folder's first run (its Preview) is done once every file in it was looked at; from
       // then on it stays done (files a later download leaves waiting don't undo it). Runs that
@@ -3074,7 +3392,9 @@ export class BookArrivals {
     const mode = mv ? getMoveState(this.db).mode : 'off';
     const uuids = new Set(this.scopeUuids(p, libraryId));
     const target = mv?.pass.targetLibrary() ?? null;
-    if (!mv || mode === 'off' || !target || uuids.size === 0) {
+    // Manga part B: only a run of the move's source library moves its manga (never the manga
+    // library's own run into itself).
+    if (!mv || mode === 'off' || !target || uuids.size === 0 || libraryId === target) {
       p.move =
         mv && uuids.size > 0
           ? {
@@ -3085,9 +3405,11 @@ export class BookArrivals {
               moved: 0,
               note: !target
                 ? 'The manga library is not in the reader'
-                : mode === 'off'
-                  ? 'The move is Off'
-                  : null,
+                : libraryId === target
+                  ? null
+                  : mode === 'off'
+                    ? 'The move is Off'
+                    : null,
             }
           : (p.move ?? null);
       this.next(run.id, p, 'report');
@@ -3198,13 +3520,25 @@ export class BookArrivals {
     calibreId: number | null,
     uuid: string | null,
     detail: Record<string, unknown>,
+    /** Manga part B: the library of the Calibre book named (another than the file's own). */
+    libraryId: string | null = null,
   ): void {
     this.db
       .prepare(
-        `INSERT INTO calibre_arrival_reviews (review_key, kind, file_id, calibre_id, calibre_uuid, detail_json, run_id, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(review_key) DO NOTHING`,
+        `INSERT INTO calibre_arrival_reviews (review_key, kind, file_id, calibre_id, calibre_uuid, detail_json, run_id, created_at, calibre_library_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(review_key) DO NOTHING`,
       )
-      .run(key, kind, fileId, calibreId, uuid, JSON.stringify(detail), runId, Date.now());
+      .run(
+        key,
+        kind,
+        fileId,
+        calibreId,
+        uuid,
+        JSON.stringify(detail),
+        runId,
+        Date.now(),
+        libraryId,
+      );
   }
 
   private addReviews(runId: number, reviews: PassReview[]): void {
@@ -3285,6 +3619,13 @@ export class BookArrivals {
           { cleanup: this.db, cacheDir: this.deps.cacheDir, libraryId: p.libraryId } as CompareDeps,
           decided,
         );
+      // Manga part B: the copies under the other libraries (the check across them) go too.
+      for (const lib of p.otherLibraries ?? [])
+        dropCrossSketches({
+          cleanup: this.db,
+          cacheDir: this.deps.cacheDir,
+          libraryId: lib,
+        } as CompareDeps);
     } catch (err) {
       this.log(`New arrivals: the cache's sketches were not tidied: ${(err as Error).message}`);
     }
@@ -3311,19 +3652,33 @@ export class BookArrivals {
    * with it, before anything is planned or added: a new book with the same text as another copy
    * and no clear winner is a duplicate. Only books still 'new'; once per plan step.
    */
-  reapplySameText(runId: number): number {
-    const rows = this.db
-      .prepare(
-        `SELECT id, facts_json FROM calibre_arrival_files INDEXED BY calibre_arrival_files_outcome
-         WHERE outcome = 'new' AND gone_at IS NULL AND json_extract(facts_json, '$.compared') = 1`,
-      )
-      .all() as { id: number; facts_json: string }[];
+  reapplySameText(runId: number, pairKeys?: string[], libraryId?: string | null): number {
+    // Manga part B: the run's own folders (each library's runs decide their own files).
+    const keys = pairKeys ?? [];
+    const rows = (
+      pairKeys
+        ? keys.length
+          ? this.db
+              .prepare(
+                `SELECT id, facts_json FROM calibre_arrival_files INDEXED BY calibre_arrival_files_outcome
+                 WHERE outcome = 'new' AND pair_key IN (${keys.map(() => '?').join(', ')})
+                   AND gone_at IS NULL AND json_extract(facts_json, '$.compared') = 1`,
+              )
+              .all(...keys)
+          : []
+        : this.db
+            .prepare(
+              `SELECT id, facts_json FROM calibre_arrival_files INDEXED BY calibre_arrival_files_outcome
+               WHERE outcome = 'new' AND gone_at IS NULL AND json_extract(facts_json, '$.compared') = 1`,
+            )
+            .all()
+    ) as { id: number; facts_json: string }[];
     const set = this.db.prepare(
       `UPDATE calibre_arrival_files SET outcome = 'duplicate', detail = ?, calibre_id = ?,
          calibre_uuid = ?, decided_at = ?, run_id = ? WHERE id = ? AND outcome = 'new'`,
     );
     let n = 0;
-    const lib = this.libraryOfRuns();
+    const lib = this.libraryOfRuns(libraryId);
     this.db.transaction(() => {
       for (const r of rows) {
         const tie = sameTextNoWinner(
@@ -3348,8 +3703,8 @@ export class BookArrivals {
     return n;
   }
 
-  private libraryOfRuns(): Map<number, SnapshotBook> | null {
-    const libraryId = this.deps.targetLibrary();
+  private libraryOfRuns(of?: string | null): Map<number, SnapshotBook> | null {
+    const libraryId = of ?? this.deps.targetLibrary();
     return libraryId ? this.snapshotBooks(libraryId) : null;
   }
 

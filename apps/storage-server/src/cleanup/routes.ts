@@ -148,6 +148,11 @@ export function createCleanupApplyRouter(options: CleanupOptions): Router {
       pollSeconds: 15,
       // 1.6.0: the library the move puts books in (the sidecar checks its columns), or null.
       moveTarget: service.moveTargetForSidecar(),
+      // 1.7.0 (manga part B): every library the cleanup works on (their #illustrator is checked).
+      cleanupLibraries: service
+        .cleanupLibraries()
+        .map((lib) => service.calibreLibraryOf(lib))
+        .filter((id): id is string => !!id),
     });
   });
 
@@ -372,7 +377,13 @@ export function createCleanupApplyRouter(options: CleanupOptions): Router {
       res.json({ batch: null });
       return;
     }
-    res.json({ batch: service.arrivals.addBatches.claim() });
+    res.json({
+      batch: service.arrivals.addBatches.claim(
+        Date.now(),
+        (lib) => service.calibreLibraryOf(lib),
+        login.libraryId,
+      ),
+    });
   });
 
   router.post('/cleanup-apply/arrivals/items/:id', (req, res) => {
