@@ -1223,6 +1223,19 @@ export function linksOnCopy(books: number): ConfirmCopy {
   };
 }
 
+/** Bookmeter links: switching it On. */
+export function listingsOnCopy(books: number): ConfirmCopy {
+  return {
+    title: 'Write the changed 読書メーター links to Calibre?',
+    message: [
+      `${books.toLocaleString()} ${books === 1 ? 'book gets its' : 'books get their'} 読書メーター id changed to the listing most readers registered. No other id is added, changed or removed, and store links you edited are never touched.`,
+      'They are written in batches through stage 4; each batch can be undone from the batches list.'
+    ],
+    confirmLabel: 'Switch it On',
+    irreversible: false
+  };
+}
+
 /** Series under two names: switching it On. */
 export function seriesPairsOnCopy(books: number, pairs: number): ConfirmCopy {
   return {

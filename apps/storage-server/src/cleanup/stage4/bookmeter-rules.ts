@@ -365,6 +365,39 @@ export function nameKeys(names: string[], o: Options): Set<string> {
   );
 }
 
+/** A credit naming the original work's author (原作/原案), before or after the name. */
+const SOURCE_CREDIT =
+  /^[(（[［【〔]\s*(?:原作|原案)\s*[)）\]］】〕]|[(（[［【〔]?\s*(?:原作|原案)\s*[)）\]］】〕]?$/u;
+
+/**
+ * Bookmeter listings (2026-11-25): a listing that adapts the book, for a book that is not manga.
+ * Its names match the book's authors only where they are credited 原作/原案, and it names someone
+ * else besides (異世界魔王と召喚少女の奴隷魔術 3: the manga credited "福田 直叶,(原作)むらさき
+ * ゆきや" for the light novel by むらさき ゆきや). A novelization whose own author is the book's
+ * is not one (このすば エクストラ: "昼熊,(原作)暁なつめ" for the book by 昼熊). Names compared as
+ * the chosen rules compare them (split, roles dropped, ・ and old kanji forms).
+ */
+export function adaptationListing(bookAuthors: string[], hitAuthors: string[]): boolean {
+  const o = CHOSEN_RULES;
+  const want = nameKeys(bookAuthors, o);
+  if (!want.size) return false;
+  let plain = false;
+  let source = false;
+  let other = false;
+  for (const part of hitAuthors.flatMap((a) => nfkc(a).split(/[,、，/／]/u))) {
+    const t = part.trim();
+    if (!t) continue;
+    const keys = nameKeys([t], o);
+    if (!keys.size) continue;
+    const isSource = SOURCE_CREDIT.test(t);
+    if ([...keys].some((k) => want.has(k))) {
+      if (isSource) source = true;
+      else plain = true;
+    } else if (!isSource) other = true;
+  }
+  return source && !plain && other;
+}
+
 const keyOf = (s: Set<number>) => [...s].sort((a, b) => a - b).join(',');
 
 export type CandidateRules = Rules & {

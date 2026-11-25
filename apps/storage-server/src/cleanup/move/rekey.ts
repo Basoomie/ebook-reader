@@ -41,6 +41,8 @@ const WITH_ID = [
   'bookmeter_more_books',
   // More direct links (stage4/link-discovery.ts, cleanup.db v33): the picks per book and site.
   'link_discovery_picks',
+  // Bookmeter links (stage4/bookmeter-listing.ts, cleanup.db v35): one row per saved id.
+  'bookmeter_listing_books',
 ];
 /** Tables keyed by (library_id, calibre_uuid) without a calibre_id. */
 const WITHOUT_ID = [
@@ -51,6 +53,8 @@ const WITHOUT_ID = [
   'bookmeter_more_waiters',
   'bookmeter_more_spot',
   'link_discovery_spot',
+  'bookmeter_listing_waiters',
+  'bookmeter_listing_spot',
 ];
 
 /**

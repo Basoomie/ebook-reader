@@ -20,6 +20,7 @@ import type {
   BookmeterStatus
 } from './bookmeter-text';
 import type { LinkItem, LinkSite, LinkState, LinksMode, LinksStatus } from './links-text';
+import type { ListingItem, ListingState, ListingsMode, ListingsStatus } from './listings-text';
 import { errorFrom, send, type RequestOptions } from '$lib/library/api';
 
 /** The /cleanup page's client for /api/v1/cleanup/* (WP20a). */
@@ -2721,6 +2722,55 @@ export class CleanupApi {
       `/cleanup/links/spot/${encodeURIComponent(uuid)}/${encodeURIComponent(site)}`,
       { verdict }
     ) as Promise<{ counts: LinksStatus['spot']; passed: boolean }>;
+  }
+
+  // ---------------------------------------------------------------- Bookmeter links
+
+  bookmeterLinks(): Promise<ListingsStatus> {
+    return this.request('GET', '/cleanup/bookmeter-links') as Promise<ListingsStatus>;
+  }
+
+  setBookmeterLinksMode(mode: ListingsMode): Promise<ListingsStatus> {
+    return this.request('PUT', '/cleanup/bookmeter-links/mode', {
+      mode
+    }) as Promise<ListingsStatus>;
+  }
+
+  bookmeterLinksAgain(): Promise<ListingsStatus> {
+    return this.request('POST', '/cleanup/bookmeter-links/again', {}) as Promise<ListingsStatus>;
+  }
+
+  bookmeterLinksList(
+    state: ListingState,
+    offset: number,
+    limit: number
+  ): Promise<{ total: number; items: ListingItem[] }> {
+    const q = new URLSearchParams({ state, offset: String(offset), limit: String(limit) });
+    return this.request('GET', `/cleanup/bookmeter-links/list?${q}`) as Promise<{
+      total: number;
+      items: ListingItem[];
+    }>;
+  }
+
+  bookmeterLinksSpot(): Promise<{
+    items: ListingItem[];
+    counts: ListingsStatus['spot'];
+    passed: boolean;
+  }> {
+    return this.request('GET', '/cleanup/bookmeter-links/spot') as Promise<{
+      items: ListingItem[];
+      counts: ListingsStatus['spot'];
+      passed: boolean;
+    }>;
+  }
+
+  setBookmeterLinksVerdict(
+    uuid: string,
+    verdict: 'right' | 'wrong' | null
+  ): Promise<{ counts: ListingsStatus['spot']; passed: boolean }> {
+    return this.request('PUT', `/cleanup/bookmeter-links/spot/${encodeURIComponent(uuid)}`, {
+      verdict
+    }) as Promise<{ counts: ListingsStatus['spot']; passed: boolean }>;
   }
 
   // ---------------------------------------------------------------- Series under two names

@@ -31,6 +31,7 @@
   import ArrivalsCard from '$lib/components/cleanup/cleanup-arrivals.svelte';
   import BookmeterCard from '$lib/components/cleanup/cleanup-bookmeter.svelte';
   import LinksCard from '$lib/components/cleanup/cleanup-links.svelte';
+  import ListingsCard from '$lib/components/cleanup/cleanup-listings.svelte';
   import SeriesPairsCard from '$lib/components/cleanup/cleanup-series-pairs.svelte';
   import MoveCard from '$lib/components/cleanup/cleanup-move.svelte';
   import TitleFits from '$lib/components/cleanup/cleanup-title-fits.svelte';
@@ -783,6 +784,7 @@
         {/if}
         {#if stage4 && api}
           <LinksCard {api} />
+          <ListingsCard {api} />
         {/if}
         {#if stage4 && api}
           <SeriesPairsCard {api} />

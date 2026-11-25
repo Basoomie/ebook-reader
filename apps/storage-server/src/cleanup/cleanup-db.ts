@@ -2592,6 +2592,67 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
         ON proposed_changes (library_id, analysis_id, state, class) WHERE stage = 11;
     `,
   },
+  {
+    version: 35,
+    name: 'Bookmeter links: the saved ids checked against the listing readers log',
+    // Bookmeter listings (bookmeter-listings.md; stage4/bookmeter-listing.ts, 2026-11-25). One
+    // pass with its own Off/Preview/On over every saved bookmeter id: searched again with the
+    // author field, the most registered listing that is the book picked. bookmeter_listing_books:
+    // one row per book with a saved id (saved_id as Calibre held it when looked at), its state
+    // (search: the new search is open; keep, change, adaptation, unseen, ai, nofacts, yours) and
+    // the decision (both listings with their 登録 counts). bookmeter_listing_waiters: the pass's
+    // own waiters on the fetch queue, made ready by the queue like More Bookmeter coverage's.
+    // bookmeter_listing_spot: the 50 changes drawn for the spot check and the user's verdicts.
+    sql: `
+      CREATE TABLE bookmeter_listing_state (
+        id            INTEGER PRIMARY KEY CHECK (id = 1),
+        library_id    TEXT,
+        mode          TEXT NOT NULL DEFAULT 'off' CHECK (mode IN ('off', 'analyse', 'on')),
+        progress_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(progress_json)),
+        paused_reason TEXT,
+        paused_detail TEXT,
+        updated_at    INTEGER NOT NULL
+      );
+      INSERT INTO bookmeter_listing_state (id, updated_at) VALUES (1, 0);
+      CREATE TABLE bookmeter_listing_books (
+        library_id    TEXT NOT NULL,
+        calibre_uuid  TEXT NOT NULL,
+        calibre_id    INTEGER NOT NULL,
+        labeled       INTEGER NOT NULL DEFAULT 0,
+        saved_id      TEXT NOT NULL,
+        state         TEXT NOT NULL CHECK (state IN
+                        ('search', 'keep', 'change', 'adaptation', 'unseen', 'ai', 'nofacts', 'yours')),
+        decision_json TEXT CHECK (decision_json IS NULL OR json_valid(decision_json)),
+        proposed      INTEGER NOT NULL DEFAULT 0,
+        updated_at    INTEGER NOT NULL,
+        PRIMARY KEY (library_id, calibre_uuid)
+      ) WITHOUT ROWID;
+      CREATE INDEX bookmeter_listing_books_state
+        ON bookmeter_listing_books (library_id, state, calibre_uuid);
+      CREATE TABLE bookmeter_listing_waiters (
+        request_id    INTEGER NOT NULL,
+        library_id    TEXT NOT NULL,
+        calibre_uuid  TEXT NOT NULL,
+        ready         INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (request_id, library_id, calibre_uuid)
+      ) WITHOUT ROWID;
+      CREATE INDEX bookmeter_listing_waiters_ready
+        ON bookmeter_listing_waiters (ready, request_id) WHERE ready = 1;
+      -- The open searches, counted for the card's bar every few seconds.
+      CREATE INDEX bookmeter_listing_waiters_open
+        ON bookmeter_listing_waiters (ready) WHERE ready = 0;
+      CREATE INDEX bookmeter_listing_waiters_book
+        ON bookmeter_listing_waiters (library_id, calibre_uuid);
+      CREATE TABLE bookmeter_listing_spot (
+        library_id    TEXT NOT NULL,
+        calibre_uuid  TEXT NOT NULL,
+        position      INTEGER NOT NULL,
+        verdict       TEXT CHECK (verdict IN ('right', 'wrong')),
+        decided_at    INTEGER,
+        PRIMARY KEY (library_id, calibre_uuid)
+      ) WITHOUT ROWID;
+    `,
+  },
 ];
 
 export const CLEANUP_SCHEMA_VERSION = CLEANUP_MIGRATIONS[CLEANUP_MIGRATIONS.length - 1].version;
