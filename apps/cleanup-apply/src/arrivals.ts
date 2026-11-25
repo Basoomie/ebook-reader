@@ -73,6 +73,11 @@ export interface ArrivalWorkerOptions {
   addWaitSeconds: number;
   pollSeconds: number;
   isStopped: () => boolean;
+  /**
+   * Retries a server call through network drops and server restarts (the worker's own retry;
+   * refusals are final). WP20g run 7: two adds failed on a dropped connection.
+   */
+  retry?: <T>(fn: () => Promise<T>) => Promise<T>;
   log: { info(m: string): void; error(m: string): void };
 }
 
@@ -97,6 +102,15 @@ export class ArrivalWorker {
     return path.join(this.o.quarantine.root, `arrivals-${batchId}`);
   }
 
+  private retry<T>(fn: () => Promise<T>): Promise<T> {
+    return this.o.retry ? this.o.retry(fn) : fn();
+  }
+
+  /** A step reported to the server (safe to send twice), through network drops. */
+  private report(itemId: number, r: ArrivalReport): Promise<{ state: string }> {
+    return this.retry(() => this.o.api.reportArrival(itemId, r));
+  }
+
   /** One add or undo batch if the server has one. Returns whether there was one. */
   async cycle(login: Login): Promise<boolean> {
     const { batch } = await this.o.api.claimArrivals();
@@ -113,13 +127,13 @@ export class ArrivalWorker {
         } catch (err) {
           const detail = shorten((err as Error).message, 500);
           this.o.log.error(`Arrival item ${item.itemId}: ${detail}`);
-          await this.o.api.reportArrival(item.itemId, { step: 'failed', detail });
+          await this.report(item.itemId, { step: 'failed', detail });
         }
       }
     } catch (err) {
       error = shorten((err as Error).message, 500);
     }
-    if (!this.o.isStopped()) await this.o.api.finishArrivals(batch.id, error);
+    if (!this.o.isStopped()) await this.retry(() => this.o.api.finishArrivals(batch.id, error));
     return true;
   }
 
@@ -171,34 +185,37 @@ export class ArrivalWorker {
       // An add was sent before (a restart or a lost answer): never sent again.
       const b = await this.lookFor(login, item.title, before);
       if (!b) {
-        await this.o.api.reportArrival(item.itemId, {
+        await this.report(item.itemId, {
           step: 'failed',
           detail:
             'An earlier add of this file did not show in Calibre; look in Calibre before adding it again'
         });
         return;
       }
-      await this.o.api.reportArrival(item.itemId, { step: 'added', calibreId: b.id, uuid: b.uuid });
+      await this.report(item.itemId, { step: 'added', calibreId: b.id, uuid: b.uuid });
       return;
     }
     const tmp = arrivalTmpFile(this.o.tmpDir, item.itemId, item.name);
     await fsp.mkdir(path.dirname(tmp), { recursive: true });
     await fsp.rm(tmp, { force: true });
     try {
-      await this.o.api.downloadArrival(item.itemId, tmp);
+      await this.retry(async () => {
+        await fsp.rm(tmp, { force: true });
+        await this.o.api.downloadArrival(item.itemId, tmp);
+      });
       const st = await fsp.stat(tmp);
       const sha = await sha256File(tmp);
       if (st.size !== item.size || sha !== item.sha256) {
-        await this.o.api.reportArrival(item.itemId, {
+        await this.report(item.itemId, {
           step: 'failed',
           detail:
             'The file changed since it was checked (size or SHA-256); it is checked again at the next run'
         });
         return;
       }
-      await this.o.api.reportArrival(item.itemId, { step: 'fetched' });
+      await this.report(item.itemId, { step: 'fetched' });
       await this.o.quarantine.createOnce(sent, new Date().toISOString());
-      await this.o.api.reportArrival(item.itemId, { step: 'adding' });
+      await this.report(item.itemId, { step: 'adding' });
       let book: { id: number; uuid: string } | null = null;
       try {
         const r = await this.o.calibredb.ok(
@@ -221,7 +238,7 @@ export class ArrivalWorker {
         book = await this.lookFor(login, item.title, before);
         if (!book) throw err;
       }
-      await this.o.api.reportArrival(item.itemId, {
+      await this.report(item.itemId, {
         step: 'added',
         calibreId: book.id,
         uuid: book.uuid
@@ -236,7 +253,7 @@ export class ArrivalWorker {
     if (!item.calibreId || !item.uuid) throw new Error('The book to take out is not known');
     const present = await this.o.calibredb.book(login, item.calibreId);
     if (!present || present.uuid !== item.uuid) {
-      await this.o.api.reportArrival(item.itemId, {
+      await this.report(item.itemId, {
         step: 'removed',
         detail: 'Not in Calibre any more'
       });
@@ -254,7 +271,7 @@ export class ArrivalWorker {
         'book',
         String(item.calibreId)
       ]);
-      await this.o.api.reportArrival(item.itemId, { step: 'exported', quarantineDir: dir });
+      await this.report(item.itemId, { step: 'exported', quarantineDir: dir });
     }
     try {
       await this.o.calibredb.ok('remove', login, [String(item.calibreId)]);
@@ -270,7 +287,7 @@ export class ArrivalWorker {
         await sleep(this.o.pollSeconds * 1000);
       }
     }
-    await this.o.api.reportArrival(item.itemId, { step: 'removed', quarantineDir: dir });
+    await this.report(item.itemId, { step: 'removed', quarantineDir: dir });
   }
 }
 

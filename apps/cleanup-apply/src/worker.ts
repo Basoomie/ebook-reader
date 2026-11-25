@@ -60,7 +60,10 @@ import { columnShape, MOVE_STAGE, MoveWorker } from './move';
  * library to another, `#characters` and `timestamp` join set_fields, and the move's target
  * library is checked (`move_target`: the same #illustrator and #characters as the old one).
  */
-export const SIDECAR_VERSION = '1.6.1';
+export const SIDECAR_VERSION = '1.6.2';
+
+/** The wait after a batch before asking for the next one (WP20g: the full poll after every batch cost ~1 h of run 7). */
+export const AFTER_BATCH_MS = 1000;
 
 /** The user's edits from the reader (the server's EDIT_STAGE). */
 export const EDIT_STAGE = 10;
@@ -236,6 +239,7 @@ export class Worker {
       addWaitSeconds: c.removeWaitSeconds,
       pollSeconds: c.waitPollSeconds,
       isStopped: () => this.stopped,
+      retry: (fn) => this.retry(fn),
       log: this.log
     });
     this.moves = new MoveWorker({
@@ -271,12 +275,14 @@ export class Worker {
     const beat = setInterval(() => void this.keepAlive(), KEEPALIVE_MS);
     try {
       while (!this.stopped) {
+        let round: 'batch' | 'idle' = 'idle';
         try {
-          await this.cycle();
+          round = await this.cycle();
         } catch (err) {
           this.log.error(`cycle: ${(err as Error).message}`);
         }
-        if (!this.stopped) await sleep(this.pollMs);
+        // Straight on to the next batch when there was one; the full poll only when idle.
+        if (!this.stopped) await sleep(round === 'batch' ? AFTER_BATCH_MS : this.pollMs);
       }
     } finally {
       clearInterval(beat);

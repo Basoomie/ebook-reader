@@ -184,6 +184,15 @@ export class ServerApi {
       this.fetchImpl(`${this.base}${p}`, {
         headers: { Authorization: `Bearer ${this.token}` },
         signal: AbortSignal.timeout(Math.max(this.timeoutMs, 600_000))
+      }).then((res) => {
+        // A refusal (4xx) is final; a 5xx or 408/429 is retried like any server call.
+        if (!res.ok)
+          throw new ServerError(
+            res.status,
+            'file',
+            `The file could not be fetched (HTTP ${res.status})`
+          );
+        return res;
       })
   );
 
