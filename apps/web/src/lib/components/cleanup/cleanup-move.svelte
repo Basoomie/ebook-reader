@@ -163,12 +163,22 @@
     {#if status.pausedReason}
       <div class="c-notice flex flex-wrap items-center gap-2 text-sm" role="alert">
         <span>Paused: {status.pausedDetail ?? status.pausedReason}</span>
-        <button
-          class="c-btn c-btn-secondary c-btn-sm"
-          disabled={busy}
-          on:click={() => act(() => api.moveResume())}
-          data-testid="move-resume">Resume</button
-        >
+        {#if status.pausedReason === 'library_changed'}
+          <!-- Resuming would plan the same changed books again: the way on is a new selection. -->
+          <button
+            class="c-btn c-btn-secondary c-btn-sm"
+            disabled={busy}
+            on:click={() => act(() => api.moveAgain())}
+            data-testid="move-again-paused">Select again</button
+          >
+        {:else}
+          <button
+            class="c-btn c-btn-secondary c-btn-sm"
+            disabled={busy}
+            on:click={() => act(() => api.moveResume())}
+            data-testid="move-resume">Resume</button
+          >
+        {/if}
       </div>
     {/if}
     {#if bar}
