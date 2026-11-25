@@ -18,6 +18,7 @@
   import BookStateDialog from '$lib/components/library/book-state-dialog.svelte';
   import BulkEditDialog, { type BulkChange } from '$lib/components/library/bulk-edit-dialog.svelte';
   import LibraryBookCard from '$lib/components/library/library-book-card.svelte';
+  import { loadRatingFeatures, ratingFeatures$, volumeOneText } from '$lib/library/store-ratings';
   import LibraryBookRow from '$lib/components/library/library-book-row.svelte';
   import LibraryConnect from '$lib/components/library/library-connect.svelte';
   import LibraryGroupCard from '$lib/components/library/library-group-card.svelte';
@@ -547,6 +548,8 @@
 
   async function startSession(conn: LibraryConnection) {
     api = makeApi(conn);
+    const ratingsApi = api;
+    void loadRatingFeatures(() => ratingsApi.ratingFeatures({ timeoutSeconds: 20 }));
     // "Loading…" until the first list is shown ("No books yet" only for an empty list).
     loading = true;
     await refreshOnDevice();
@@ -2148,7 +2151,7 @@
   on:keydown={onWindowKeydown}
 />
 
-<AppHeader title="Library" search />
+<AppHeader title="Library" />
 
 <div class="{pxScreen} pb-24 pt-16 xl:pt-14" data-testid="library-page">
   {#if connection === undefined}
@@ -2301,7 +2304,11 @@
                   groupInfo.bookIds
                     ? `${seriesReadCount(groupInfo.bookIds, states)}/${groupInfo.bookCount} read`
                     : '',
-                  groupInfo.by === 'series' ? formatGroupChars(groupInfo.chars) : ''
+                  groupInfo.by === 'series' ? formatGroupChars(groupInfo.chars) : '',
+                  // Store ratings: volume 1's figures (later volumes rate higher).
+                  groupInfo.by === 'series' && groupInfo.name !== null
+                    ? (volumeOneText(groupInfo.cover, $ratingFeatures$) ?? '')
+                    : ''
                 ]
                   .filter(Boolean)
                   .join(' · ')}
@@ -2809,6 +2816,7 @@
           {#if grid}
             <LibraryBookCard
               {book}
+              sortKey={sortValue.key}
               thumbnailUrl={book.thumbnail && api ? api.absolute(book.thumbnail) : ''}
               state={states.get(book.id)}
               progress={bookProgressLabel(

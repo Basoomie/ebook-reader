@@ -62,6 +62,9 @@ export interface GroupTile {
   illustrators: string[];
   series: string | null;
   charCount: number | null;
+  /** Store ratings (migration 33): a series card's cover is volume 1, so these are its figures. */
+  storeRating: BookSummary['storeRating'];
+  readers: number | null;
 }
 
 /** A collage tile of a book (groups and collection cards). */
@@ -75,6 +78,8 @@ export function tileOfSummary(summary: BookSummary): GroupTile {
     illustrators: [...new Set(summary.illustrators)],
     series: summary.series?.name ?? null,
     charCount: summary.charCount,
+    storeRating: summary.storeRating,
+    readers: summary.readers,
   };
 }
 

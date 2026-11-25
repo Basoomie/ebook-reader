@@ -211,6 +211,13 @@ describe('NativelyLevels', () => {
         "INSERT INTO natively_levels (natively_id, level, temporary, state, checked_at) VALUES ('dd44', 5, 0, 'ok', 1)",
       )
       .run();
+    // Store ratings (2026-11-25): an id with a level is read again until it has a learners'
+    // rating row too (tests/store-ratings.test.ts); this one has both.
+    e.db
+      .prepare(
+        "INSERT INTO store_ratings (site, site_id, state, checked_at) VALUES ('natively', 'dd44', 'none', 1)",
+      )
+      .run();
     const stub = stubNatively({ aa11: 31, bb22: 'temp' });
     const s = service(e.db, stub.fetch);
     s.start();
@@ -263,6 +270,11 @@ describe('NativelyLevels', () => {
     e.db
       .prepare(
         "INSERT INTO natively_levels (natively_id, level, temporary, state, checked_at) VALUES ('aa11', 9, 0, 'ok', 0)",
+      )
+      .run();
+    e.db
+      .prepare(
+        "INSERT INTO store_ratings (site, site_id, state, checked_at) VALUES ('natively', 'aa11', 'none', 1)",
       )
       .run();
     link('Beta', 'bb22');

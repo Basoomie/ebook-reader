@@ -1176,6 +1176,16 @@ export const SETTINGS_CATALOG: CatalogSetting[] = [
       'The library server reads the level of every book with a direct Natively link, and again when its page opens and the level is old. Kept on the library server.',
     keywords: 'natively level difficulty jlpt grading level: sort'
   },
+  // Store ratings (2026-11-25): what other readers thought, read by the library server.
+  {
+    id: 'store-ratings',
+    section: 'library-book-page',
+    title: 'Store ratings',
+    description:
+      'Other readers’ ratings from Amazon and BOOK☆WALKER (and 読書メーター’s readers and Natively’s learners) on the book page, for the Rating, Most rated and Most read sorts and the rating:, ratings: and readers: searches. Which ones this device shows; the rest is kept on the library server.',
+    keywords:
+      'rating ratings reviews readers stars amazon bookwalker bookmeter 読書メーター natively sort rating: ratings: readers: myrating:'
+  },
   {
     id: 'series-edit-as',
     section: 'library-editing',

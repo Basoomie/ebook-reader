@@ -101,6 +101,14 @@ function termMatches(book: CatalogBook, term: QueryTerm, ctx: MatchContext): boo
       if (n === null || n === undefined) return false;
       return (term.min === null || n >= term.min) && (term.max === null || n <= term.max);
     }
+    case 'rating':
+    case 'myrating':
+    case 'ratings':
+    case 'readers': {
+      const n = rangeValue(book, term.type);
+      if (n === null) return false;
+      return (term.min === null || n >= term.min) && (term.max === null || n <= term.max);
+    }
     case 'status':
       return term.values.includes(ctx.states.get(book.id)?.status ?? 'unread');
     case 'favorite':
@@ -112,12 +120,44 @@ function termMatches(book: CatalogBook, term: QueryTerm, ctx: MatchContext): boo
   }
 }
 
+/**
+ * Store ratings' search values as the server compares them: rating: the pooled stars x10,
+ * myrating: your Calibre rating (half stars) as tenths, ratings: the count, readers: 読書メーター.
+ */
+function rangeValue(
+  book: CatalogBook,
+  type: 'rating' | 'myrating' | 'ratings' | 'readers'
+): number | null {
+  switch (type) {
+    case 'rating':
+      return book.storeRating ? Math.round(book.storeRating.avg * 10) : null;
+    case 'myrating':
+      return book.rating ? book.rating * 5 : null;
+    case 'ratings':
+      return book.storeRating?.count ?? null;
+    case 'readers':
+      return book.readers ?? null;
+  }
+}
+
 /** Whether one term holds for the book, negation included. */
 export function termHolds(book: CatalogBook, term: QueryTerm, ctx: MatchContext): boolean {
   if (term.type === 'chars' && term.negated) {
     // A book without a count is never included, negated or not.
     const n = book.charCount;
     return n !== null && n !== undefined && !termMatches(book, { ...term, negated: false }, ctx);
+  }
+  if (
+    (term.type === 'rating' ||
+      term.type === 'myrating' ||
+      term.type === 'ratings' ||
+      term.type === 'readers') &&
+    term.negated
+  ) {
+    // A book without a value is never included, negated or not (the server's search-sql.ts).
+    return (
+      rangeValue(book, term.type) !== null && !termMatches(book, { ...term, negated: false }, ctx)
+    );
   }
   if (term.type === 'level' && term.negated) {
     // A book without a level is never included, negated or not.

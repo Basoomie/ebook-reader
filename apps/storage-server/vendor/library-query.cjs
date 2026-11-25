@@ -2,7 +2,7 @@
  * GENERATED FILE, DO NOT EDIT. The storage server library search parser, bundled from
  * the web app (apps/web/src/lib/library/query/server-entry.ts).
  * Rebuild with `pnpm build:server-query` in apps/web after changing that code.
- * build: de76c76bafc012ec
+ * build: c9b2c45cbb813d0f
  */
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
@@ -60,11 +60,15 @@ var FIELDS = [
   "tag",
   "chars",
   "level",
+  "rating",
+  "ratings",
+  "readers",
+  "myrating",
   "status",
   "favorite",
   "on"
 ];
-var FIELD_RE = /^(author|illustrator|series|tag|chars|level|status|favorite|on)[:：]/i;
+var FIELD_RE = /^(author|illustrator|series|tag|chars|level|ratings|rating|readers|myrating|status|favorite|on)[:：]/i;
 var FIELD_LOOKAHEAD = Math.max(...FIELDS.map((f) => f.length)) + 1;
 function isSpace(ch) {
   return ch !== void 0 && /\s/.test(ch);
@@ -215,18 +219,77 @@ function parseRange(raw, start, end, field = "chars") {
       return { min: value, max: value };
   }
 }
+var STARS_HELP = (f) => `Use ${f}:>=4, ${f}:<3.5 or ${f}:4-4.5.`;
+var COUNT_HELP = (f) => `Use ${f}:>=100, ${f}:<50 or ${f}:1k-5k.`;
+function parseStarsNumber(raw) {
+  const m = /^(\d)(?:\.(\d))?$/.exec(raw);
+  if (!m) return null;
+  const v = Number(m[1]) * 10 + Number(m[2] ?? 0);
+  return v <= 50 ? v : null;
+}
+function parseStarsRange(raw, start, end, field) {
+  const HELP = STARS_HELP(field);
+  if (raw === "") throw new QueryError(`${field}: needs a number of stars. ${HELP}`, start, end);
+  const range = /^([^-]+)-([^-]+)$/.exec(raw);
+  if (range) {
+    const low = parseStarsNumber(range[1]);
+    const high = parseStarsNumber(range[2]);
+    if (low === null || high === null) {
+      throw new QueryError(`"${raw}" isn't a range of stars (0 to 5). ${HELP}`, start, end);
+    }
+    if (low > high) {
+      throw new QueryError("The first number of a range must be the smaller one.", start, end);
+    }
+    return { min: low, max: high };
+  }
+  const compare = /^(<=|>=|<|>|=)?(.*)$/.exec(raw);
+  const value = parseStarsNumber(compare[2]);
+  if (value === null)
+    throw new QueryError(`"${raw}" isn't a number of stars (0 to 5). ${HELP}`, start, end);
+  switch (compare[1]) {
+    case "<":
+      return { min: null, max: value - 1 };
+    case "<=":
+      return { min: null, max: value };
+    case ">":
+      return { min: value + 1, max: null };
+    case ">=":
+      return { min: value, max: null };
+    case "=":
+      return { min: value, max: value };
+    default:
+      return compare[2].includes(".") ? { min: value, max: value } : { min: value, max: Math.min(50, value + 9) };
+  }
+}
+function parseCountRange(raw, start, end, field) {
+  try {
+    return parseRange(raw, start, end, "chars");
+  } catch (err) {
+    if (!(err instanceof QueryError)) throw err;
+    const reason = raw === "" ? `${field}: needs a number.` : `"${raw}" isn't a number.`;
+    throw new QueryError(
+      err.message.startsWith("The first number") ? err.message : `${reason} ${COUNT_HELP(field)}`,
+      start,
+      end
+    );
+  }
+}
 function parseWordList(raw) {
   return raw.split(",").map((w) => w.trim().toLowerCase()).filter((w) => w !== "");
 }
 function parseField(s, field, negated, start) {
   const valueStart = s.pos;
-  if (field === "chars" || field === "level" || field === "status" || field === "favorite" || field === "on") {
+  if (field === "chars" || field === "level" || field === "rating" || field === "ratings" || field === "readers" || field === "myrating" || field === "status" || field === "favorite" || field === "on") {
     const raw = s.readBare(false);
     const end = s.pos;
     if (field === "chars")
       return { type: "chars", negated, start, end, ...parseRange(raw, start, end) };
     if (field === "level")
       return { type: "level", negated, start, end, ...parseRange(raw, start, end, "level") };
+    if (field === "rating" || field === "myrating")
+      return { type: field, negated, start, end, ...parseStarsRange(raw, start, end, field) };
+    if (field === "ratings" || field === "readers")
+      return { type: field, negated, start, end, ...parseCountRange(raw, start, end, field) };
     const words = parseWordList(raw);
     if (field === "on") {
       if (words.length === 1 && words[0] === "device") {

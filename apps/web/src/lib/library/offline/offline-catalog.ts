@@ -75,7 +75,17 @@ const MAX_LOOKUP_IDS = 200;
 const TILE_COUNT = 4;
 const TILE_SCAN = 60;
 
-const BOOK_SORTS: BookSortKey[] = ['added', 'title', 'author', 'chars', 'published', 'level'];
+const BOOK_SORTS: BookSortKey[] = [
+  'added',
+  'title',
+  'author',
+  'chars',
+  'published',
+  'level',
+  'rating',
+  'ratings',
+  'readers'
+];
 const GROUP_SORTS: GroupSortKey[] = ['newest', 'name', 'count'];
 
 const FIELD: Record<GroupBy, TextField> = { series: 'series', author: 'author', tag: 'tag' };

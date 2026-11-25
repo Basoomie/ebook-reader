@@ -183,6 +183,31 @@ describe('offline search terms', () => {
     expect(matchesQuery(hard, q('level:30-35'), ctx())).toBe(true);
   });
 
+  it('rating:, ratings:, readers:, myrating: as the server compares them; no value never matches', () => {
+    const none = book('n');
+    const good = book('g', { storeRating: { avg: 4.6, count: 300, score: 4569 }, readers: 1500 });
+    const few = book('f', { storeRating: { avg: 5, count: 3, score: 4217 }, rating: 8 });
+    expect(matchesQuery(none, q('rating:>=1'), ctx())).toBe(false);
+    expect(matchesQuery(none, q('-rating:>=4'), ctx())).toBe(false);
+    expect(matchesQuery(good, q('rating:>=4.5'), ctx())).toBe(true);
+    expect(matchesQuery(good, q('rating:4'), ctx())).toBe(true);
+    expect(matchesQuery(few, q('rating:4'), ctx())).toBe(false);
+    expect(matchesQuery(few, q('-rating:4'), ctx())).toBe(true);
+    expect(matchesQuery(good, q('ratings:>=100'), ctx())).toBe(true);
+    expect(matchesQuery(few, q('ratings:>=100'), ctx())).toBe(false);
+    expect(matchesQuery(good, q('readers:>=1k'), ctx())).toBe(true);
+    expect(matchesQuery(few, q('readers:>=1'), ctx())).toBe(false);
+    expect(matchesQuery(few, q('myrating:4'), ctx())).toBe(true);
+    expect(matchesQuery(good, q('-myrating:4'), ctx())).toBe(false);
+    // The Rating sort uses the score (few ratings pulled toward the middle), books without last.
+    expect(
+      [few, none, good].sort(bookComparator({ key: 'rating', dir: 'desc' })).map((x) => x.id)
+    ).toEqual(['g', 'f', 'n']);
+    expect(
+      [few, none, good].sort(bookComparator({ key: 'ratings', dir: 'asc' })).map((x) => x.id)
+    ).toEqual(['f', 'g', 'n']);
+  });
+
   it('status and favorite from the local records; no record = unread', () => {
     const states = new Map([['a', state('a', { status: 'reading', favorite: true })]]);
     const other = book('o');

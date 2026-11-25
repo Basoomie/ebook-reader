@@ -161,7 +161,7 @@ describe('book sorts (GET /books?sort=&dir=)', () => {
 
   it('rejects unknown sorts and a cursor from another sort', async () => {
     const c = await sortedEnv();
-    const unknown = await c.get('/books', { sort: 'rating' });
+    const unknown = await c.get('/books', { sort: 'stars' });
     expect(unknown.status).toBe(400);
     expect(unknown.body.error.code).toBe('invalid_sort');
     expect((await c.get('/books', { sort: 'title', dir: 'up' })).body.error.code).toBe(
@@ -203,6 +203,9 @@ describe('book sorts (GET /books?sort=&dir=)', () => {
       chars: { asc: 'books_sort_chars_asc', desc: 'books_sort_chars_desc' },
       published: { asc: 'books_sort_published_asc', desc: 'books_sort_published_desc' },
       level: { asc: 'books_sort_level_asc', desc: 'books_sort_level_desc' },
+      rating: { asc: 'books_sort_rating_asc', desc: 'books_sort_rating_desc' },
+      ratings: { asc: 'books_sort_ratings_asc', desc: 'books_sort_ratings_desc' },
+      readers: { asc: 'books_sort_readers_asc', desc: 'books_sort_readers_desc' },
     };
     for (const key of BOOK_SORT_KEYS) {
       for (const dir of SORT_DIRS) {

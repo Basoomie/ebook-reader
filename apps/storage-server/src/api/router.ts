@@ -64,6 +64,8 @@ import type { SummaryService } from '../summaries/service';
 import { createSummaryRouter } from '../summaries/routes';
 import { createNativelyRouter } from '../natively/routes';
 import type { NativelyLevels } from '../natively/levels';
+import { createRatingsRouter } from '../ratings/routes';
+import type { StoreRatings } from '../ratings/service';
 import type { AiCore } from '../ai/core';
 import { createNotificationsRouter } from '../notifications/routes';
 import type { NotificationService } from '../notifications/service';
@@ -135,6 +137,8 @@ export interface ApiOptions {
   summaries?: SummaryService | null;
   /** The Natively level (2026-11-24). Without it its routes answer 503. */
   natively?: NativelyLevels | null;
+  /** Store ratings (2026-11-25). Without it their routes answer 503. */
+  ratings?: StoreRatings | null;
 }
 
 export interface FontOptions {
@@ -174,6 +178,7 @@ export function createApiRouter({
   summariesTest = null,
   summaries = null,
   natively = null,
+  ratings = null,
 }: ApiOptions): Router {
   const router = express.Router();
   // Pushes can carry many records; everything else keeps the small default limit.
@@ -295,6 +300,8 @@ export function createApiRouter({
     router.use(createSummaryRouter(summaries));
     // The Natively level on the book page (2026-11-24).
     router.use(createNativelyRouter(natively));
+    // Store ratings on the book page (2026-11-25).
+    router.use(createRatingsRouter(ratings));
     // Uploads (WP7b): a separate source adapter, mounted only when it is on.
     if (catalog.uploads) {
       router.use(

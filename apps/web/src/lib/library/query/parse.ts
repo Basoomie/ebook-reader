@@ -14,11 +14,18 @@
  *   query   := term (whitespace term)*        whitespace includes U+3000
  *   term    := ["-"] (filter | regex | text)  terms combine with AND; "-" negates
  *   filter  := field (":" | "：") value       field names ignore case
- *   field   := author | illustrator | series | tag | chars | level | status | favorite | on
+ *   field   := author | illustrator | series | tag | chars | level | rating | ratings | readers
+ *              | myrating | status | favorite | on
  *   author/illustrator/series/tag value := ["="] item ("," item)*   "=" exact; "," = any of
  *   item    := "quoted" | /regex/[i] | bare  (a quoted item is never split at commas)
  *   chars   := [<|<=|>|>=|=] N  |  N-N       N: digits, "," or "_" separators, "k" = 1000
  *   level   := [<|<=|>|>=|=] N  |  N-N       the Natively level (N: digits)
+ *   rating  := [<|<=|>|>=|=] S  |  S-S       readers' stars on the stores (Amazon and BOOK☆WALKER
+ *                                            pooled); S: 0-5 with one decimal; a bare whole
+ *                                            number is that star's band (rating:4 = 4.0-4.9)
+ *   myrating:= the same, on your own rating (Calibre's)
+ *   ratings := like chars                    how many people rated it on those stores
+ *   readers := like chars                    読書メーター's 登録数 (people who logged it)
  *   status  := unread|reading|completed|dropped ("," = any of)
  *   favorite:= yes|no
  *   on      := device                       the books stored on the device that searches
@@ -65,6 +72,13 @@ export type QueryTerm =
   | (TermBase & { type: 'chars'; min: number | null; max: number | null })
   /** level: the Natively level, inclusive bounds; null = open. Books without one never match. */
   | (TermBase & { type: 'level'; min: number | null; max: number | null })
+  /**
+   * rating: the stores' pooled stars, myrating: your own; inclusive bounds in tenths of a star
+   * (4.5 = 45); null = open. Books without one never match.
+   */
+  | (TermBase & { type: 'rating' | 'myrating'; min: number | null; max: number | null })
+  /** ratings: the stores' rating count, readers: 読書メーター's 登録数; inclusive bounds. */
+  | (TermBase & { type: 'ratings' | 'readers'; min: number | null; max: number | null })
   | (TermBase & { type: 'status'; values: QueryStatus[] })
   | (TermBase & { type: 'favorite'; value: boolean })
   /** on:device: the books stored on the device that asks (WP15e). */
@@ -101,13 +115,18 @@ const FIELDS = [
   'tag',
   'chars',
   'level',
+  'rating',
+  'ratings',
+  'readers',
+  'myrating',
   'status',
   'favorite',
   'on'
 ] as const;
 type Field = (typeof FIELDS)[number];
 
-const FIELD_RE = /^(author|illustrator|series|tag|chars|level|status|favorite|on)[:：]/i;
+const FIELD_RE =
+  /^(author|illustrator|series|tag|chars|level|ratings|rating|readers|myrating|status|favorite|on)[:：]/i;
 /** Characters FIELD_RE needs to see: the longest field name and its colon. */
 const FIELD_LOOKAHEAD = Math.max(...FIELDS.map((f) => f.length)) + 1;
 
@@ -285,6 +304,81 @@ function parseRange(
   }
 }
 
+const STARS_HELP = (f: string) => `Use ${f}:>=4, ${f}:<3.5 or ${f}:4-4.5.`;
+const COUNT_HELP = (f: string) => `Use ${f}:>=100, ${f}:<50 or ${f}:1k-5k.`;
+
+/** Stars as tenths ("4.5" = 45), or null. */
+function parseStarsNumber(raw: string): number | null {
+  const m = /^(\d)(?:\.(\d))?$/.exec(raw);
+  if (!m) return null;
+  const v = Number(m[1]) * 10 + Number(m[2] ?? 0);
+  return v <= 50 ? v : null;
+}
+
+/** rating:/myrating: bounds in tenths of a star; a bare whole number is that star's band. */
+function parseStarsRange(
+  raw: string,
+  start: number,
+  end: number,
+  field: string
+): { min: number | null; max: number | null } {
+  const HELP = STARS_HELP(field);
+  if (raw === '') throw new QueryError(`${field}: needs a number of stars. ${HELP}`, start, end);
+  const range = /^([^-]+)-([^-]+)$/.exec(raw);
+  if (range) {
+    const low = parseStarsNumber(range[1]);
+    const high = parseStarsNumber(range[2]);
+    if (low === null || high === null) {
+      throw new QueryError(`"${raw}" isn't a range of stars (0 to 5). ${HELP}`, start, end);
+    }
+    if (low > high) {
+      throw new QueryError('The first number of a range must be the smaller one.', start, end);
+    }
+    return { min: low, max: high };
+  }
+  const compare = /^(<=|>=|<|>|=)?(.*)$/.exec(raw)!;
+  const value = parseStarsNumber(compare[2]);
+  if (value === null)
+    throw new QueryError(`"${raw}" isn't a number of stars (0 to 5). ${HELP}`, start, end);
+  switch (compare[1]) {
+    case '<':
+      return { min: null, max: value - 1 };
+    case '<=':
+      return { min: null, max: value };
+    case '>':
+      return { min: value + 1, max: null };
+    case '>=':
+      return { min: value, max: null };
+    case '=':
+      return { min: value, max: value };
+    default:
+      // rating:4 = 4.0-4.9; rating:4.5 = exactly 4.5.
+      return compare[2].includes('.')
+        ? { min: value, max: value }
+        : { min: value, max: Math.min(50, value + 9) };
+  }
+}
+
+/** ratings:/readers: counts, written like chars: ("1k", "1,000"). */
+function parseCountRange(
+  raw: string,
+  start: number,
+  end: number,
+  field: string
+): { min: number | null; max: number | null } {
+  try {
+    return parseRange(raw, start, end, 'chars');
+  } catch (err) {
+    if (!(err instanceof QueryError)) throw err;
+    const reason = raw === '' ? `${field}: needs a number.` : `"${raw}" isn't a number.`;
+    throw new QueryError(
+      err.message.startsWith('The first number') ? err.message : `${reason} ${COUNT_HELP(field)}`,
+      start,
+      end
+    );
+  }
+}
+
 function parseWordList(raw: string): string[] {
   return raw
     .split(',')
@@ -297,6 +391,10 @@ function parseField(s: Scanner, field: Field, negated: boolean, start: number): 
   if (
     field === 'chars' ||
     field === 'level' ||
+    field === 'rating' ||
+    field === 'ratings' ||
+    field === 'readers' ||
+    field === 'myrating' ||
     field === 'status' ||
     field === 'favorite' ||
     field === 'on'
@@ -307,6 +405,10 @@ function parseField(s: Scanner, field: Field, negated: boolean, start: number): 
       return { type: 'chars', negated, start, end, ...parseRange(raw, start, end) };
     if (field === 'level')
       return { type: 'level', negated, start, end, ...parseRange(raw, start, end, 'level') };
+    if (field === 'rating' || field === 'myrating')
+      return { type: field, negated, start, end, ...parseStarsRange(raw, start, end, field) };
+    if (field === 'ratings' || field === 'readers')
+      return { type: field, negated, start, end, ...parseCountRange(raw, start, end, field) };
     const words = parseWordList(raw);
     if (field === 'on') {
       if (words.length === 1 && words[0] === 'device') {

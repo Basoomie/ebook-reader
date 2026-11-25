@@ -20,6 +20,8 @@
   import {
     faClockRotateLeft,
     faFilter,
+    faLayerGroup,
+    faUser,
     faMagnifyingGlass,
     faXmark
   } from '@fortawesome/free-solid-svg-icons';
@@ -35,6 +37,8 @@
     startsOffline
   } from '$lib/library/offline/offline-source';
   import { describeQuery } from '$lib/library/query/describe';
+  import type { NameCount } from '$lib/library/query/suggest';
+  import { authorHref } from '$lib/library/format';
   import { parseQuery, QUERY_FIELDS } from '$lib/library/query/parse';
   import { searchReadsAsOn$, searchSuggestionsOn$ } from '$lib/library/search-settings';
   import { libraryFilter$, libraryRequestTimeoutSeconds$ } from '$lib/library/settings';
@@ -112,7 +116,49 @@
   );
   $: addMore = QUERY_FIELDS.filter((f) => !usedFields.has(f));
   /** Rows ↑/↓ move through: the remembered searches, then "Search the library". */
-  $: rowCount = shownHistory.length + (trimmed ? 1 : 0);
+  /**
+   * Step 3: plain words show what they match at once (series, authors, books, 3 each),
+   * between the recent searches and "Search the library".
+   */
+  $: plainWords = parsed.ok && parsed.query.terms.length > 0 && !hasField;
+  $: void findMatches(plainWords ? trimmed : '');
+  $: matchRows = matches
+    ? [
+        ...matches.series.map((n) => ({
+          kind: 'series' as const,
+          key: `s:${n.name}`,
+          label: n.name,
+          detail: `${n.count.toLocaleString('en-US')} ${n.count === 1 ? 'book' : 'books'}`,
+          href: `${pagePath}/library?${new URLSearchParams({ tab: 'series', group: n.name })}`,
+          book: null as CatalogBook | null
+        })),
+        ...matches.authors.map((n) => ({
+          kind: 'author' as const,
+          key: `a:${n.name}`,
+          label: n.name,
+          detail: `${n.count.toLocaleString('en-US')} ${n.count === 1 ? 'book' : 'books'}`,
+          href: authorHref(pagePath, n.name),
+          book: null as CatalogBook | null
+        })),
+        ...matches.books.map((b) => ({
+          kind: 'book' as const,
+          key: `b:${b.id}`,
+          label: b.title,
+          detail: b.authors.map((a) => a.name).join(', '),
+          href: `${pagePath}/library/book?id=${encodeURIComponent(b.id)}`,
+          book: b as CatalogBook | null
+        }))
+      ]
+    : [];
+  /** Where each kind's heading goes (the first row of that kind). */
+  $: firstOfKind = new Set(
+    ['series', 'author', 'book']
+      .map((k) => matchRows.find((r) => r.kind === k)?.key)
+      .filter((k): k is string => !!k)
+  );
+  $: matchStart = shownHistory.length;
+  $: runIndex = matchStart + matchRows.length;
+  $: rowCount = runIndex + (trimmed ? 1 : 0);
   $: if (active >= rowCount) active = rowCount - 1;
   $: void countMatches(trimmed);
 
@@ -129,6 +175,41 @@
         // The row still searches; it just shows no number.
       }
     }, 250);
+  }
+
+  const MATCHES_SHOWN = 3;
+  let matches: { series: NameCount[]; authors: NameCount[]; books: CatalogBook[] } | null = null;
+  let matchAsked = 0;
+  let matchTimer: ReturnType<typeof setTimeout> | undefined;
+
+  /** Asked after a short pause in typing; only the newest answer is shown. */
+  function findMatches(text: string) {
+    clearTimeout(matchTimer);
+    const asked = ++matchAsked;
+    if (!text) {
+      matches = null;
+      return;
+    }
+    matchTimer = setTimeout(async () => {
+      const library = $libraryFilter$ || undefined;
+      const quiet = <T,>(p: Promise<T>, empty: T) => p.catch(() => empty);
+      const [series, authors, page] = await Promise.all([
+        quiet(
+          ask((s) => s.names({ field: 'series', text, library, limit: MATCHES_SHOWN })),
+          []
+        ),
+        quiet(
+          ask((s) => s.names({ field: 'author', text, library, limit: MATCHES_SHOWN })),
+          []
+        ),
+        quiet(
+          ask((s) => s.books({ q: text, library, limit: MATCHES_SHOWN })),
+          null as { books: CatalogBook[] } | null
+        )
+      ]);
+      if (asked !== matchAsked || destroyed) return;
+      matches = { series, authors, books: page?.books.slice(0, MATCHES_SHOWN) ?? [] };
+    }, 200);
   }
 
   function names(q: NameListQuery) {
@@ -193,6 +274,7 @@
   onDestroy(() => {
     destroyed = true;
     clearTimeout(countTimer);
+    clearTimeout(matchTimer);
   });
 
   function close() {
@@ -262,6 +344,8 @@
     if (event.key === 'Enter') {
       event.preventDefault();
       if (active >= 0 && active < shownHistory.length) void run(shownHistory[active].query);
+      else if (active >= matchStart && active < runIndex)
+        void go(matchRows[active - matchStart].href);
       else void run(query);
       return;
     }
@@ -417,13 +501,59 @@
             </li>
           {/each}
         {/if}
+        {#each matchRows as row, j (row.key)}
+          {#if firstOfKind.has(row.key)}
+            <li class="sp-head" role="presentation">
+              <span
+                >{row.kind === 'series'
+                  ? 'Series'
+                  : row.kind === 'author'
+                    ? 'Authors'
+                    : 'Books'}</span
+              >
+            </li>
+          {/if}
+          <li
+            id={rowId(matchStart + j)}
+            class="sp-row"
+            class:sp-active={active === matchStart + j}
+            role="option"
+            aria-selected={active === matchStart + j}
+          >
+            <a
+              class="sp-pick"
+              tabindex="-1"
+              href={row.href}
+              data-testid="search-palette-match"
+              data-kind={row.kind}
+              on:click|preventDefault={() => go(row.href)}
+              on:pointermove={() => (active = matchStart + j)}
+            >
+              {#if row.book}
+                {#if thumb(row.book)}
+                  <img class="sp-mini" src={thumb(row.book)} alt="" loading="lazy" />
+                {:else}
+                  <span class="sp-mini" aria-hidden="true"></span>
+                {/if}
+              {:else}
+                <span class="sp-icon" aria-hidden="true"
+                  ><Fa icon={row.kind === 'series' ? faLayerGroup : faUser} /></span
+                >
+              {/if}
+              <span class="sp-text">{row.label}</span>
+              {#if row.detail}
+                <span class="sp-count sp-detail">{row.detail}</span>
+              {/if}
+            </a>
+          </li>
+        {/each}
         {#if trimmed}
           <li
-            id={rowId(shownHistory.length)}
+            id={rowId(runIndex)}
             class="sp-row sp-run"
-            class:sp-active={active === shownHistory.length}
+            class:sp-active={active === runIndex}
             role="option"
-            aria-selected={active === shownHistory.length}
+            aria-selected={active === runIndex}
           >
             <button
               type="button"
@@ -431,7 +561,7 @@
               tabindex="-1"
               data-testid="search-palette-run"
               on:click={() => run(query)}
-              on:pointermove={() => (active = shownHistory.length)}
+              on:pointermove={() => (active = runIndex)}
             >
               <span class="sp-icon text-c-seal" aria-hidden="true"
                 ><Fa icon={faMagnifyingGlass} /></span
@@ -625,6 +755,22 @@
     font-size: 0.75rem;
     color: var(--c-muted);
     font-variant-numeric: tabular-nums;
+  }
+
+  .sp-mini {
+    width: 1.5rem;
+    height: 2.25rem;
+    flex: none;
+    border-radius: 0.25rem;
+    object-fit: cover;
+    background-color: var(--c-tint);
+  }
+
+  .sp-detail {
+    max-width: 40%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .sp-cards {

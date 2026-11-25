@@ -471,7 +471,7 @@
   <title>{formatPageTitle('Stats')}</title>
 </svelte:head>
 
-<AppHeader title="Stats" search />
+<AppHeader title="Stats" />
 
 <div class="{pxScreen} pb-24 pt-16 xl:pt-14" data-testid="stats-page">
   <CataloguePageHeader jp="読書記録" title="Stats">

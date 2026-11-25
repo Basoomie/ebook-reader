@@ -22,7 +22,19 @@
  * opens in its own order unless the address says otherwise.
  */
 
-export type BookSortKey = 'added' | 'title' | 'author' | 'chars' | 'published' | 'level';
+export type BookSortKey =
+  | 'added'
+  | 'title'
+  | 'author'
+  | 'chars'
+  | 'published'
+  | 'level'
+  | 'rating'
+  | 'ratings'
+  | 'readers';
+
+/** The store ratings' sorts (the cards show their figure only under these). */
+export const RATING_SORT_KEYS: readonly BookSortKey[] = ['rating', 'ratings', 'readers'];
 export type GroupSortKey = 'newest' | 'name' | 'count';
 export type SortDir = 'asc' | 'desc';
 
@@ -77,6 +89,26 @@ const BOOK_CHOICES: SortChoice[] = [
     label: 'Natively level',
     dirLabels: { asc: 'Easiest first', desc: 'Hardest first' },
     defaultDir: 'asc'
+  },
+  // Store ratings (2026-11-25): readers' stars (few ratings pulled toward the middle), how many
+  // rated it, and 読書メーター's readers (shown only while 読書メーター is on: sortChoices).
+  {
+    key: 'rating',
+    label: 'Rating',
+    dirLabels: { asc: 'Lowest first', desc: 'Highest first' },
+    defaultDir: 'desc'
+  },
+  {
+    key: 'ratings',
+    label: 'Most rated',
+    dirLabels: { asc: 'Fewest first', desc: 'Most first' },
+    defaultDir: 'desc'
+  },
+  {
+    key: 'readers',
+    label: 'Most read',
+    dirLabels: { asc: 'Fewest first', desc: 'Most first' },
+    defaultDir: 'desc'
   }
 ];
 

@@ -25,8 +25,13 @@ describe('library sorts', () => {
       'author',
       'chars',
       'published',
-      'level'
+      'level',
+      'rating',
+      'ratings',
+      'readers'
     ]);
+    expect(sortLabel({ key: 'rating', dir: 'desc' }, 'books')).toBe('Rating · Highest first');
+    expect(parseSort('readers-desc', 'books')).toEqual({ key: 'readers', dir: 'desc' });
     expect(sortChoices('groups').map((c) => c.key)).toEqual(['newest', 'name', 'count']);
     expect(sortChoices('series')[0]).toMatchObject({ key: 'series', own: true });
     expect(sortChoices('list')[0]).toMatchObject({ key: 'list', label: 'Collection order' });

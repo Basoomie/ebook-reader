@@ -12,6 +12,7 @@ import type { NotificationService } from './notifications/service';
 import type { SummaryService } from './summaries/service';
 import type { SummaryTestService } from './summaries/test-service';
 import type { NativelyLevels } from './natively/levels';
+import type { StoreRatings } from './ratings/service';
 
 export interface AppOptions {
   config: ServerConfig;
@@ -38,6 +39,7 @@ export interface AppOptions {
   summaries?: SummaryService | null;
   /** The Natively level (2026-11-24). */
   natively?: NativelyLevels | null;
+  ratings?: StoreRatings | null;
 }
 
 export function createApp({
@@ -55,6 +57,7 @@ export function createApp({
   summariesTest,
   summaries,
   natively,
+  ratings,
 }: AppOptions): Express {
   const app = express();
 
@@ -108,6 +111,7 @@ export function createApp({
       summariesTest,
       summaries,
       natively,
+      ratings,
     }),
   );
 

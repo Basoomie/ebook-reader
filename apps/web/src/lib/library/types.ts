@@ -67,6 +67,22 @@ export interface CatalogBook {
    * before ttsu.db 32 and from offline copies stored before it.
    */
   nativelyLevel?: NativelyLevel | null;
+  /**
+   * Store ratings (ttsu.db 33): the stores' pooled stars (Amazon and BOOK☆WALKER; `avg` to one
+   * decimal), how many rated it and the Rating sort's score (x1000). Null without one; missing
+   * from older servers and offline copies.
+   */
+  storeRating?: StoreRating | null;
+  /** 読書メーター's 登録数 (people who logged it); null without one. */
+  readers?: number | null;
+  /** Calibre's rating (yours), 1-10 half stars (9 = four and a half); null or missing without one. */
+  rating?: number | null;
+}
+
+export interface StoreRating {
+  avg: number;
+  count: number;
+  score: number;
 }
 
 export interface NativelyLevel {
@@ -113,8 +129,6 @@ export interface CatalogBookDetail extends CatalogBook {
    * uploads). Missing from older servers and older offline copies.
    */
   identifiers?: Record<string, string>;
-  /** Calibre's rating, 1-10 half stars (9 = four and a half); null or missing without one. */
-  rating?: number | null;
   /** Calibre's language codes ("jpn"). Missing from older servers. */
   languages?: string[];
 }
@@ -139,6 +153,9 @@ export interface GroupTile {
   illustrators?: string[];
   series?: string | null;
   charCount?: number | null;
+  /** Store ratings (ttsu.db 33): a series card's cover is volume 1, so these are its figures. */
+  storeRating?: StoreRating | null;
+  readers?: number | null;
 }
 
 export interface GroupChars {

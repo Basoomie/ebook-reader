@@ -17,6 +17,7 @@
     type SortValue
   } from '$lib/library/sort';
   import { createEventDispatcher } from 'svelte';
+  import { ratingFeatures$ } from '$lib/library/store-ratings';
 
   /** WP19a: the Sort button of the Library, collections and the Notes page (lib/library/sort.ts). */
   export let context: SortContext;
@@ -34,6 +35,9 @@
     chars: '文字数',
     published: '刊行日',
     level: '難易度',
+    rating: '評価',
+    ratings: '評価数',
+    readers: '読者数',
     series: '巻順',
     list: '並べた順',
     newest: '追加日',
@@ -46,7 +50,10 @@
   };
   const NOTES_JP: Record<string, string> = { count: '件数' };
 
-  $: choices = sortChoices(context);
+  // Most read (読書メーター) only once the server shows 読書メーター (its links are being fixed).
+  $: choices = sortChoices(context).filter(
+    (c) => c.key !== 'readers' || $ratingFeatures$.bookmeter || value.key === 'readers'
+  );
   $: current = choices.find((c) => c.key === value.key);
 
   function pick(key: string) {

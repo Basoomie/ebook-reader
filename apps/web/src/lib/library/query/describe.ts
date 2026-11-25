@@ -94,6 +94,58 @@ function describeRange(raw: string, unit: 'characters' | 'level'): string {
   }
 }
 
+/** rating:/myrating: from the text as typed ("rated 4 or higher by readers"). */
+function describeStars(raw: string, own: boolean): string {
+  const value = raw.replace(/^[^:：]*[:：]/, '');
+  const who = own ? 'you rated it' : 'readers rated it';
+  const range = /^([^-]+)-([^-]+)$/.exec(value);
+  if (range) return `${who} ${range[1]} to ${range[2]} stars`;
+  const op = /^(<=|>=|<|>|=)?(.*)$/.exec(value)!;
+  const n = op[2];
+  switch (op[1]) {
+    case '<':
+      return `${who} under ${n} stars`;
+    case '<=':
+      return `${who} ${n} stars or lower`;
+    case '>':
+      return `${who} over ${n} stars`;
+    case '>=':
+      return `${who} ${n} stars or higher`;
+    case '=':
+      return `${who} exactly ${n} stars`;
+    default:
+      if (n.includes('.')) return `${who} exactly ${n} stars`;
+      return n === '5' ? `${who} 5 stars` : `${who} ${n}.0 to ${n}.9 stars`;
+  }
+}
+
+/** ratings:/readers: ("at least 100 ratings", "under 50 readers on 読書メーター"). */
+function describeCount(raw: string, unit: 'ratings' | 'readers'): string {
+  const value = raw.replace(/^[^:：]*[:：]/, '');
+  const num = (s: string) => {
+    const k = /^(\d+(?:\.\d+)?)k$/i.exec(s);
+    const n = k ? Math.round(Number(k[1]) * 1000) : Number(s.replace(/[,_]/g, ''));
+    return NUMBER.format(n);
+  };
+  const what = unit === 'ratings' ? 'ratings' : 'readers on 読書メーター';
+  const range = /^([^-]+)-([^-]+)$/.exec(value);
+  if (range) return `${num(range[1])} to ${num(range[2])} ${what}`;
+  const op = /^(<=|>=|<|>|=)?(.*)$/.exec(value)!;
+  const n = num(op[2]);
+  switch (op[1]) {
+    case '<':
+      return `under ${n} ${what}`;
+    case '<=':
+      return `${n} ${what} or fewer`;
+    case '>':
+      return `over ${n} ${what}`;
+    case '>=':
+      return `at least ${n} ${what}`;
+    default:
+      return `exactly ${n} ${what}`;
+  }
+}
+
 function describeTerm(term: QueryTerm, text: string): string {
   const raw = text.slice(term.start, term.end).replace(/^-/, '');
   switch (term.type) {
@@ -113,6 +165,16 @@ function describeTerm(term: QueryTerm, text: string): string {
     }
     case 'level': {
       const d = describeRange(raw, 'level');
+      return term.negated ? `not ${d}` : d;
+    }
+    case 'rating':
+    case 'myrating': {
+      const d = describeStars(raw, term.type === 'myrating');
+      return term.negated ? `not: ${d}` : d;
+    }
+    case 'ratings':
+    case 'readers': {
+      const d = describeCount(raw, term.type);
       return term.negated ? `not ${d}` : d;
     }
     case 'status': {

@@ -118,6 +118,48 @@ export interface NativelyProgressAnswer {
   settings: NativelySettings;
 }
 
+/** Store ratings (2026-11-25): one site's saved figures. */
+export interface RatingFigure {
+  /** Stars out of 5 (null on 読書メーター). */
+  avg: number | null;
+  /** Ratings, or 読書メーター's 登録数. */
+  count: number | null;
+  /** 読書メーター's 感想 count. */
+  reviews: number | null;
+  state: 'ok' | 'none' | 'gone' | 'error';
+  checkedAt: number;
+}
+
+/** GET /ratings/book/:bookId. */
+export interface BookRatingsAnswer {
+  pooled: { avg: number; count: number } | null;
+  readers: number | null;
+  /** By identifier type: amazon_jp, bookwalker, bookmeter (when on), natively. */
+  sites: Partial<Record<'amazon_jp' | 'bookwalker' | 'bookmeter' | 'natively', RatingFigure>>;
+  /** Old figures were asked for again; read again later for the answer. */
+  refreshing: boolean;
+}
+
+export interface RatingSettings {
+  refresh: boolean;
+  bookmeter: boolean;
+  newDays: number;
+  recentDays: number;
+  oldDays: number;
+  openMaxAgeDays: number;
+  scoreRatings: number;
+  queuedPerSite: number;
+}
+
+export interface RatingsProgressAnswer {
+  fill: { running: boolean; total: number; done: number; found: number; secondsLeft: number };
+  refresh: { on: boolean; available: boolean; waiting: number; due: Record<string, number> };
+  saved: Record<string, number>;
+  lastError: string | null;
+  settings: RatingSettings;
+  score: { m: number; c: number };
+}
+
 export interface DownloadResult {
   blob: Blob;
   etag: string | null;
@@ -710,6 +752,32 @@ export class LibraryApi {
   ): Promise<NativelyLevelAnswer> {
     const qs = fresh ? '?fresh=1' : '';
     return (await this.get(`/natively/level/${encodeURIComponent(bookId)}${qs}`, options)).json();
+  }
+
+  /** Store ratings of a book (2026-11-25); `fresh` asks old figures again (answered later). */
+  async bookRatings(
+    bookId: string,
+    fresh: boolean,
+    options?: RequestOptions
+  ): Promise<BookRatingsAnswer> {
+    const qs = fresh ? '?fresh=1' : '';
+    return (await this.get(`/ratings/book/${encodeURIComponent(bookId)}${qs}`, options)).json();
+  }
+
+  /** What the pages show of store ratings (読書メーター only once switched on). */
+  async ratingFeatures(options?: RequestOptions): Promise<{ bookmeter: boolean }> {
+    return (await this.get('/ratings/features', options)).json();
+  }
+
+  async ratingsProgress(options?: RequestOptions): Promise<RatingsProgressAnswer> {
+    return (await this.get('/ratings/progress', options)).json();
+  }
+
+  async saveRatingSettings(
+    patch: Partial<RatingSettings>,
+    options?: RequestOptions
+  ): Promise<{ settings: RatingSettings; score: { m: number; c: number } }> {
+    return (await this.sendJson('PUT', '/ratings/settings', patch, options)).json();
   }
 
   /** The first pass over the linked books, and the settings (Settings › Library). */

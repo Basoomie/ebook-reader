@@ -1,6 +1,7 @@
 /**
  * Library sorts (WP19a): date added, title, author, length and publication date (and the
- * Natively level, migration 32), each
+ * Natively level, migration 32; the store ratings' Rating, Most rated and Most read, migration 33),
+ * each
  * ascending or descending, keyset-paginated like the date-added list.
  *
  * Books without a value (no character count yet, no publication date, an upload without
@@ -15,7 +16,16 @@
  */
 import { decodeCursor, encodeCursor, InvalidCursorError } from './queries';
 
-export type BookSortKey = 'added' | 'title' | 'author' | 'chars' | 'published' | 'level';
+export type BookSortKey =
+  | 'added'
+  | 'title'
+  | 'author'
+  | 'chars'
+  | 'published'
+  | 'level'
+  | 'rating'
+  | 'ratings'
+  | 'readers';
 export type SortDir = 'asc' | 'desc';
 
 export interface BookSort {
@@ -30,6 +40,9 @@ export const BOOK_SORT_KEYS: BookSortKey[] = [
   'chars',
   'published',
   'level',
+  'rating',
+  'ratings',
+  'readers',
 ];
 export const SORT_DIRS: SortDir[] = ['asc', 'desc'];
 
@@ -57,6 +70,9 @@ export interface SortRow {
   published_at: number | null;
   added_at: number;
   natively_level: number | null;
+  rating_score: number | null;
+  rating_count: number | null;
+  readers: number | null;
 }
 
 const COLUMNS: Record<BookSortKey, SortColumn> = {
@@ -99,6 +115,31 @@ const COLUMNS: Record<BookSortKey, SortColumn> = {
       desc: 'IFNULL(b.natively_level, -1)',
     },
     value: (r, dir) => r.natively_level ?? (dir === 'asc' ? HIGH_NUMBER : -1),
+  },
+  // Store ratings (migration 33's indexes): books without a value last.
+  rating: {
+    type: 'number',
+    sql: {
+      asc: `IFNULL(b.rating_score, ${HIGH_NUMBER})`,
+      desc: 'IFNULL(b.rating_score, -1)',
+    },
+    value: (r, dir) => r.rating_score ?? (dir === 'asc' ? HIGH_NUMBER : -1),
+  },
+  ratings: {
+    type: 'number',
+    sql: {
+      asc: `IFNULL(b.rating_count, ${HIGH_NUMBER})`,
+      desc: 'IFNULL(b.rating_count, -1)',
+    },
+    value: (r, dir) => r.rating_count ?? (dir === 'asc' ? HIGH_NUMBER : -1),
+  },
+  readers: {
+    type: 'number',
+    sql: {
+      asc: `IFNULL(b.readers, ${HIGH_NUMBER})`,
+      desc: 'IFNULL(b.readers, -1)',
+    },
+    value: (r, dir) => r.readers ?? (dir === 'asc' ? HIGH_NUMBER : -1),
   },
 };
 
