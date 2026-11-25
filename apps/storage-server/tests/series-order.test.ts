@@ -829,3 +829,83 @@ describe('the live run of 2026-11-22', () => {
     );
   });
 });
+
+describe('the held series reviews measured (2026-11-25, rules 11)', () => {
+  // Real facts of these series from a copy of the live cleanup.db (pools cut to RanobeDB's list).
+  const fx = JSON.parse(
+    readFileSync(join(__dirname, 'fixtures', 'series-held-reviews.json'), 'utf8'),
+  ) as Record<string, SeriesBook[]>;
+  const choose = (series: string) => {
+    const books = fx[series];
+    const c = new Map(orderSeries(books).map((x) => [x.calibreId ?? 0, x]));
+    const byId = new Map(orderSeries(books).map((x) => [x.uuid, x]));
+    return (id: number) => {
+      const b = books.find((x) => x.calibreId === id)!;
+      return byId.get(b.uuid)?.index ?? (c.size ? b.index : b.index);
+    };
+  };
+  it('「Ep.14」 and 「level.15」 are the volume numbers, not RanobeDB places that count side books', () => {
+    expect(
+      printedNumber(
+        '86―エイティシックス―Ep.14 ―ペイント・イット・ブラック―',
+        '86―エイティシックス―',
+      ),
+    ).toBe(14);
+    expect(
+      printedNumber('灰と幻想のグリムガル level.15 強くて儚きニューゲーム', '灰と幻想のグリムガル'),
+    ).toBe(15);
+    const g = choose('灰と幻想のグリムガル');
+    expect(g(66668)).toBe(15); // level.15 (was 17)
+    expect(g(66670)).toBe(14.5); // level.14+ stays
+    expect(g(66671)).toBe(14.6); // level.14++ after it
+    expect(choose('86―エイティシックス―')(32975)).toBe(14); // Ep.14 (was 16)
+  });
+  it('「14+」 prints no number of its own and 「Vol.1+2」 is an omnibus', () => {
+    expect(
+      printedNumber(
+        '灰と幻想のグリムガル level.14＋ 相変わらずではいられない',
+        '灰と幻想のグリムガル',
+      ),
+    ).toBeNull();
+    expect(omnibusLast('恋愛処方箋 vol.1+2')).toBe(2);
+    expect(omnibusLast('恋愛処方箋Vol.5+6+7')).toBe(7);
+    expect(omnibusLast('超クソゲー１＋２')).toBe(2);
+    const r = choose('恋愛処方箋');
+    expect(r(27222)).toBe(2.9);
+    expect(r(27211)).toBe(7.9);
+  });
+  it('a book its part mark or list place backs is not moved by date beside another edition', () => {
+    expect(choose('罪と罰')(64979)).toBe(1); // 罪と罰（上） beside 罪と罰 1 (was 4)
+    expect(choose('西遊記')(58968)).toBe(1); // 西遊記（上） (was 0.6)
+    expect(choose('悪霊')(63991)).toBe(1); // 悪霊（上） (was 0.5)
+    expect(choose('鳴門秘帖')(46248)).toBe(2); // 鳴門秘帖（下） of the 上下 edition (was 8)
+  });
+  it('a list place backs a number only where the list places are the series numbers', () => {
+    // RanobeDB lists ∞ 7th and volume 7 8th: ∞ is not backed at 7 and goes between 6 and 7.
+    expect(choose('世界の危機はめくるめく!')(21583)).not.toBe(7);
+  });
+  it('a side book nothing places keeps the number it has', () => {
+    expect(choose('demi')(46093)).toBe(3); // was 0.5
+    expect(choose('アルカリレットウセイ')(21291)).toBe(1); // was 0.5
+    expect(choose('冴えない彼女の育てかた')(9134)).toBe(6.5); // FD (was 13.6)
+  });
+});
+
+describe('another edition in parts is not the series split (rehearsal of rules 11)', () => {
+  const fx = JSON.parse(
+    readFileSync(join(__dirname, 'fixtures', 'series-held-reviews.json'), 'utf8'),
+  ) as Record<string, SeriesBook[]>;
+  it('転スラ 1 （上）（中）（下） of the children’s edition does not renumber the 25-book series', () => {
+    const books = fx['転生したらスライムだった件'];
+    const byUuid = new Map(orderSeries(books).map((x) => [x.uuid, x]));
+    const n = (id: number) => {
+      const b = books.find((x) => x.calibreId === id)!;
+      const c = byUuid.get(b.uuid);
+      return c ? c.index : b.index;
+    };
+    expect(n(3317)).toBe(2); // 転スラ 2 (was 4)
+    expect(n(3309)).toBe(11); // 転スラ 11 (was 31)
+    expect(n(13660)).toBe(22); // 転スラ 22 (was 51)
+    expect(n(9600)).toBe(8.5); // 8.5 公式設定資料集 (was 22.5)
+  });
+});

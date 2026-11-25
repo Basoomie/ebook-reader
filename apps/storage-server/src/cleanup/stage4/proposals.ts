@@ -687,11 +687,15 @@ export function proposeStage4(input: ProposalInput): Stage4Proposal[] {
     // the cleanup wrote is changed only by those conventions (rules 7; 本好きの下剋上 第五部 IX
     // written 30, the models asked again said 9).
     const decidedN = fix.value?.n ?? null;
+    // Two of the conventions are automatic whatever number the book was decided with: a work in
+    // parts numbered by its 上/中/下 marks, and arcs counted straight through by the series list
+    // (rules 11: every one of the 30 held reviews of these two kinds checked by hand, 28 right
+    // after the change, 1 right before and after, 1 not decidable, none made wrong).
     const convention =
       !!so &&
-      /^the reading order/u.test(so.from) &&
-      decidedN !== null &&
-      decidedN === oldSeries.index;
+      ((/^the reading order/u.test(so.from) && decidedN !== null && decidedN === oldSeries.index) ||
+        so.from === 'its own title (上/中/下)' ||
+        /^the reading order \(the series list/u.test(so.from));
     // A number written as a best guess is not kept against a confirmed one ((仮)花嫁 3 and 8).
     const writtenIndex =
       !input.appliedGuess?.has('series') &&
