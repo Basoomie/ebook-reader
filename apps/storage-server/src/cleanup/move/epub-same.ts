@@ -10,6 +10,7 @@
  * unpacked bytes are the same (size, CRC-32 and SHA-256); how the ZIP is packed is not compared.
  */
 import { createHash } from 'crypto';
+import fs, { type FileHandle } from 'fs/promises';
 import { type ReadOnlyOpener, ZipFile } from '../../migration/zip-read';
 
 /** Largest single file inside an EPUB the check unpacks (a picture is a few MB). */
@@ -39,11 +40,55 @@ async function fileDigests(
         crc32: e.crc32,
         sha: createHash('sha256').update(bytes).digest('hex'),
       });
+      // One picture at a time, the event loop let through between them.
+      await new Promise((r) => setImmediate(r));
     }
     return out;
   } finally {
     await zip.close().catch(() => {});
   }
+}
+
+/**
+ * Read once (2026-11-25): the check read each copy twice (its SHA-256, then the files inside),
+ * 0.4 s of each move's 6 s on the NAS. A file up to this size is read into memory once and both
+ * come from that read; a bigger one is streamed as before.
+ */
+export const IN_MEMORY_MAX_BYTES = 256 * 1024 * 1024;
+
+/** The whole file, when it is at most `max` bytes (null: bigger, stream it instead). */
+export async function readWhole(file: string, max = IN_MEMORY_MAX_BYTES): Promise<Buffer | null> {
+  const st = await fs.stat(file);
+  return st.size > max ? null : fs.readFile(file);
+}
+
+/** SHA-256 of a buffer, a few MB at a time with the event loop let through (lessons 3). */
+export async function sha256Of(buf: Buffer): Promise<string> {
+  const h = createHash('sha256');
+  const step = 8 * 1024 * 1024;
+  for (let i = 0; i < buf.length; i += step) {
+    h.update(buf.subarray(i, i + step));
+    await new Promise((r) => setImmediate(r));
+  }
+  return h.digest('hex');
+}
+
+/** An opener that reads files already in memory (what ZipFile needs of a file handle). */
+export function memoryOpener(files: Map<string, Buffer>): ReadOnlyOpener {
+  return async (file: string) => {
+    const buf = files.get(file);
+    if (!buf) throw new Error(`Not read into memory: ${file}`);
+    const handle = {
+      stat: async () => ({ size: buf.length }),
+      read: async (into: Buffer, offset: number, length: number, position: number) => {
+        const n = Math.max(0, Math.min(length, buf.length - position));
+        buf.copy(into, offset, position, position + n);
+        return { bytesRead: n, buffer: into };
+      },
+      close: async () => {},
+    };
+    return handle as unknown as FileHandle;
+  };
 }
 
 /** Compares the files inside two EPUBs (`a` the book's own copy, `b` the one to check). */

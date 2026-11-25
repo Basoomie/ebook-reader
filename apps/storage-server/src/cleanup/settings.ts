@@ -468,6 +468,14 @@ export interface MoveSettings {
    * NAS (measured 2026-11-25), so a big run's books may not all be counted when the run gets here.
    */
   arrivalsCountWaitMinutes: number;
+  /**
+   * Books per move batch (2026-11-25: the move's own, bigger than the cleanup's 500, since
+   * between batches the move waits for the reader to index both libraries again). Still capped
+   * by pacing.maxBatchPercent of the library.
+   */
+  batchSize: number;
+  /** A move batch stops after this many books failed in a row (sidecar 1.6.1; 0 = never). */
+  stopAfterFailures: number;
 }
 
 export const MODEL_TASKS = [
@@ -627,6 +635,8 @@ export const DEFAULT_SETTINGS: CleanupSettings = {
     tags: ['マンガ', '画像のみ'],
     realTextChars: 5000,
     arrivalsCountWaitMinutes: 360,
+    batchSize: 2000,
+    stopAfterFailures: 5,
   },
   fetch: {
     // Paces of plan section 6 (Bookmeter and Natively as BookWalker; the cover images as decided
@@ -1205,6 +1215,14 @@ function validate(key: Key, value: unknown, current: CleanupSettings): unknown {
           v.arrivalsCountWaitMinutes,
           0,
           10_080,
+          true,
+        ),
+        batchSize: num('Books per move batch', v.batchSize, 1, 100_000, true),
+        stopAfterFailures: num(
+          'A move batch stops after this many books failed in a row (0: never)',
+          v.stopAfterFailures,
+          0,
+          1000,
           true,
         ),
       } satisfies MoveSettings;

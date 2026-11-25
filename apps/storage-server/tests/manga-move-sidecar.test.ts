@@ -19,8 +19,10 @@ import type { SidecarConfig } from '../../cleanup-apply/src/config';
 import { differingFields, fieldArgsFrom } from '../../cleanup-apply/src/move';
 import { Worker } from '../../cleanup-apply/src/worker';
 import { listLibraries, updateLibrary } from '../src/calibre/libraries';
+import { BatchError } from '../src/cleanup/batches';
 import { findCalibreSource } from '../src/cleanup/handoff';
 import { getMoveState } from '../src/cleanup/move/state';
+import { getSettings, updateSettings } from '../src/cleanup/settings';
 import type { LibraryFixture } from './helpers/calibre-fixture';
 import { type CleanupEnv, makeCleanupEnv } from './helpers/cleanup-env';
 import { makeTempDir } from './helpers/spawn-server';
@@ -234,7 +236,13 @@ describe('the sidecar moves books', () => {
   });
 
   function worker(
-    extra: { drop?: string; addTimeout?: 'after'; helper?: boolean; logs?: string[] } = {},
+    extra: {
+      drop?: string;
+      addTimeout?: 'after';
+      helper?: boolean;
+      logs?: string[];
+      fail?: string;
+    } = {},
   ) {
     const config: SidecarConfig = {
       serverUrl: (env as unknown as { url: string }).url,
@@ -260,6 +268,7 @@ describe('the sidecar moves books', () => {
       FAKE_ADD_FULL: '1',
       FAKE_ADD_DROP: extra.drop ?? '',
       FAKE_ADD_TIMEOUT: extra.addTimeout ?? '',
+      FAKE_FAIL: extra.fail ?? '',
     };
     let helper: CalibredbHelper | null = null;
     if (extra.helper !== false) {
@@ -431,6 +440,81 @@ describe('the sidecar moves books', () => {
       )
       .get(ids.A) as { move_json: string };
     expect(JSON.parse(note.move_json).fixed).toEqual(['series', 'series_index', '*characters']);
+  });
+
+  it('a move batch stops after books failed in a row; the books not reached go back', async () => {
+    updateSettings(env.cleanupDb, {
+      move: { ...getSettings(env.cleanupDb).move, stopAfterFailures: 1 },
+    });
+    // A batch holds at most 10 % of the library: 20 novels more make it two books.
+    for (let i = 0; i < 20; i++)
+      await env.lib.addBook({ title: `小説${i}`, authors: ['作家'], epub: bytes(String(i % 10)) });
+    await indexAll();
+    await preview();
+    const logs: string[] = [];
+    const w = worker({ fail: 'add', logs });
+    await runAll(w);
+    expect(row(manga, 'SELECT COUNT(*) AS n FROM books')!.n).toBe(0);
+    const items = env.cleanupDb
+      .prepare(`SELECT state, detail FROM batch_items ORDER BY position`)
+      .all() as { state: string; detail: string | null }[];
+    expect(items.map((i) => i.state)).toEqual(['failed', 'skipped']);
+    expect(items[1].detail).toMatch(/Not finished/);
+    expect(
+      env.cleanupDb
+        .prepare(
+          `SELECT state FROM proposed_changes WHERE stage = 11 AND class = 'auto' ORDER BY id`,
+        )
+        .all(),
+    ).toEqual([{ state: 'skipped' }, { state: 'proposed' }]);
+    const st = getMoveState(env.cleanupDb);
+    expect(st.pausedReason).toBe('batch_failed');
+    expect(st.pausedDetail).toMatch(/1 books in a row failed, so the batch stopped/);
+    expect(logs.some((l) => /in a row failed/.test(l))).toBe(true);
+  });
+
+  it('the server check is asked again when the server fails; a check that keeps failing takes the copy out', async () => {
+    await preview();
+    const moves = env.service.batches.moves;
+    const real = moves.checkArrived.bind(moves);
+    // The first book: the server fails once (a 500, as when it restarts), then answers. Every
+    // other book: the check is refused for good (a 4xx), so its added copy goes out again.
+    let first: number | null = null;
+    let calls = 0;
+    moves.checkArrived = async (...args: Parameters<typeof real>) => {
+      first ??= args[1];
+      if (args[1] !== first) throw new BatchError(409, 'bad_batch', 'Not a move batch');
+      calls += 1;
+      if (calls === 1) throw new Error('the server is restarting');
+      return real(...args);
+    };
+    const w = worker();
+    await runAll(w);
+    expect(calls).toBeGreaterThanOrEqual(2);
+    const states = env.cleanupDb
+      .prepare(`SELECT state, detail FROM batch_items ORDER BY position`)
+      .all() as { state: string; detail: string | null }[];
+    expect(states[0].state).toBe('removed');
+    const failed = states.filter((x) => x.state === 'failed');
+    expect(failed.length).toBeGreaterThan(0);
+    for (const f of failed) expect(f.detail).toMatch(/was taken out again/);
+    // Only the moved book is in the manga library: no copy left behind.
+    expect(row(manga, 'SELECT COUNT(*) AS n FROM books')!.n).toBe(1);
+  });
+
+  it('adds go through the long-lived helper (1.6.1), not a new calibredb each time', async () => {
+    await preview();
+    const log = path.join(quarantine, 'helper.log');
+    process.env.FAKE_HELPER_LOG = log;
+    try {
+      const w = worker();
+      await runAll(w);
+    } finally {
+      delete process.env.FAKE_HELPER_LOG;
+    }
+    expect(row(manga, 'SELECT COUNT(*) AS n FROM books')!.n).toBe(2);
+    const calls = fs.readFileSync(log, 'utf8').split(/\r?\n/).filter(Boolean);
+    expect(calls.filter((c) => c.startsWith('add ')).length).toBe(2);
   });
 
   it('an add that times out while Calibre adds the book anyway is found, never added twice', async () => {

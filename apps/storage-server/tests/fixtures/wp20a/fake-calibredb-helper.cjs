@@ -31,7 +31,7 @@ process.stdin.setEncoding('utf8').on('data', (d) => {
     if (!line.trim()) continue;
     const req = JSON.parse(line);
     const cmd = req.args[0];
-    if (!['list', 'set_metadata', 'remove', 'export'].includes(cmd)) {
+    if (!['list', 'set_metadata', 'remove', 'export', 'add'].includes(cmd)) {
       send({ id: req.id, code: 1, stdout: '', stderr: `${cmd} is not allowed` });
       continue;
     }

@@ -60,7 +60,7 @@ import { columnShape, MOVE_STAGE, MoveWorker } from './move';
  * library to another, `#characters` and `timestamp` join set_fields, and the move's target
  * library is checked (`move_target`: the same #illustrator and #characters as the old one).
  */
-export const SIDECAR_VERSION = '1.6.0';
+export const SIDECAR_VERSION = '1.6.1';
 
 /** The user's edits from the reader (the server's EDIT_STAGE). */
 export const EDIT_STAGE = 10;
@@ -247,6 +247,7 @@ export class Worker {
       pollUntil: (until, check) => this.pollUntil(until, check),
       isStopped: () => this.stopped,
       step: (name, fn) => this.step(name, fn),
+      retry: (fn) => this.retry(fn),
       illustratorNames: () => this.illustratorIsNames,
       waits: {
         removeWaitSeconds: c.removeWaitSeconds,
@@ -606,8 +607,18 @@ export class Worker {
         this.steps = !fieldStage(batch.stage) ? new StepTimes() : null;
         timed = 0;
       };
+      // 1.6.1: a move batch stops after this many books failed in a row (a failure that hits
+      // every book, as DeDRM's repacking did on 2026-11-25, stopped the move only at the batch's
+      // end). Only between books: a stopped batch's books not reached go back to the proposals.
+      const stopAfter = batch.stage === MOVE_STAGE ? (batch.stopAfterFailures ?? 0) : 0;
+      let failedInARow = 0;
+      let lastFailure: string | null = null;
       for (const item of fieldStage(batch.stage) ? [] : batch.items) {
         if (this.stopped) return;
+        if (stopAfter > 0 && failedInARow >= stopAfter) {
+          error = `${failedInARow} books in a row failed, so the batch stopped${lastFailure ? ` (the last: ${shorten(lastFailure, 300)})` : ''}`;
+          break;
+        }
         const final =
           batch.kind === 'apply'
             ? ['removed', 'failed', 'skipped']
@@ -634,7 +645,10 @@ export class Worker {
           const message = (err as Error).message;
           this.log.error(`Item ${item.calibreId}: ${message}`);
           await this.report(batch, item, { step: 'failed', detail: message });
+          lastFailure = message;
         }
+        if (item.state === 'failed') failedInARow += 1;
+        else if (final.includes(item.state)) failedInARow = 0;
         if (this.itemDelayMs > 0) await this.step('pause', () => sleep(this.itemDelayMs));
         await this.editsBetween();
         timed += 1;

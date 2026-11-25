@@ -110,6 +110,8 @@ export interface Batch {
    */
   calibreLibrary?: string | null;
   targetCalibreLibrary?: string | null;
+  /** 1.6.1: a move batch stops after this many books failed in a row (0/missing: never). */
+  stopAfterFailures?: number;
 }
 
 export interface CheckResult {
