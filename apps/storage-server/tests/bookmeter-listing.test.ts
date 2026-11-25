@@ -15,7 +15,9 @@ import { getSettings, updateSettings } from '../src/cleanup/settings';
 import type { BookmeterFacts, Stage4Analysis } from '../src/cleanup/stage4/analysis';
 import { adaptationListing } from '../src/cleanup/stage4/bookmeter-rules';
 import {
+  BL_SEARCH_VERSION,
   BookmeterListings,
+  refusedWaitMs,
   decideListing,
   emptyBlProgress,
   listingAnalysisId,
@@ -617,19 +619,94 @@ describe('Bookmeter links: the pass', () => {
     expect(() => p.setVerdict(spot[0].uuid, 'wrong')).toThrow(/closed/);
   });
 
-  it('decides from the stored answers alone when the new search fails', async () => {
+  it('never decides a book from a refused search: asks it again until it is answered', async () => {
+    const s0 = getSettings(db).fetch;
+    updateSettings(db, { fetch: { ...s0, maxAttempts: 1 } });
+    const p = pass();
+    p.setMode('analyse');
+    await runUntil(p, () => false);
+    // Bookmeter refuses every search (busy); the queue backs the site off after each refusal, so
+    // the fetcher's clock moves on an hour between claims.
+    const refused = new Set<number>();
+    for (let i = 0; i < 50 && refused.size < 4; i++) {
+      clock += 3600_000;
+      for (const c of q.claim(clock).requests) {
+        q.report(c.id, c.leaseToken, answer('busy', 503), clock);
+        refused.add(c.id);
+      }
+    }
+    expect(refused.size).toBe(4);
+    await runUntil(p, () => false);
+    expect(p.state().progress.phase).toBe('search');
+    expect(rows().every((r) => r.state === 'search')).toBe(true);
+    expect(p.state().progress.search).toMatchObject({ failed: 4, answered: 0 });
+    expect(p.refusedOpen(LIB)).toBe(4);
+    expect(p.openSearches()).toBe(4);
+    // Put back in line with a wait (10 minutes the first time).
+    const due = db
+      .prepare(`SELECT state, next_at FROM fetch_requests WHERE key LIKE 'search-jp-au:%'`)
+      .all() as { state: string; next_at: number }[];
+    expect(due.every((r) => r.state === 'queued' && r.next_at > Date.now() + 9 * 60_000)).toBe(
+      true,
+    );
+    expect(refusedWaitMs(1)).toBe(600_000);
+    expect(refusedWaitMs(3)).toBe(2_400_000);
+    expect(refusedWaitMs(20)).toBe(7_200_000);
+    // The wait is over and Bookmeter answers: decided as usual.
+    db.prepare(`UPDATE fetch_requests SET next_at = 0 WHERE key LIKE 'search-jp-au:%'`).run();
+    clock += 3600_000;
+    fetchAll(byUrl);
+    await runUntil(p, (ph) => ph === 'spot');
+    expect(rows()).toEqual([
+      { u: 'a', state: 'change' },
+      { u: 'b', state: 'keep' },
+      { u: 'c', state: 'change' },
+      { u: 'd', state: 'adaptation' },
+    ]);
+    expect(p.refusedOpen(LIB)).toBe(0);
+  });
+
+  it('lists a book Bookmeter answers "not found" for, and changes nothing there', async () => {
     const p = pass();
     p.setMode('analyse');
     await runUntil(p, () => false);
     for (let i = 0; i < 50; i++) {
       const got = q.claim(tick()).requests;
       if (!got.length) break;
-      for (const c of got) q.report(c.id, c.leaseToken, answer('', 404), clock);
+      for (const c of got)
+        q.report(
+          c.id,
+          c.leaseToken,
+          c.url.includes(encodeURIComponent('庶民サンプル 2'))
+            ? answer('', 404)
+            : answer(byUrl(c.url)),
+          clock,
+        );
     }
-    await runUntil(p, (ph) => ph === 'spot' || ph === 'done');
-    expect(p.state().progress.search.failed).toBeGreaterThan(0);
-    expect(rows().find((r) => r.u === 'a')?.state).toBe('keep');
-    expect(rows().find((r) => r.u === 'b')?.state).toBe('keep');
+    await runUntil(p, (ph) => ph === 'spot');
+    expect(rows().find((r) => r.u === 'a')?.state).toBe('unsearched');
+    expect(p.state().progress.search.gone).toBe(1);
+    expect(proposals().map((x) => x.u)).toEqual(['c']);
+    expect(p.listBooks(LIB, 1, 'unsearched', 0, 20).total).toBe(1);
+  });
+
+  it('starts a run made under the old search rules again, by itself', async () => {
+    const p = pass();
+    p.setMode('analyse');
+    await runUntil(p, () => false);
+    const st = p.state().progress;
+    db.prepare('UPDATE bookmeter_listing_state SET progress_json = ? WHERE id = 1').run(
+      JSON.stringify({ ...st, searchVersion: undefined }),
+    );
+    expect(await p.step()).toBe('more');
+    expect(p.state().progress).toMatchObject({
+      run: 2,
+      searchVersion: BL_SEARCH_VERSION,
+      phase: 'search',
+    });
+    expect(p.state().mode).toBe('analyse');
+    await runUntil(p, () => false);
+    expect(p.openSearches()).toBe(4);
   });
 
   it('looks again from the start: a new run, its unwritten proposals gone, written ones kept', async () => {

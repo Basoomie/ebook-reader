@@ -147,9 +147,14 @@ async function main() {
           ).run(cf, now, now, r.id);
           livePages++;
         } else {
+          // Not fetched in a rehearsal: an empty result page, so the book is decided from its
+          // stored searches (the live pass asks a refused search again until it is answered).
+          const cf = queue.cacheFile('bookmeter', r.key);
+          fs.mkdirSync(path.dirname(path.join(tmp, cf)), { recursive: true });
+          fs.writeFileSync(path.join(tmp, cf), brotliCompressSync(Buffer.from('<ul></ul>')));
           db.prepare(
-            `UPDATE fetch_requests SET state = 'failed', error = 'rehearsal: not fetched', finished_at = ?, updated_at = ? WHERE id = ?`,
-          ).run(now, now, r.id);
+            `UPDATE fetch_requests SET state = 'done', status = 200, cache_file = ?, finished_at = ?, updated_at = ? WHERE id = ?`,
+          ).run(cf, now, now, r.id);
           notFetched++;
         }
         db.prepare('UPDATE bookmeter_listing_waiters SET ready = 1 WHERE request_id = ?').run(r.id);

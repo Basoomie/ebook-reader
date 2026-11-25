@@ -56,8 +56,12 @@ export type BlMode = 'off' | 'analyse' | 'on';
  * listing that is the book), change (a listing with more registrations, or the saved one is not
  * the book), adaptation (the saved id is a comic or an adaptation and no listing of the book was
  * found: listed, never changed), unseen (the saved listing was in none of the answers: its count
- * is unknown, so nothing is changed), ai (the AI check chose the saved id: kept), nofacts (stage
- * 4's answers for the book are gone), yours (the user's identifiers).
+ * is unknown, so nothing is changed), unsearched (Bookmeter answered the book's search "not
+ * found" (404/410): listed, nothing changed, asked again by "Look again from the start"), ai (the
+ * AI check chose the saved id: kept), nofacts (stage 4's answers for the book are gone), yours
+ * (the user's identifiers). A search Bookmeter refuses (busy, blocked, errors) never decides a
+ * book: it is asked again until it is answered (user, 2026-11-25: a book quietly left with its
+ * wrong link is a wrong link).
  */
 export type BlState =
   | 'search'
@@ -65,6 +69,7 @@ export type BlState =
   | 'change'
   | 'adaptation'
   | 'unseen'
+  | 'unsearched'
   | 'ai'
   | 'nofacts'
   | 'yours';
@@ -76,6 +81,15 @@ export const BL_SPOT_MAX_WRONG = 0;
 export const BL_PRIORITY = -3;
 
 const SLICE_MS = 25;
+/**
+ * The search step's rules. 2: a refused search is asked again, never decided from the stored
+ * answers (a run of version 1 starts again by itself).
+ */
+export const BL_SEARCH_VERSION = 2;
+/** The wait before a refused search is put back in line: 10 min, doubled each time, at most 2 h. */
+export function refusedWaitMs(retries: number): number {
+  return Math.min(2 * 3600_000, 10 * 60_000 * 2 ** Math.max(0, retries - 1));
+}
 const ANALYSIS_PREFIX = 'bookmeter-listing:';
 export const listingAnalysisId = (run: number): string => `${ANALYSIS_PREFIX}${run}`;
 
@@ -169,6 +183,8 @@ export function replaceBookmeter(
 
 export interface BlProgress {
   run: number;
+  /** BL_SEARCH_VERSION the run's search step follows (missing = 1). */
+  searchVersion?: number;
   libraryId: string | null;
   phase: BlPhase;
   cursor: string;
@@ -181,8 +197,17 @@ export interface BlProgress {
     asked: number;
     answered: number;
     enqueued: boolean;
-    /** Searches that failed or are gone (decided from the stored answers alone). */
+    /**
+     * Searches Bookmeter refused (busy, blocked, errors after the queue's own tries): each one
+     * put back in line, its book still open. Counted each time.
+     */
     failed: number;
+    /** Books whose search is waiting to be asked again now. */
+    refusedOpen?: number;
+    /** Books Bookmeter answered "not found" for (state unsearched). */
+    gone?: number;
+    /** Books without an author to search with: decided from the stored searches. */
+    noAuthor?: number;
     /**
      * When every search was queued, with the answers handled and ready then: the pace is
      * measured from there (answers already in the cache come at once).
@@ -211,6 +236,7 @@ export interface BlProgress {
 export function emptyBlProgress(run = 1, libraryId: string | null = null): BlProgress {
   return {
     run,
+    searchVersion: BL_SEARCH_VERSION,
     libraryId,
     phase: 'search',
     cursor: '',
@@ -250,7 +276,10 @@ export function getBlState(db: Database.Database): BlState0 {
   return {
     libraryId: r.library_id,
     mode: r.mode,
-    progress: stored.phase ? { ...emptyBlProgress(), ...stored } : emptyBlProgress(),
+    // A run saved before BL_SEARCH_VERSION existed is version 1 (never the default's number).
+    progress: stored.phase
+      ? { ...emptyBlProgress(), ...stored, searchVersion: stored.searchVersion ?? 1 }
+      : emptyBlProgress(),
     pausedReason: r.paused_reason,
     pausedDetail: r.paused_detail,
     updatedAt: r.updated_at,
@@ -368,6 +397,18 @@ export class BookmeterListings {
     const p = st.progress;
     if (p.libraryId !== lib) {
       this.startRun(emptyBlProgress(p.run + (p.libraryId ? 1 : 0), lib));
+      return 'more';
+    }
+    // A run whose searches followed older rules (a refused search decided from the stored answers)
+    // starts again; answers fetched before come from the cache, refused ones are asked again.
+    if (
+      (p.searchVersion ?? 1) < BL_SEARCH_VERSION &&
+      (p.phase === 'search' || p.phase === 'propose' || p.phase === 'spot')
+    ) {
+      this.deps.log?.(
+        `Bookmeter links: run ${p.run} searched by older rules; starting again (run ${p.run + 1})`,
+      );
+      this.startRun(emptyBlProgress(p.run + 1, lib));
       return 'more';
     }
     if (p.phase === 'done') return 'idle';
@@ -580,7 +621,8 @@ export class BookmeterListings {
           }
           const spec = bookmeterListingSearch(f.input.title, f.input.authors);
           if (!spec) {
-            // No author to search with: the stored answers alone.
+            // No author to search with: the stored searches are all there is (counted on the card).
+            p.search.noAuthor = (p.search.noAuthor ?? 0) + 1;
             const d = decideListing(b.saved, this.answersOf(f, null), f.input);
             this.putBook(lib, b.uuid, b.calibreId, labeled, b.saved, d.state, d);
             continue;
@@ -604,17 +646,52 @@ export class BookmeterListings {
       'DELETE FROM bookmeter_listing_waiters WHERE request_id = ? AND library_id = ? AND calibre_uuid = ?',
     );
     const row = db.prepare(
-      'SELECT calibre_id, labeled, saved_id FROM bookmeter_listing_books WHERE library_id = ? AND calibre_uuid = ?',
+      'SELECT calibre_id, labeled, saved_id, decision_json FROM bookmeter_listing_books WHERE library_id = ? AND calibre_uuid = ?',
     );
     for (const w of ready) {
       if (performance.now() - t0 > SLICE_MS) break;
       const b = row.get(lib, w.calibre_uuid) as
-        | { calibre_id: number; labeled: number; saved_id: string }
+        | { calibre_id: number; labeled: number; saved_id: string; decision_json: string | null }
         | undefined;
       db.transaction(() => {
+        if (b && w.rstate === 'failed') {
+          // Refused: never decided from the stored answers. Put back in line after a growing
+          // wait; the book stays open and the step does not end until it is answered.
+          const retries =
+            ((b.decision_json ? (JSON.parse(b.decision_json) as { retries?: number }) : {})
+              .retries ?? 0) + 1;
+          p.search.failed++;
+          this.deps.queue.requeue(w.request_id, b.labeled === 1 ? BL_PRIORITY : BL_PRIORITY - 1);
+          db.prepare('UPDATE fetch_requests SET next_at = ? WHERE id = ? AND state = ?').run(
+            Date.now() + refusedWaitMs(retries),
+            w.request_id,
+            'queued',
+          );
+          db.prepare(
+            'UPDATE bookmeter_listing_waiters SET ready = 0 WHERE request_id = ? AND library_id = ? AND calibre_uuid = ?',
+          ).run(w.request_id, lib, w.calibre_uuid);
+          db.prepare(
+            'UPDATE bookmeter_listing_books SET decision_json = ?, updated_at = ? WHERE library_id = ? AND calibre_uuid = ?',
+          ).run(JSON.stringify({ retries }), Date.now(), lib, w.calibre_uuid);
+          return;
+        }
         del.run(w.request_id, lib, w.calibre_uuid);
-        p.search.answered++;
         if (!b) return;
+        if (w.rstate === 'gone') {
+          // Bookmeter said the search does not exist: listed, nothing changed.
+          p.search.gone = (p.search.gone ?? 0) + 1;
+          this.putBook(
+            lib,
+            w.calibre_uuid,
+            b.calibre_id,
+            b.labeled === 1,
+            b.saved_id,
+            'unsearched',
+            null,
+          );
+          return;
+        }
+        p.search.answered++;
         const f = a.bookmeterFacts(lib, w.calibre_uuid);
         if (!f) {
           this.putBook(
@@ -628,13 +705,17 @@ export class BookmeterListings {
           );
           return;
         }
-        const body = w.rstate === 'done' ? this.deps.queue.readAnswer(w.request_id) : null;
-        if (!body) p.search.failed++;
-        const d = decideListing(
-          b.saved_id,
-          this.answersOf(f, body ? parseBookmeterSearch(body) : null),
-          f.input,
-        );
+        const body = this.deps.queue.readAnswer(w.request_id);
+        if (!body) {
+          // Answered, but the answer can't be read (its cached file is gone): asked again.
+          p.search.failed++;
+          this.deps.queue.requeue(w.request_id, b.labeled === 1 ? BL_PRIORITY : BL_PRIORITY - 1);
+          db.prepare(
+            'INSERT OR REPLACE INTO bookmeter_listing_waiters (request_id, library_id, calibre_uuid, ready) VALUES (?, ?, ?, 0)',
+          ).run(w.request_id, lib, w.calibre_uuid);
+          return;
+        }
+        const d = decideListing(b.saved_id, this.answersOf(f, parseBookmeterSearch(body)), f.input);
         this.putBook(lib, w.calibre_uuid, b.calibre_id, b.labeled === 1, b.saved_id, d.state, d);
       })();
     }
@@ -1000,6 +1081,18 @@ export class BookmeterListings {
     return out;
   }
 
+  /** Books whose search Bookmeter refused and that wait to be asked again. */
+  refusedOpen(lib: string): number {
+    return (
+      this.db
+        .prepare(
+          `SELECT COUNT(*) AS n FROM bookmeter_listing_books INDEXED BY bookmeter_listing_books_state
+           WHERE library_id = ? AND state = 'search' AND decision_json IS NOT NULL`,
+        )
+        .get(lib) as { n: number }
+    ).n;
+  }
+
   /** Open searches (not answered yet). */
   openSearches(): number {
     return (
@@ -1046,6 +1139,7 @@ export class BookmeterListings {
         pace: p.phase === 'write' ? this.writePace(p.write.batches) : null,
       }),
       books: lib ? this.bookCounts(lib) : {},
+      refusedOpen: lib && p.phase === 'search' ? this.refusedOpen(lib) : 0,
       proposals,
       spot: this.spotCounts(),
       spotPassed: this.spotPassed(),

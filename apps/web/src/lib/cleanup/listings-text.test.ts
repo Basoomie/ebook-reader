@@ -68,7 +68,7 @@ describe('Bookmeter links: the card', () => {
       }
     });
     expect(lines).toContain(
-      'Looked at 40,775 of 40,775 books with a saved link; 36,000 searched again, 36,000 answered (4 failed: decided from the earlier searches).'
+      'Looked at 40,775 of 40,775 books with a saved link; 36,000 searched again, 36,000 answered.'
     );
     expect(lines).toContain(
       'Decided: 1,700 to change, 30,000 already the listing most readers registered, 3 saved to a comic or an adaptation, 12 whose saved listing the searches did not show.'
@@ -77,6 +77,16 @@ describe('Bookmeter links: the card', () => {
       'Left alone: 4,150 the AI check matched, 2 with store links you edited.'
     );
     expect(lines).toContain('Links: 1,690 to write, 0 written.');
+  });
+
+  it('says that refused searches are asked again, never decided', () => {
+    const lines = listingsLines(status({ refusedOpen: 12 }));
+    expect(lines).toContain(
+      '12 searches were refused by 読書メーター and wait to be asked again (10 minutes, then longer each time). No book is decided until its search is answered.'
+    );
+    expect(listingsLines(status({ books: { keep: 5, unsearched: 2 } }))).toContain(
+      'Decided: 0 to change, 5 already the listing most readers registered, 2 読書メーター could not search.'
+    );
   });
 
   it('says what the spot check needs', () => {

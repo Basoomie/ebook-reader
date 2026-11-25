@@ -2653,6 +2653,35 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
       ) WITHOUT ROWID;
     `,
   },
+  {
+    version: 36,
+    name: 'Bookmeter links: a book Bookmeter could not search is listed, never decided',
+    // User, 2026-11-25: a refused search must never leave a book quietly with its wrong link.
+    // Refused searches are asked again (the pass, BL_SEARCH_VERSION 2); a search Bookmeter
+    // answers "not found" puts the book in the new state unsearched (listed on the card). SQLite
+    // can't change a CHECK, so the table is made again with the same rows.
+    sql: `
+      CREATE TABLE bookmeter_listing_books_v36 (
+        library_id    TEXT NOT NULL,
+        calibre_uuid  TEXT NOT NULL,
+        calibre_id    INTEGER NOT NULL,
+        labeled       INTEGER NOT NULL DEFAULT 0,
+        saved_id      TEXT NOT NULL,
+        state         TEXT NOT NULL CHECK (state IN ('search', 'keep', 'change', 'adaptation',
+                        'unseen', 'unsearched', 'ai', 'nofacts', 'yours')),
+        decision_json TEXT CHECK (decision_json IS NULL OR json_valid(decision_json)),
+        proposed      INTEGER NOT NULL DEFAULT 0,
+        updated_at    INTEGER NOT NULL,
+        PRIMARY KEY (library_id, calibre_uuid)
+      ) WITHOUT ROWID;
+      INSERT INTO bookmeter_listing_books_v36 SELECT library_id, calibre_uuid, calibre_id, labeled,
+        saved_id, state, decision_json, proposed, updated_at FROM bookmeter_listing_books;
+      DROP TABLE bookmeter_listing_books;
+      ALTER TABLE bookmeter_listing_books_v36 RENAME TO bookmeter_listing_books;
+      CREATE INDEX bookmeter_listing_books_state
+        ON bookmeter_listing_books (library_id, state, calibre_uuid);
+    `,
+  },
 ];
 
 export const CLEANUP_SCHEMA_VERSION = CLEANUP_MIGRATIONS[CLEANUP_MIGRATIONS.length - 1].version;

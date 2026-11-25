@@ -18,6 +18,7 @@ export type ListingState =
   | 'change'
   | 'adaptation'
   | 'unseen'
+  | 'unsearched'
   | 'ai'
   | 'nofacts'
   | 'yours';
@@ -31,7 +32,15 @@ export interface ListingsStatus {
     run: number;
     phase: ListingsPhase;
     books: number;
-    search: { looked: number; asked: number; answered: number; enqueued: boolean; failed: number };
+    search: {
+      looked: number;
+      asked: number;
+      answered: number;
+      enqueued: boolean;
+      failed: number;
+      gone?: number;
+      noAuthor?: number;
+    };
     propose: {
       total: number;
       done: number;
@@ -48,6 +57,8 @@ export interface ListingsStatus {
   bar: { phase: ListingsPhase; done: number; total: number | null; leftMs: number | null };
   /** Books by state. */
   books: Record<string, number>;
+  /** Books whose search Bookmeter refused and that wait to be asked again. */
+  refusedOpen?: number;
   proposals: Record<string, number>;
   spot: { size: number; right: number; wrong: number; open: number };
   spotPassed: boolean;
@@ -111,6 +122,11 @@ export const LISTING_LISTS: { state: ListingState; label: string; note: string }
     note: 'No listing of the book itself was found. Nothing here is changed: open the listing, and to fix one, edit the book’s details.'
   },
   {
+    state: 'unsearched',
+    label: 'Books 読書メーター could not search',
+    note: 'It answered their search "not found". Nothing here is changed; "Look again from the start" asks again.'
+  },
+  {
     state: 'unseen',
     label: 'Saved listings the searches did not show',
     note: 'Their reader count is not known, so nothing is changed.'
@@ -161,18 +177,23 @@ export function listingsLines(s: ListingsStatus | null): string[] {
   if (s.siteWait && p.phase === 'search') out.push(`読書メーター's requests wait: ${s.siteWait}.`);
   if (p.search.looked > 0)
     out.push(
-      `Looked at ${n(p.search.looked)} of ${n(p.books)} books with a saved link; ${n(p.search.asked)} searched again, ${n(p.search.answered)} answered` +
-        (p.search.failed
-          ? ` (${n(p.search.failed)} failed: decided from the earlier searches)`
-          : '') +
-        '.'
+      `Looked at ${n(p.search.looked)} of ${n(p.books)} books with a saved link; ${n(p.search.asked)} searched again, ${n(p.search.answered)} answered.`
     );
-  const decided = c('keep') + c('change') + c('adaptation') + c('unseen');
+  if (s.refusedOpen)
+    out.push(
+      `${n(s.refusedOpen)} ${s.refusedOpen === 1 ? 'search was' : 'searches were'} refused by 読書メーター and ${s.refusedOpen === 1 ? 'waits' : 'wait'} to be asked again (10 minutes, then longer each time). No book is decided until its search is answered.`
+    );
+  if (p.search.noAuthor)
+    out.push(
+      `${n(p.search.noAuthor)} ${p.search.noAuthor === 1 ? 'book has' : 'books have'} no author to search with: decided from the earlier searches.`
+    );
+  const decided = c('keep') + c('change') + c('adaptation') + c('unseen') + c('unsearched');
   if (decided > 0)
     out.push(
       `Decided: ${n(c('change'))} to change, ${n(c('keep'))} already the listing most readers registered` +
         (c('adaptation') ? `, ${n(c('adaptation'))} saved to a comic or an adaptation` : '') +
         (c('unseen') ? `, ${n(c('unseen'))} whose saved listing the searches did not show` : '') +
+        (c('unsearched') ? `, ${n(c('unsearched'))} 読書メーター could not search` : '') +
         '.'
     );
   const left = [

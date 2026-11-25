@@ -1272,6 +1272,7 @@ export function createCleanupRouter(options: CleanupOptions): Router {
     'keep',
     'adaptation',
     'unseen',
+    'unsearched',
     'ai',
     'nofacts',
     'yours',
