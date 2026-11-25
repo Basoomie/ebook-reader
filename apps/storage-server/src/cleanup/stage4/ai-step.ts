@@ -13,6 +13,7 @@
  * changed prompt or model asks again (answers already given are kept); a changed decision rule
  * decides again without asking. Nothing here writes to Calibre.
  */
+import { saveGatePart, unionOfParts } from '../gate-parts';
 import type Database from 'better-sqlite3';
 import { createHash } from 'crypto';
 import type { AiRunner } from '../../ai/runner';
@@ -667,7 +668,7 @@ export class Stage4Ai {
         const keys = new Set(
           (this.list?.rows ?? []).map((r) => this.itemKey(p.libraryId, r.calibre_uuid)),
         );
-        dropOtherItems(this.db, 'calibre4', keys);
+        dropOtherItems(this.db, 'calibre4', keys, `${p.libraryId}:`);
         return { finished: true, items: n };
       }
       const items = [];
@@ -701,9 +702,10 @@ export class Stage4Ai {
         this.db
           .prepare(
             `SELECT item_key FROM ai_items WHERE stage = 'calibre4' ${s.ai.labeledOnly ? 'AND labeled = 1' : ''}
+               AND item_key >= ? AND item_key < ?
              ORDER BY labeled DESC, item_key`,
           )
-          .all() as { item_key: string }[]
+          .all(`${this.deps.libraryId}:`, `${this.deps.libraryId}:\uffff`) as { item_key: string }[]
       ).map((r) => r.item_key);
       for (let at = 0; at < keys.length; at += 500) {
         const chunk = keys.slice(at, at + 500);
@@ -1038,7 +1040,11 @@ export class Stage4Ai {
     const tail = ai.cursor - total;
     if (tail === 0) {
       const settings = getSettings(this.db);
-      const g = scoreAiGate(g0.books);
+      // One gate across the libraries: this library's labeled books with the others'.
+      saveGatePart(this.db, STAGE, 'ai', this.deps.libraryId, g0.books);
+      const g = scoreAiGate(
+        unionOfParts<(typeof g0.books)[number]>(this.db, STAGE, 'ai', this.deps.libraryId),
+      );
       const below: string[] = [];
       if (g.books > 0) {
         for (const f of SCORED_FIELDS) {
@@ -1059,7 +1065,7 @@ export class Stage4Ai {
         }
       }
       ai.gate = { ...g, at: Date.now(), passed: g.books > 0 && below.length === 0, below };
-      ai.counts = valueCounts(this.db, 'calibre4');
+      ai.counts = valueCounts(this.db, 'calibre4', undefined, `${this.deps.libraryId}:`);
       ai.cursor++;
       return false;
     }

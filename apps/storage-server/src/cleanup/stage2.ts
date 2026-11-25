@@ -12,6 +12,7 @@
  *
  * Resumable from its saved phase and cursor; writes nothing but cleanup.db.
  */
+import { gateParts, saveGatePart } from './gate-parts';
 import type Database from 'better-sqlite3';
 import { randomUUID } from 'crypto';
 import { statSync } from 'fs';
@@ -795,7 +796,20 @@ export class Stage2Analysis {
       updateStage(db, this.deps.libraryId, 2, { precision: { gate: null, labelsError: error } });
       return null;
     }
-    const gate = evaluateGate(books, missing, getSettings(db));
+    // One gate across the libraries: this library's labeled books with the others' (saved by
+    // their own analyses); with one library it is the gate as before.
+    saveGatePart(db, 2, 'books', this.deps.libraryId, { books, missing });
+    const parts = gateParts<{ books: ScoredBook[]; missing: number }>(
+      db,
+      2,
+      'books',
+      this.deps.libraryId,
+    );
+    const gate = evaluateGate(
+      parts.flatMap((x) => x.data.books),
+      parts.reduce((a, x) => a + x.data.missing, 0),
+      getSettings(db),
+    );
     updateStage(db, this.deps.libraryId, 2, { precision: { gate, final, labelsError: null } });
     if (final) applyGate(db, this.deps.libraryId, gate);
     return gate;

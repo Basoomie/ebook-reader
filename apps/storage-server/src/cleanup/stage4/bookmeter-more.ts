@@ -1325,8 +1325,10 @@ export class BookmeterMore {
 
   spotCounts(): { size: number; right: number; wrong: number; open: number } {
     const rows = this.db
-      .prepare('SELECT verdict, COUNT(*) AS n FROM bookmeter_more_spot GROUP BY verdict')
-      .all() as { verdict: string | null; n: number }[];
+      .prepare(
+        'SELECT verdict, COUNT(*) AS n FROM bookmeter_more_spot WHERE library_id = ? GROUP BY verdict',
+      )
+      .all(this.lib()) as { verdict: string | null; n: number }[];
     const n = (v: string | null) => rows.find((r) => r.verdict === v)?.n ?? 0;
     const size = rows.reduce((a, r) => a + r.n, 0);
     return { size, right: n('right'), wrong: n('wrong'), open: n(null) };

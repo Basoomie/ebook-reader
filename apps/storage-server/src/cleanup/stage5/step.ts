@@ -14,6 +14,7 @@
  *
  * Nothing here writes to Calibre: On writes the proposals through stage 2's field-write path.
  */
+import { gateParts, saveGatePart } from '../gate-parts';
 import type Database from 'better-sqlite3';
 import { createHash, randomUUID } from 'crypto';
 import path from 'path';
@@ -694,9 +695,10 @@ export class Stage5 {
         this.db
           .prepare(
             `SELECT item_key FROM ai_items WHERE stage = 'calibre5' ${s.ai.labeledOnly ? 'AND labeled = 1' : ''}
+               AND item_key >= ? AND item_key < ?
              ORDER BY labeled DESC, item_key`,
           )
-          .all() as { item_key: string }[]
+          .all(`${this.deps.libraryId}:`, `${this.deps.libraryId}:\uffff`) as { item_key: string }[]
       ).map((r) => r.item_key);
       for (let at = 0; at < keys.length; at += 500) {
         const chunk = keys.slice(at, at + 500);
@@ -845,7 +847,8 @@ export class Stage5 {
           .map(([id]) => id),
       );
     };
-    for (const gid of new Set([...Object.keys(L.genres), ...Object.keys(L.tags)])) {
+    const labeledGids = new Set([...Object.keys(L.genres), ...Object.keys(L.tags)]);
+    for (const gid of labeledGids) {
       const u = uuidOf(gid);
       const o = u ? own.get(u) : undefined;
       if (o && !o.asked && !asked.has(gid)) notAsked += 1;
@@ -877,11 +880,33 @@ export class Stage5 {
       const u = id === undefined ? undefined : m.get(id);
       return u ? new Set(Object.keys(u)) : null;
     };
+    // One gate across the libraries (gate-parts.ts): this library's sets of its labeled books
+    // are saved; each view reads every library's (a labeled book is in one library).
+    const setsOf = (pick: (gid: string) => Set<string> | null) => {
+      const out: Record<string, string[]> = {};
+      for (const gid of labeledGids) {
+        const v = pick(gid);
+        if (v) out[gid] = [...v];
+      }
+      return out;
+    };
+    saveGatePart(this.db, STAGE, 'sets', this.deps.libraryId, {
+      models: setsOf((gid) => ownOf(gid, (s) => s.includes('models'))),
+      own: setsOf((gid) => ownOf(gid, () => true)),
+      noRanobedb: setsOf(unionOf(noRdb)),
+      final: setsOf(unionOf(union)),
+    });
+    type Sets = Record<'models' | 'own' | 'noRanobedb' | 'final', Record<string, string[]>>;
+    const parts = gateParts<Sets>(this.db, STAGE, 'sets', this.deps.libraryId);
+    const fromParts = (k: keyof Sets) => (gid: string) => {
+      for (const x of parts) if (x.data[k][gid]) return new Set(x.data[k][gid]);
+      return null;
+    };
     const g = {
-      models: view((gid) => ownOf(gid, (s) => s.includes('models'))),
-      own: view((gid) => ownOf(gid, () => true)),
-      noRanobedb: view(unionOf(noRdb)),
-      final: view(unionOf(union)),
+      models: view(fromParts('models')),
+      own: view(fromParts('own')),
+      noRanobedb: view(fromParts('noRanobedb')),
+      final: view(fromParts('final')),
     };
     const below = belowBars(g.final, settings.gate.stage5);
     const held = {

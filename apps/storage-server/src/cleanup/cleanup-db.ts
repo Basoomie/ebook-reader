@@ -2896,6 +2896,17 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
       CREATE INDEX calibre_known_books_uuid ON calibre_known_books (calibre_uuid);
       CREATE INDEX calibre_known_books_waiting ON calibre_known_books (library_id, origin, run_id);
 
+      -- One gate per stage across the libraries (gate-parts.ts): each library's part of it (its
+      -- labeled books' results); the gate is scored over every library's part together.
+      CREATE TABLE stage_gate_parts (
+        stage       INTEGER NOT NULL,
+        part        TEXT NOT NULL,
+        library_id  TEXT NOT NULL,
+        data_json   TEXT NOT NULL CHECK (json_valid(data_json)),
+        updated_at  INTEGER NOT NULL,
+        PRIMARY KEY (stage, part, library_id)
+      );
+
       DROP TABLE _v37_primary;
     `,
   },

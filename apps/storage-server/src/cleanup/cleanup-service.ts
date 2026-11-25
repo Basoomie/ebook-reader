@@ -1849,9 +1849,10 @@ export class CleanupService {
     const finished = this.db
       .prepare(
         `SELECT id, claimed_at AS claimedAt, finished_at AS finishedAt, item_count AS items FROM batches
-         WHERE stage = 5 AND kind = 'apply' AND state IN ('applied', 'partial') ORDER BY created_at DESC`,
+         WHERE stage = 5 AND library_id = ? AND kind = 'apply' AND state IN ('applied', 'partial')
+         ORDER BY created_at DESC`,
       )
-      .all() as (WriteBatchRow & { id: string })[];
+      .all(target) as (WriteBatchRow & { id: string })[];
     // Books written, each once: a book written again after stage 5 decided again (a newer
     // proposal) is not counted twice (the 2026-11-22 run showed 53,258 books for 53,229).
     // Counted in full once (355 ms on the live 53,258 rows; also when a batch was undone), then
@@ -2207,9 +2208,10 @@ export class CleanupService {
     const finished = this.db
       .prepare(
         `SELECT id, claimed_at AS claimedAt, finished_at AS finishedAt, item_count AS items FROM batches
-         WHERE stage = 4 AND kind = 'apply' AND state IN ('applied', 'partial') ORDER BY created_at DESC`,
+         WHERE stage = 4 AND library_id = ? AND kind = 'apply' AND state IN ('applied', 'partial')
+         ORDER BY created_at DESC`,
       )
-      .all() as (WriteBatchRow & { id: string })[];
+      .all(target) as (WriteBatchRow & { id: string })[];
     let doneBooks = 0;
     for (const bt of finished) {
       let k = P.batchBooks.get(bt.id);
@@ -2773,6 +2775,17 @@ export class CleanupService {
     if (!progress.gate?.passed) {
       P.waiting3 = `Not applying: the gate hasn't passed (${(progress.gate?.problems ?? ['not checked']).join('; ')})`;
       return;
+    }
+    // Manga part B: one gate across the libraries. The measured pairs and labeled books live in
+    // the library they were labeled in; another library's stage 3 applies only while that
+    // library's gate passes too.
+    for (const lib of this.cleanupLibraries()) {
+      if (lib === target) continue;
+      const other = this.lp(lib).analysis3?.progress();
+      if (other?.gate && !other.gate.passed) {
+        P.waiting3 = `Not applying: stage 3's gate of ${this.libraryName(lib)} hasn't passed`;
+        return;
+      }
     }
     if (this.batches.open()) {
       P.waiting3 = 'A batch is being applied';
@@ -3413,9 +3426,10 @@ export class CleanupService {
       .prepare(
         `SELECT COUNT(*) AS n, MIN(i.updated_at) AS first FROM batch_items i
          JOIN batches b ON b.id = i.batch_id
-         WHERE b.kind = 'apply' AND b.stage = 3 AND i.state = 'removed' AND i.updated_at >= ?`,
+         WHERE b.kind = 'apply' AND b.stage = 3 AND b.library_id = ? AND i.state = 'removed'
+           AND i.updated_at >= ?`,
       )
-      .get(now - PACE_WINDOW_MS) as { n: number; first: number | null };
+      .get(target ?? '', now - PACE_WINDOW_MS) as { n: number; first: number | null };
     const gate = p?.gate
       ? {
           ...p.gate,

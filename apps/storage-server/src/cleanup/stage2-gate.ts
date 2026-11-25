@@ -18,6 +18,7 @@ import fs from 'fs';
 import path from 'path';
 import { gateBar, type CleanupSettings } from './settings';
 import type { ApplyGroup, FieldProposal } from './stage2-rules';
+import { stageLibraries } from './stages';
 import {
   type GoldLabel,
   type GroupScore,
@@ -70,11 +71,33 @@ export function mapLabeledIds(
     .all(libraryId) as { removed_calibre_id: number; kept_calibre_id: number }[]) {
     removed.set(r.removed_calibre_id, r.kept_calibre_id);
   }
+  // Manga part B (answer 2 at stop 0: one gate across both libraries): a labeled book follows
+  // its move. The labels name the primary library's books (the oldest stage rows); a book moved
+  // out of it counts in the library it moved to, never in both.
+  const primary = stageLibraries(cleanup)[0] ?? libraryId;
+  const movedOut = new Set<number>();
+  const movedIn = new Map<number, number>();
+  for (const r of cleanup
+    .prepare(
+      `SELECT from_library_id, from_calibre_id, to_library_id, to_calibre_id FROM calibre_moves
+       WHERE state = 'moved' AND from_library_id = ?`,
+    )
+    .all(primary) as {
+    from_library_id: string;
+    from_calibre_id: number;
+    to_library_id: string;
+    to_calibre_id: number;
+  }[]) {
+    movedOut.add(r.from_calibre_id);
+    if (r.to_library_id === libraryId) movedIn.set(r.from_calibre_id, r.to_calibre_id);
+  }
   const out = new Map<string, number>();
   for (const id of goldIds) {
     const n = Number(id);
     if (!Number.isInteger(n)) continue;
-    out.set(id, removed.get(n) ?? n);
+    const m = libraryId === primary ? (removed.get(n) ?? n) : n;
+    if (movedIn.has(m)) out.set(id, movedIn.get(m)!);
+    else if (libraryId === primary && !movedOut.has(m)) out.set(id, m);
   }
   return out;
 }
