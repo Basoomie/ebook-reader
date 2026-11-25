@@ -1018,7 +1018,10 @@ export class BookArrivals {
     try {
       if (!run) {
         let id: number | null = null;
-        for (const lib of this.libraries()) {
+        // A library whose Run now was pressed goes first (one run at a time across them).
+        const libs = this.libraries();
+        const asked = libs.filter((l) => this.state(l).run_now);
+        for (const lib of [...asked, ...libs.filter((l) => !asked.includes(l))]) {
           id = this.maybeStart(lib);
           if (id !== null) break;
         }
