@@ -6,6 +6,9 @@
 
 import { LibraryApiError, send, type RequestOptions } from '$lib/library/api';
 import type {
+  CoverStore,
+  EarlierCovers,
+  StoreCover,
   EditForm,
   FieldStatus,
   HistoryEntry,
@@ -117,6 +120,73 @@ export class CalibreEditApi {
     return this.call('POST', `/books/${encodeURIComponent(bookId)}/calibre-edit/cover`, picture, {
       timeoutSeconds: 0
     });
+  }
+
+  /** A picture behind the login (the form shows it from a blob). */
+  private async picture(path: string): Promise<Blob> {
+    const response = await send(
+      this.fetchImpl,
+      `${this.serverUrl}/api/v1${path}`,
+      { method: 'GET', headers: { Authorization: `Bearer ${this.token}` } },
+      { timeoutSeconds: 0 }
+    );
+    if (!response.ok)
+      throw new EditApiError(response.status, 'picture', 'The picture could not be read');
+    return response.blob();
+  }
+
+  /** Book covers: every picture the book's cover has had that the server keeps. */
+  earlierCovers(bookId: string, options?: RequestOptions): Promise<EarlierCovers> {
+    return this.call(
+      'GET',
+      `/books/${encodeURIComponent(bookId)}/calibre-edit/covers`,
+      undefined,
+      options
+    );
+  }
+
+  earlierCoverPicture(bookId: string, sha256: string): Promise<Blob> {
+    return this.picture(
+      `/books/${encodeURIComponent(bookId)}/calibre-edit/covers/${encodeURIComponent(sha256)}`
+    );
+  }
+
+  /** An earlier cover, kept for the next save like an upload. */
+  useEarlierCover(bookId: string, sha256: string): Promise<{ token: string; sha256: string }> {
+    return this.call(
+      'POST',
+      `/books/${encodeURIComponent(bookId)}/calibre-edit/covers/${encodeURIComponent(sha256)}/use`,
+      {}
+    );
+  }
+
+  /** Book covers: the stores' pictures (asked through the server; `again` asks a failed one again). */
+  storeCovers(
+    bookId: string,
+    again = false,
+    options?: RequestOptions
+  ): Promise<{ stores: StoreCover[]; fetcher: boolean }> {
+    return this.call(
+      'GET',
+      `/books/${encodeURIComponent(bookId)}/calibre-edit/store-covers${again ? '?again=1' : ''}`,
+      undefined,
+      options
+    );
+  }
+
+  storeCoverPicture(bookId: string, store: CoverStore): Promise<Blob> {
+    return this.picture(
+      `/books/${encodeURIComponent(bookId)}/calibre-edit/store-covers/${store}/picture`
+    );
+  }
+
+  /** A store's picture, kept for the next save like an upload. */
+  useStoreCover(bookId: string, store: CoverStore): Promise<{ token: string; sha256: string }> {
+    return this.call(
+      'POST',
+      `/books/${encodeURIComponent(bookId)}/calibre-edit/store-covers/${store}/use`,
+      {}
+    );
   }
 
   history(bookId: string, options?: RequestOptions): Promise<{ entries: HistoryEntry[] }> {

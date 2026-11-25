@@ -12,6 +12,7 @@ import { EDIT_STAGE } from '../field-stages';
 import type { BookRef } from './catalog';
 import { EditError, sameValue, type EditField, type EditValues } from './fields';
 import { earlierIdentities } from '../move/rekey';
+import type { CoverArchive } from './cover-archive';
 
 export type HistoryWho = 'you' | 'cleanup' | 'calibre' | 'shared_rename' | 'confirm' | 'copied';
 
@@ -76,6 +77,7 @@ export function bookHistory(
   db: Database.Database,
   ref: BookRef,
   current: EditValues,
+  archive: CoverArchive | null = null,
 ): HistoryEntry[] {
   const out: HistoryEntry[] = [];
   const writes = db
@@ -126,8 +128,11 @@ export function bookHistory(
       nv = tagsAfter(before, JSON.parse(w.f_new) as { added?: string[]; removed?: string[] });
       old = before;
     }
+    // Book covers: the picture before the write, from the server's cover archive (else the
+    // sidecar's quarantine, for writes made before the archive and not imported).
+    const keptBefore = w.field === 'cover' ? (archive?.keptBefore(w.id) ?? null) : null;
     if (w.field === 'cover') {
-      old = w.old_cover_path ? 'picture' : null;
+      old = keptBefore || w.old_cover_path ? 'picture' : null;
       nv = 'picture';
     }
     const state: HistoryEntry['state'] =
@@ -161,7 +166,11 @@ export function bookHistory(
       undo: { possible: false, why: null, to: old },
     });
     if (w.field === 'cover')
-      out[out.length - 1].undo.to = w.old_cover_path ? { quarantine: w.old_cover_path } : null;
+      out[out.length - 1].undo.to = keptBefore
+        ? { archive: keptBefore }
+        : w.old_cover_path
+          ? { quarantine: w.old_cover_path }
+          : null;
   }
   // Manga part A: a moved book's writes and seen changes moved with it (move/rekey.ts); the tags
   // copied onto it by a removal are recorded under the identity it had then.
@@ -286,7 +295,8 @@ function markUndoable(entries: HistoryEntry[], current: EditValues): void {
       continue;
     }
     if (f === 'cover') {
-      if (e.who === 'calibre') why('Calibre doesn’t keep the earlier picture');
+      if (e.who === 'calibre')
+        why('Calibre doesn’t keep the earlier picture: pick it under Earlier covers if it’s there');
       else if (!e.undo.to) why('Calibre had no cover before, and a cover can’t be taken off');
       else e.undo.possible = true;
       continue;

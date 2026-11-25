@@ -5,6 +5,12 @@
  *   POST /books/:id/calibre-edit            save (409 shared_rename asks first; 422 refuses)
  *   GET  /books/:id/calibre-edit/status     each field's latest edit (polled while one is pending)
  *   POST /books/:id/calibre-edit/cover      a picture for the next save (its own bytes) → token
+ *   GET  /books/:id/calibre-edit/covers     book covers: the pictures the archive keeps (oldest first)
+ *   GET  /books/:id/calibre-edit/covers/:sha        one of them (only this book's)
+ *   POST /books/:id/calibre-edit/covers/:sha/use    it, for the next save → token
+ *   GET  /books/:id/calibre-edit/store-covers       the stores' pictures (?again=1 asks a failed one again)
+ *   GET  /books/:id/calibre-edit/store-covers/:store/picture   one store's picture
+ *   POST /books/:id/calibre-edit/store-covers/:store/use       it, for the next save → token
  *   GET  /books/:id/history                 the history of changes
  *   POST /books/:id/history/:entry/undo     Undo of one entry (the page asked first)
  *   GET  /calibre-series?library=&name=     the series editor
@@ -16,7 +22,8 @@
  * Off (503) when the cleanup is off: the sidecar that writes to Calibre is the cleanup's.
  */
 import express, { Router } from 'express';
-import { ApiError } from '../../api/errors';
+import { readFileSync } from 'fs';
+import { ApiError, asyncHandler } from '../../api/errors';
 import type { CleanupOptions } from '../routes';
 import { getSettings, isCustomTag, updateSettings } from '../settings';
 import {
@@ -27,7 +34,12 @@ import {
   type TagGroup,
 } from '../stage5/tag-list';
 import { EditError } from './fields';
-import { MAX_COVER_BYTES } from './edits';
+import { MAX_COVER_BYTES, pictureType } from './edits';
+
+const pictureMime = (b: Buffer): string => {
+  const t = pictureType(b);
+  return t === 'jpg' ? 'image/jpeg' : t ? `image/${t}` : 'application/octet-stream';
+};
 
 function service(options: CleanupOptions) {
   if (!options.service)
@@ -93,6 +105,65 @@ export function createEditRouter(options: CleanupOptions): Router {
     const bytes = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
     // Only a Calibre book can take a cover from here.
     wrap(() => s.edits.form(req.params.id))();
+    res.json(wrap(() => s.edits.storeCover(bytes))());
+  });
+
+  // Book covers (docs/design/book-covers.md): the earlier covers the archive keeps and the
+  // stores' pictures, both written like an upload when picked.
+  router.get(
+    '/books/:id/calibre-edit/covers',
+    asyncHandler(async (req, res) => {
+      const s = service(options);
+      try {
+        res.json(await s.edits.earlierCovers(req.params.id));
+      } catch (err) {
+        rethrow(err);
+      }
+    }),
+  );
+
+  router.get('/books/:id/calibre-edit/covers/:sha', (req, res) => {
+    const s = service(options);
+    const file = wrap(() => s.edits.archivedPicture(req.params.id, req.params.sha))();
+    if (!file) throw new ApiError(404, 'not_found', 'That cover is not in the archive');
+    res.setHeader('Cache-Control', 'private, max-age=31536000, immutable');
+    res.sendFile(file);
+  });
+
+  // Picking an earlier cover: kept for the next save like an upload (its token).
+  router.post('/books/:id/calibre-edit/covers/:sha/use', (req, res) => {
+    const s = service(options);
+    const file = wrap(() => s.edits.archivedPicture(req.params.id, req.params.sha))();
+    if (!file) throw new ApiError(404, 'not_found', 'That cover is not in the archive');
+    res.json(wrap(() => s.edits.storeCover(readFileSync(file)))());
+  });
+
+  router.get(
+    '/books/:id/calibre-edit/store-covers',
+    asyncHandler(async (req, res) => {
+      const s = service(options);
+      wrap(() => s.edits.form(req.params.id))();
+      try {
+        res.json(await s.storeCovers.view(req.params.id, req.query.again === '1'));
+      } catch (err) {
+        rethrow(err);
+      }
+    }),
+  );
+
+  router.get('/books/:id/calibre-edit/store-covers/:store/picture', (req, res) => {
+    const s = service(options);
+    const bytes = wrap(() => s.storeCovers.picture(req.params.id, req.params.store))();
+    res.setHeader('Content-Type', pictureMime(bytes));
+    res.setHeader('Cache-Control', 'private, no-cache');
+    res.end(bytes);
+  });
+
+  // Picking a store's picture: kept for the next save like an upload (its token).
+  router.post('/books/:id/calibre-edit/store-covers/:store/use', (req, res) => {
+    const s = service(options);
+    wrap(() => s.edits.form(req.params.id))();
+    const bytes = wrap(() => s.storeCovers.picture(req.params.id, req.params.store))();
     res.json(wrap(() => s.edits.storeCover(bytes))());
   });
 
