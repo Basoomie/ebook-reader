@@ -78,16 +78,27 @@ export function runBar(p: RunProgress, now = Date.now()): Bar {
   };
 }
 
-export function arrivalsStatus(a: BookArrivals, db: Database.Database, now = Date.now()) {
-  const s = a.state();
+export function arrivalsStatus(
+  a: BookArrivals,
+  db: Database.Database,
+  libraryId: string | null = null,
+  now = Date.now(),
+) {
+  // Manga part B: one library's arrivals (its mode, pairs, run and last run); a run of another
+  // library is named so the card can say this library's run waits for it.
+  const lib = libraryId ?? a.libraries()[0] ?? '';
+  const s = a.state(lib);
   const settings = getSettings(db);
-  const run = a.currentRun();
+  const current = a.currentRun();
+  const run = current && a.runLibrary(current) === lib ? current : null;
+  const otherRun = current && !run ? { id: current.id, libraryId: a.runLibrary(current) } : null;
   const last = db
     .prepare(
       `SELECT id, trigger, mode, state, started_at, finished_at, report_json, error FROM calibre_arrival_runs
-       WHERE state <> 'running' ORDER BY id DESC LIMIT 1`,
+       INDEXED BY calibre_arrival_runs_library
+       WHERE library_id = ? AND state <> 'running' ORDER BY id DESC LIMIT 1`,
     )
-    .get() as
+    .get(lib) as
     | {
         id: number;
         trigger: string;
@@ -99,66 +110,72 @@ export function arrivalsStatus(a: BookArrivals, db: Database.Database, now = Dat
         error: string | null;
       }
     | undefined;
-  const pairs = settings.arrivals.pairs.map((pr) => {
-    const key = `${pr.id}|${pr.source}`;
-    const row = db.prepare('SELECT * FROM calibre_arrival_pairs WHERE pair_key = ?').get(key) as
-      | { first_run_id: number | null; first_done_at: number | null }
-      | undefined;
-    const n = (outcomes: string[]) =>
-      (
+  const pairs = settings.arrivals.pairs
+    .filter((pr) => pr.libraryId === lib)
+    .map((pr) => {
+      const key = `${pr.id}|${pr.source}`;
+      const row = db.prepare('SELECT * FROM calibre_arrival_pairs WHERE pair_key = ?').get(key) as
+        | { first_run_id: number | null; first_done_at: number | null }
+        | undefined;
+      const n = (outcomes: string[]) =>
+        (
+          db
+            .prepare(
+              `SELECT COUNT(*) AS n FROM calibre_arrival_files INDEXED BY calibre_arrival_files_outcome
+             WHERE outcome IN (${outcomes.map(() => '?').join(', ')}) AND pair_key = ? AND gone_at IS NULL`,
+            )
+            .get(...outcomes, key) as { n: number }
+        ).n;
+      const waiting = (
         db
           .prepare(
             `SELECT COUNT(*) AS n FROM calibre_arrival_files INDEXED BY calibre_arrival_files_outcome
-             WHERE outcome IN (${outcomes.map(() => '?').join(', ')}) AND pair_key = ? AND gone_at IS NULL`,
-          )
-          .get(...outcomes, key) as { n: number }
-      ).n;
-    const waiting = (
-      db
-        .prepare(
-          `SELECT COUNT(*) AS n FROM calibre_arrival_files INDEXED BY calibre_arrival_files_outcome
            WHERE outcome IN ('pending', 'waiting') AND pair_key = ? AND gone_at IS NULL
              AND kind IN ('epub', 'archive', 'volume')`,
-        )
-        .get(key) as { n: number }
-    ).n;
-    return {
-      key,
-      id: pr.id,
-      source: pr.source,
-      libraryId: pr.libraryId,
-      firstRunId: row?.first_run_id ?? null,
-      // Done once every file was looked at; runs that start after it add when On.
-      firstDoneAt: row?.first_done_at ?? null,
-      // Compared books only (a stopped run can leave new books not compared yet).
-      wouldAdd: (
-        db
-          .prepare(
-            `SELECT COUNT(*) AS n FROM calibre_arrival_files INDEXED BY calibre_arrival_files_outcome
-             WHERE outcome IN ('new', 'better') AND pair_key = ? AND gone_at IS NULL
-               AND json_extract(facts_json, '$.compared') IS NOT NULL`,
           )
           .get(key) as { n: number }
-      ).n,
-      added: n(['added']),
-      // Books and archives not looked at yet (waiting to settle): a first run is done without any.
-      waiting,
-      settleMinutes: settings.arrivals.settleMinutes,
-    };
-  });
+      ).n;
+      return {
+        key,
+        id: pr.id,
+        source: pr.source,
+        libraryId: pr.libraryId,
+        firstRunId: row?.first_run_id ?? null,
+        // Done once every file was looked at; runs that start after it add when On.
+        firstDoneAt: row?.first_done_at ?? null,
+        // Compared books only (a stopped run can leave new books not compared yet).
+        wouldAdd: (
+          db
+            .prepare(
+              `SELECT COUNT(*) AS n FROM calibre_arrival_files INDEXED BY calibre_arrival_files_outcome
+             WHERE outcome IN ('new', 'better') AND pair_key = ? AND gone_at IS NULL
+               AND json_extract(facts_json, '$.compared') IS NOT NULL`,
+            )
+            .get(key) as { n: number }
+        ).n,
+        added: n(['added']),
+        // Books and archives not looked at yet (waiting to settle): a first run is done without any.
+        waiting,
+        settleMinutes: settings.arrivals.settleMinutes,
+      };
+    });
   const reviews = (
     db
       .prepare(
-        `SELECT COUNT(*) AS n FROM calibre_arrival_reviews INDEXED BY calibre_arrival_reviews_open WHERE decision IS NULL`,
+        `SELECT COUNT(*) AS n FROM calibre_arrival_reviews INDEXED BY calibre_arrival_reviews_open
+         WHERE decision IS NULL AND (run_id IS NULL OR run_id IN
+           (SELECT id FROM calibre_arrival_runs WHERE library_id = ?))`,
       )
-      .get() as { n: number }
+      .get(lib) as { n: number }
   ).n;
   return {
     mode: s.mode,
     pause: s.pause_reason
       ? { reason: s.pause_reason, detail: s.pause_detail, at: s.paused_at }
       : null,
-    nextRunAt: a.nextRunAt(now),
+    nextRunAt: a.nextRunAt(lib, now),
+    libraryId: lib,
+    otherRun,
     timeZone: settings.arrivals.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone,
     importProblem: a.importProblem(),
     design: settings.ai.booksArrivalsDesign,

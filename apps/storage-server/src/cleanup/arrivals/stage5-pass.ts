@@ -71,7 +71,7 @@ export class ArrivalStage5 {
 
   /** The sets the library's stage-5 gate holds back (its last result). */
   private held(): { genres: boolean; tags: boolean } {
-    const p = getStage(this.db, 5).progress as {
+    const p = getStage(this.db, this.deps.analysis.libraryId, 5).progress as {
       gate?: { held?: { genres: boolean; tags: boolean } };
     };
     return p.gate?.held ?? { genres: false, tags: false };

@@ -155,6 +155,8 @@ export type Stage4AiStep = 'done' | 'more' | 'wait';
 
 export interface Stage4AiDeps {
   db: Database.Database;
+  /** Manga part B: the reader library this instance works on (one instance per library). */
+  libraryId: string;
   runner: AiRunner;
   analysis: Stage4Analysis;
   log?: (m: string) => void;
@@ -280,7 +282,9 @@ export class Stage4Ai {
   private save(ai: Stage4AiProgress): void {
     const p = this.stage4();
     if (!p || p.analysisId !== ai.analysisId || p.finishedAt !== ai.rulesFinishedAt) return;
-    updateStage(this.db, STAGE, { progress: { ...p, ai } as unknown as Record<string, unknown> });
+    updateStage(this.db, this.deps.libraryId, STAGE, {
+      progress: { ...p, ai } as unknown as Record<string, unknown>,
+    });
   }
 
   private next(ai: Stage4AiProgress, phase: Stage4AiPhase): void {
@@ -392,7 +396,8 @@ export class Stage4Ai {
   }
 
   private unpause(): void {
-    if (getStage(this.db, STAGE).pauseReason === 'ai') resumeStage(this.db, STAGE);
+    if (getStage(this.db, this.deps.libraryId, STAGE).pauseReason === 'ai')
+      resumeStage(this.db, this.deps.libraryId, STAGE);
   }
 
   /**
@@ -715,9 +720,9 @@ export class Stage4Ai {
     ai.cost = runSpend(this.db, 'calibre4', ai.analysisId) as Stage4AiProgress['cost'];
     if (r.wait) {
       ai.wait = waitText(r.wait);
-      const st = getStage(this.db, STAGE);
+      const st = getStage(this.db, this.deps.libraryId, STAGE);
       if (waitNeedsUser(r.wait) && (st.pauseReason !== 'ai' || st.pauseDetail !== ai.wait)) {
-        pauseStage(this.db, STAGE, 'ai', ai.wait);
+        pauseStage(this.db, this.deps.libraryId, STAGE, 'ai', ai.wait);
         this.deps.log?.(`Stage 4: ${ai.wait}`);
       }
       if (r.pending === 0 && !waitNeedsUser(r.wait)) return 'done';
@@ -1044,12 +1049,13 @@ export class Stage4Ai {
             below.push(name);
             pauseField(
               this.db,
+              this.deps.libraryId,
               STAGE,
               name,
               'gate',
               `${s.autoPercent.toFixed(1)} % right on the labeled books after the AI check (bar ${bar} %)`,
             );
-          } else resumeField(this.db, STAGE, name);
+          } else resumeField(this.db, this.deps.libraryId, STAGE, name);
         }
       }
       ai.gate = { ...g, at: Date.now(), passed: g.books > 0 && below.length === 0, below };

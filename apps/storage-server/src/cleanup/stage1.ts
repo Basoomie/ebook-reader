@@ -219,6 +219,8 @@ const yieldNow = () => new Promise<void>((r) => setImmediate(r));
 
 export interface Stage1Deps {
   cleanup: Database.Database;
+  /** Manga part B: the reader library this instance works on (one instance per library). */
+  libraryId: string;
   main: Database.Database;
   calibreDir: string;
   cacheDir: string;
@@ -264,12 +266,13 @@ export class Stage1Analysis {
   constructor(private readonly deps: Stage1Deps) {}
 
   progress(): Stage1Progress | null {
-    const p = getStage(this.deps.cleanup, 1).progress as unknown as Stage1Progress;
+    const p = getStage(this.deps.cleanup, this.deps.libraryId, 1)
+      .progress as unknown as Stage1Progress;
     return p && typeof p.analysisId === 'string' ? p : null;
   }
 
   private save(p: Stage1Progress, state?: string): void {
-    updateStage(this.deps.cleanup, 1, {
+    updateStage(this.deps.cleanup, this.deps.libraryId, 1, {
       progress: p as unknown as Record<string, unknown>,
       ...(state ? { state } : {}),
     });

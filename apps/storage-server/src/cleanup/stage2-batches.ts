@@ -558,7 +558,7 @@ export class Stage2Batches {
     this.liftNameHolds(libraryId);
     const settings = getSettings(this.db);
     const paused = new Set(
-      listFieldPauses(this.db, this.stage).flatMap((p) =>
+      listFieldPauses(this.db, libraryId, this.stage).flatMap((p) =>
         this.stage === 4 ? (STAGE4_PAUSED_FIELDS[p.field] ?? [p.field]) : [p.field],
       ),
     );
@@ -583,7 +583,7 @@ export class Stage2Batches {
            }
          ORDER BY calibre_id, id`,
       )
-      .all(libraryId, opts.analysisId ?? currentAnalysisId(this.db, this.stage)) as {
+      .all(libraryId, opts.analysisId ?? currentAnalysisId(this.db, libraryId, this.stage)) as {
       id: number;
       calibre_id: number;
       calibre_uuid: string;
@@ -667,7 +667,7 @@ export class Stage2Batches {
     // for them is fitted now, with Calibre's current values, in every stage's batch.
     const needsTitle = this.fitLongNames(
       libraryId,
-      opts.analysisId ?? currentAnalysisId(this.db, this.stage),
+      opts.analysisId ?? currentAnalysisId(this.db, libraryId, this.stage),
       byBook,
       byUuid,
       snapshotTime(snapFile),
@@ -722,6 +722,7 @@ export class Stage2Batches {
     if (changedBooks > 0 && share > settings.libraryChangedPausePercent) {
       pauseStage(
         this.db,
+        libraryId,
         this.stage,
         'library_changed',
         `${changedBooks} of the next ${byBook.size} books changed in Calibre since the analysis. Nothing was written or skipped. Run the analysis again: writing goes on by itself after it.`,

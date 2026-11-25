@@ -131,6 +131,8 @@ export interface Stage3Book extends SnapshotBook {
 
 export interface Stage3Deps {
   cleanup: Database.Database;
+  /** Manga part B: the reader library this instance works on (one instance per library). */
+  libraryId: string;
   main: Database.Database;
   calibreDir: string;
   cacheDir: string;
@@ -468,12 +470,15 @@ export class WorkPipe<T> {
  * the failure, or (for a failure recorded before that was kept) the first step not complete.
  * The running server picks the analysis up on its next round.
  */
-export function resumeFailedStage3(db: Database.Database): {
+export function resumeFailedStage3(
+  db: Database.Database,
+  libraryId: string,
+): {
   ok: boolean;
   message: string;
   phase?: Stage3Phase;
 } {
-  const stage = getStage(db, 3);
+  const stage = getStage(db, libraryId, 3);
   const p = stage.progress as unknown as Stage3Progress | null;
   if (!p || typeof p.analysisId !== 'string') {
     return { ok: false, message: 'Stage 3 has no analysis to resume.' };
@@ -507,7 +512,10 @@ export function resumeFailedStage3(db: Database.Database): {
   delete p.failedPhase;
   p.phaseStartedAt = Date.now();
   p.phaseStartDone = 0;
-  updateStage(db, 3, { progress: p as unknown as Record<string, unknown>, state: 'analysing' });
+  updateStage(db, libraryId, 3, {
+    progress: p as unknown as Record<string, unknown>,
+    state: 'analysing',
+  });
   return {
     ok: true,
     phase,
@@ -543,9 +551,10 @@ export const STAGE3_WAITING_SQL = `(p.class = 'review' OR (p.class IN ('duplicat
  */
 export function recordReviewDecisions(
   db: Database.Database,
+  libraryId: string,
   input: unknown,
 ): { ok: boolean; message: string; recorded?: number; keptYours?: number } {
-  const p = getStage(db, 3).progress as unknown as Stage3Progress | null;
+  const p = getStage(db, libraryId, 3).progress as unknown as Stage3Progress | null;
   if (!p || typeof p.analysisId !== 'string') {
     return { ok: false, message: 'Stage 3 has no analysis.' };
   }
@@ -631,7 +640,7 @@ export function recordReviewDecisions(
     }
     // The server classifies and chooses the copies again on its next round.
     p.rulesKey = null;
-    updateStage(db, 3, { progress: p as unknown as Record<string, unknown> });
+    updateStage(db, libraryId, 3, { progress: p as unknown as Record<string, unknown> });
   })();
   return {
     ok: true,
@@ -687,12 +696,13 @@ export class Stage3Analysis {
   constructor(private readonly deps: Stage3Deps) {}
 
   progress(): Stage3Progress | null {
-    const p = getStage(this.deps.cleanup, 3).progress as unknown as Stage3Progress;
+    const p = getStage(this.deps.cleanup, this.deps.libraryId, 3)
+      .progress as unknown as Stage3Progress;
     return p && typeof p.analysisId === 'string' ? p : null;
   }
 
   private save(p: Stage3Progress, state?: string): void {
-    updateStage(this.deps.cleanup, 3, {
+    updateStage(this.deps.cleanup, this.deps.libraryId, 3, {
       progress: p as unknown as Record<string, unknown>,
       ...(state ? { state } : {}),
     });

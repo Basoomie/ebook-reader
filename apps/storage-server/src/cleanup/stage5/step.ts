@@ -161,6 +161,8 @@ export type Stage5StepResult = 'done' | 'more' | 'wait';
 
 export interface Stage5Deps {
   db: Database.Database;
+  /** Manga part B: the reader library this instance works on (one instance per library). */
+  libraryId: string;
   runner: AiRunner;
   analysis: Stage4Analysis;
   stage4Ai: Stage4Ai;
@@ -225,14 +227,14 @@ export class Stage5 {
   }
 
   progress(): Stage5Progress | null {
-    const p = getStage(this.db, STAGE).progress as unknown as Stage5Progress;
+    const p = getStage(this.db, this.deps.libraryId, STAGE).progress as unknown as Stage5Progress;
     return p && typeof p.analysisId === 'string' && typeof p.stage4AnalysisId === 'string'
       ? p
       : null;
   }
 
   private save(p: Stage5Progress, state?: string): void {
-    updateStage(this.db, STAGE, {
+    updateStage(this.db, this.deps.libraryId, STAGE, {
       progress: p as unknown as Record<string, unknown>,
       ...(state ? { state } : {}),
     });
@@ -710,9 +712,9 @@ export class Stage5 {
     p.cost = runSpend(this.db, 'calibre5', p.analysisId) as Stage5Progress['cost'];
     if (r.wait) {
       p.wait = waitText(r.wait);
-      const st = getStage(this.db, STAGE);
+      const st = getStage(this.db, this.deps.libraryId, STAGE);
       if (waitNeedsUser(r.wait) && (st.pauseReason !== 'ai' || st.pauseDetail !== p.wait)) {
-        pauseStage(this.db, STAGE, 'ai', p.wait);
+        pauseStage(this.db, this.deps.libraryId, STAGE, 'ai', p.wait);
         this.deps.log?.(`Stage 5: ${p.wait}`);
       }
       if (r.pending === 0 && !waitNeedsUser(r.wait)) return 'done';
@@ -720,7 +722,8 @@ export class Stage5 {
       return waitIsNote(r.wait) && (r.sent > 0 || r.answered > 0) ? 'more' : 'wait';
     }
     p.wait = null;
-    if (getStage(this.db, STAGE).pauseReason === 'ai') resumeStage(this.db, STAGE);
+    if (getStage(this.db, this.deps.libraryId, STAGE).pauseReason === 'ai')
+      resumeStage(this.db, this.deps.libraryId, STAGE);
     if (r.pending === 0) return 'done';
     return r.sent > 0 || r.answered > 0 ? 'more' : 'wait';
   }
@@ -887,8 +890,15 @@ export class Stage5 {
     };
     for (const set of ['genres', 'tags'] as const) {
       if (held[set])
-        pauseField(this.db, STAGE, set, 'gate', below.filter((b) => b.startsWith(set)).join('; '));
-      else resumeField(this.db, STAGE, set);
+        pauseField(
+          this.db,
+          this.deps.libraryId,
+          STAGE,
+          set,
+          'gate',
+          below.filter((b) => b.startsWith(set)).join('; '),
+        );
+      else resumeField(this.db, this.deps.libraryId, STAGE, set);
     }
     p.gate = {
       at: Date.now(),

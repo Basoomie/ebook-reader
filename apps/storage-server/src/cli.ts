@@ -93,7 +93,7 @@ import { rankEntries } from './audio/match';
 import { listLinks, resolveLink } from './audio/audio-links';
 import { createApplyToken, listApplyTokens, revokeApplyToken } from './cleanup/apply-tokens';
 import { initCleanupDatabase } from './cleanup/cleanup-db';
-import { listStages } from './cleanup/stages';
+import { listStages, stageLibraries } from './cleanup/stages';
 import { recordReviewDecisions, resumeFailedStage3 } from './cleanup/stage3';
 import { importDryRun, runAudioDryRun } from './cleanup/audio/dry-run';
 
@@ -369,6 +369,14 @@ const USAGE = `Usage:
   cli cleanup audio-import-dryrun <file>...  The live audiobook stages take over the dry runs' results
                                              (stage 1's hashes, stage 2's file checks), kept only for
                                              files that are unchanged when the live run walks them`;
+
+/** Manga part B: a cleanup command's library (--library <id>), else the primary library. */
+function cliLibrary(db: Database.Database, args: string[]): string {
+  const at = args.indexOf('--library');
+  const lib = at >= 0 ? args[at + 1] : stageLibraries(db)[0];
+  if (!lib) fail('No library: pass --library <reader library id>');
+  return lib;
+}
 
 function fail(message: string): never {
   console.error(message);
@@ -1049,7 +1057,8 @@ function cleanupCommand(command: string, rest: string[], env: Record<string, str
           fail(
             'cleanup resume needs the stage: only stage 3 can resume a failed analysis (cleanup resume 3)',
           );
-        const out = resumeFailedStage3(db);
+        // Manga part B: --library <reader library id>, else the primary library (the first one).
+        const out = resumeFailedStage3(db, cliLibrary(db, rest));
         console.log(out.message);
         if (!out.ok) process.exitCode = 1;
         break;
@@ -1064,7 +1073,7 @@ function cleanupCommand(command: string, rest: string[], env: Record<string, str
         } catch (err) {
           fail(`Can't read ${file}: ${(err as Error).message}`);
         }
-        const out = recordReviewDecisions(db, input);
+        const out = recordReviewDecisions(db, cliLibrary(db, rest), input);
         console.log(out.message);
         if (!out.ok) process.exitCode = 1;
         break;
@@ -1090,9 +1099,9 @@ function cleanupCommand(command: string, rest: string[], env: Record<string, str
         break;
       }
       case 'status': {
-        for (const s of listStages(db)) {
+        for (const s of stageLibraries(db).flatMap((l) => listStages(db, l))) {
           console.log(
-            `stage ${s.stage} ${s.name}: mode=${s.mode} state=${s.state}` +
+            `${s.libraryId} stage ${s.stage} ${s.name}: mode=${s.mode} state=${s.state}` +
               (s.pauseReason ? ` paused (${s.pauseReason}): ${s.pauseDetail ?? ''}` : ''),
           );
         }

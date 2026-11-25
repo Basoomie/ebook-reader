@@ -378,6 +378,8 @@ const NATIVELY_WAITER = 'natively';
 
 export interface Stage4Deps {
   cleanup: Database.Database;
+  /** Manga part B: the reader library this instance works on (one instance per library). */
+  libraryId: string;
   main: Database.Database;
   calibreDir: string;
   cacheDir: string;
@@ -598,6 +600,11 @@ export interface RefEvidence {
 }
 
 export class Stage4Analysis {
+  /** Manga part B: the library this analysis works on (one instance per library). */
+  get libraryId(): string {
+    return this.deps.libraryId;
+  }
+
   private snapshot: Stage2Snapshot | null = null;
   private extras: Map<number, Stage4Extras> | null = null;
   private snapshotFor: string | null = null;
@@ -738,7 +745,7 @@ export class Stage4Analysis {
   }
 
   progress(): Stage4Progress | null {
-    const p = getStage(this.db, STAGE).progress as unknown as Stage4Progress;
+    const p = getStage(this.db, this.deps.libraryId, STAGE).progress as unknown as Stage4Progress;
     return p && typeof p.analysisId === 'string' ? p : null;
   }
 
@@ -748,7 +755,7 @@ export class Stage4Analysis {
       this.arrivalSink?.(p);
       return;
     }
-    updateStage(this.db, STAGE, {
+    updateStage(this.db, this.deps.libraryId, STAGE, {
       progress: p as unknown as Record<string, unknown>,
       ...(state ? { state } : {}),
     });
@@ -3725,12 +3732,13 @@ ${f?.colophon_text ?? ''}`,
       if (below)
         pauseField(
           this.db,
+          this.deps.libraryId,
           STAGE,
           name,
           'gate',
           `${pct!.toFixed(1)} % right on the labeled books (bar ${bar} %)`,
         );
-      else resumeField(this.db, STAGE, name);
+      else resumeField(this.db, this.deps.libraryId, STAGE, name);
     }
     const precision = {
       gate: {
@@ -3740,7 +3748,7 @@ ${f?.colophon_text ?? ''}`,
         kind: { ...kind, percent: percent(kind.right, kind.all) },
       },
     };
-    updateStage(this.db, STAGE, { precision });
+    updateStage(this.db, this.deps.libraryId, STAGE, { precision });
     return precision;
   }
 }

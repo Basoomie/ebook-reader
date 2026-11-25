@@ -221,6 +221,11 @@ export interface RunProgress {
   waiting: string | null;
   pairs: { key: string; source: string; libraryId: string; firstRun: boolean }[];
   libraryId: string | null;
+  /**
+   * Manga part B: the other libraries a new copy is checked against (identical files, same
+   * text). Absent in a run made before (it checks its own library only, as it did).
+   */
+  otherLibraries?: string[];
   /** The run's books (Calibre ids) by where they came from. */
   scope: { import: number[]; hand: number[] };
   /** Pairs measured in compare: file id -> the library copy it lost to or beat. */
@@ -299,15 +304,21 @@ export interface ArrivalsDeps {
   sourcesDir: string | null;
   diskLock: DiskLock;
   batches: BatchService;
-  stage2: Stage2Analysis | null;
+  /** Manga part B: each library's own stage 2 and stage 4 (CleanupService.lp()). */
+  stage2: (libraryId: string) => Stage2Analysis | null;
   stage2Batches: Stage2Batches;
   stage4Batches: Stage2Batches;
   stage5Batches: Stage2Batches;
-  analysis4: Stage4Analysis | null;
+  analysis4: (libraryId: string) => Stage4Analysis | null;
   runner: AiRunner;
   reader: () => Stage3Reader;
   counterBuild: string;
   targetLibrary: () => string | null;
+  /**
+   * Manga part B: the Calibre libraries the cleanup works on, the primary one first (each has its
+   * own runs, mode and baseline; one run at a time across them). Absent: the primary one only.
+   */
+  libraries?: () => string[];
   /** Whether a stage's own analysis is running (an arrivals run never overlaps one). */
   libraryBusy: () => string | null;
   /** Asks the reader's index to copy metadata.db at once (books were added). */
@@ -322,7 +333,7 @@ export interface ArrivalsDeps {
   /** The source folders must be mounted read-only (tests on a writable temp folder: false). */
   requireReadOnlySources?: boolean;
   /** The safety checks (stage 0) every write waits for, as the stages' own writes do. */
-  checksPass?: () => { ok: boolean; failing: string[] };
+  checksPass?: (libraryId: string) => { ok: boolean; failing: string[] };
   /**
    * Manga part A: the move pass (its card's mode and target) and why its write must wait now.
    * Without it the run has no move phase (it goes from the check to the report).
@@ -348,6 +359,8 @@ interface StateRow {
 
 interface RunRow {
   id: number;
+  /** Manga part B (v37): the library the run works on. */
+  library_id: string | null;
   trigger: 'schedule' | 'now' | 'hand';
   mode: 'analyse' | 'on';
   state: 'running' | 'done' | 'failed' | 'stopped';
@@ -460,13 +473,14 @@ const NEXT_WRITE = { write2: 'write4', write4: 'write5', write5: 'check' } as co
 export class BookArrivals {
   readonly addBatches: ArrivalBatches;
   readonly archives: BookArchives;
-  private readonly ai4: ArrivalStage4Ai | null;
-  private readonly s5: ArrivalStage5 | null;
+  /** Stage 4's AI check and stage 5 for new books, per library (made on first use). */
+  private readonly ai4s = new Map<string, ArrivalStage4Ai | null>();
+  private readonly s5s = new Map<string, ArrivalStage5 | null>();
   private stepping = false;
   private stopRequested = false;
   private readonly log: (m: string) => void;
 
-  private settleCheckedAt = 0;
+  private readonly settleCheckedAt = new Map<string, number>();
   /** The compare stage's pace was started in this process. */
   /** The library lookup file this process built, per run (null: the reader has none). */
   private lookup: { run: number; file: string | null } | null = null;
@@ -478,21 +492,58 @@ export class BookArrivals {
     this.log = deps.log ?? (() => {});
     this.addBatches = new ArrivalBatches(deps.cleanup);
     this.archives = new BookArchives(deps.cleanup, (key) => this.rootOf(key));
-    this.ai4 = deps.analysis4
-      ? new ArrivalStage4Ai({
-          db: deps.cleanup,
-          runner: deps.runner,
-          analysis: deps.analysis4,
+  }
+
+  /** The library's stage 4 analysis, its arrival view saved in the run (never over its progress). */
+  private a4(libraryId: string): Stage4Analysis | null {
+    const a4 = this.deps.analysis4(libraryId);
+    if (a4 && !this.ai4s.has(libraryId)) {
+      a4.setArrivalSink((p) => this.saveStage4View(p));
+      this.ai4s.set(
+        libraryId,
+        new ArrivalStage4Ai({
+          db: this.deps.cleanup,
+          runner: this.deps.runner,
+          analysis: a4,
           log: this.log,
-        })
-      : null;
-    this.s5 = deps.analysis4
-      ? new ArrivalStage5({ db: deps.cleanup, runner: deps.runner, analysis: deps.analysis4 })
-      : null;
-    if (deps.analysis4) {
-      // An arrival view of stage 4 is saved in the run, never over the library's progress.
-      deps.analysis4.setArrivalSink((p) => this.saveStage4View(p));
+        }),
+      );
+      this.s5s.set(
+        libraryId,
+        new ArrivalStage5({ db: this.deps.cleanup, runner: this.deps.runner, analysis: a4 }),
+      );
     }
+    return a4;
+  }
+
+  private ai4Of(libraryId: string): ArrivalStage4Ai | null {
+    return this.a4(libraryId) ? (this.ai4s.get(libraryId) ?? null) : null;
+  }
+
+  private s5Of(libraryId: string): ArrivalStage5 | null {
+    return this.a4(libraryId) ? (this.s5s.get(libraryId) ?? null) : null;
+  }
+
+  /** The libraries whose arrivals run, the primary one first. */
+  libraries(): string[] {
+    const libs = this.deps.libraries?.() ?? [];
+    if (libs.length) return libs;
+    const primary = this.deps.targetLibrary();
+    return primary ? [primary] : [];
+  }
+
+  /**
+   * The library a call is about: the one named, else the current run's, else the primary one
+   * ('' when there is none: its state reads as Off).
+   */
+  private libOr(libraryId?: string | null): string {
+    if (libraryId) return libraryId;
+    const r = this.db
+      .prepare(
+        'SELECT library_id FROM calibre_arrivals_state WHERE current_run IS NOT NULL LIMIT 1',
+      )
+      .get() as { library_id: string } | undefined;
+    return r?.library_id ?? this.deps.targetLibrary() ?? '';
   }
   /** The Calibre library a source folder pair adds to. */
   private pairLibrary(pairKey: string): string {
@@ -508,18 +559,32 @@ export class BookArrivals {
 
   // ---------------------------------------------------------------- state
 
-  state(): StateRow {
-    return this.db.prepare('SELECT * FROM calibre_arrivals_state WHERE id = 1').get() as StateRow;
-  }
-
-  private setState(fields: Partial<Record<keyof StateRow, unknown>>): void {
-    const keys = Object.keys(fields);
-    if (!keys.length) return;
+  /** A library's state (its row is made on first read: Off). */
+  state(libraryId?: string | null): StateRow {
+    const lib = this.libOr(libraryId);
     this.db
       .prepare(
-        `UPDATE calibre_arrivals_state SET ${keys.map((k) => `${k} = @${k}`).join(', ')}, updated_at = @now WHERE id = 1`,
+        'INSERT OR IGNORE INTO calibre_arrivals_state (library_id, updated_at) VALUES (?, 0)',
       )
-      .run({ ...fields, now: Date.now() });
+      .run(lib);
+    return this.db
+      .prepare('SELECT * FROM calibre_arrivals_state WHERE library_id = ?')
+      .get(lib) as StateRow;
+  }
+
+  private setState(
+    fields: Partial<Record<keyof StateRow, unknown>>,
+    libraryId?: string | null,
+  ): void {
+    const keys = Object.keys(fields);
+    if (!keys.length) return;
+    const lib = this.libOr(libraryId);
+    this.state(lib);
+    this.db
+      .prepare(
+        `UPDATE calibre_arrivals_state SET ${keys.map((k) => `${k} = @${k}`).join(', ')}, updated_at = @now WHERE library_id = @lib`,
+      )
+      .run({ ...fields, now: Date.now(), lib });
   }
 
   /** The source folder of a pair, relative to the sources mount (and to the sidecar's torrents/). */
@@ -539,27 +604,33 @@ export class BookArrivals {
     return null;
   }
 
-  setMode(mode: 'off' | 'analyse' | 'on'): void {
-    this.setState({ mode });
+  setMode(mode: 'off' | 'analyse' | 'on', libraryId?: string | null): void {
+    const lib = this.libOr(libraryId);
+    this.setState({ mode }, lib);
     if (mode === 'off') {
       // Off stops the run that is going too (WP20g stop 2: it went on while Off).
-      this.stopRequested = true;
       const run = this.currentRun();
-      if (run) this.finish(run.id, run.p, 'stopped', 'Stopped: new arrivals set Off');
+      if (run && this.runLibrary(run) === lib) {
+        this.stopRequested = true;
+        this.finish(run.id, run.p, 'stopped', 'Stopped: new arrivals set Off');
+      }
     }
   }
 
-  requestRun(): void {
-    const s = this.state();
+  /** Run now: queued behind a run of another library (one run at a time). */
+  requestRun(libraryId?: string | null): void {
+    const lib = this.libOr(libraryId);
+    const s = this.state(lib);
     if (s.mode === 'off') throw new Error('New arrivals are Off: set Preview or On first');
     if (s.current_run !== null) throw new Error('A run is going on');
-    this.setState({ run_now: 1 });
+    this.setState({ run_now: 1 }, lib);
   }
 
   /** Stops the current run where it is (its batches already handed out finish on their own). */
   stopRun(): void {
     const run = this.currentRun();
     if (!run) return;
+    const lib = this.runLibrary(run);
     this.stopRequested = true;
     this.finish(run.id, run.p, 'stopped', 'Stopped on the page');
     // Nothing starts again by itself (WP20g stop 2: a scheduled run that was due started at
@@ -570,38 +641,42 @@ export class BookArrivals {
       scheduledRunDue(
         now,
         { arrivalsTime: a.time, arrivalsQuietStart: a.quietStart, arrivalsQuietEnd: a.quietEnd },
-        this.state().last_scheduled_day,
+        this.state(lib).last_scheduled_day,
         this.zone(),
       )
     )
-      this.setState({ last_scheduled_day: clockNow(now, this.zone()).day });
+      this.setState({ last_scheduled_day: clockNow(now, this.zone()).day }, lib);
   }
 
   /** The latest run was stopped (on the page or by Off): only a scheduled run or Run now next. */
-  private lastStopped(): boolean {
+  private lastStopped(libraryId: string): boolean {
     const r = this.db
-      .prepare('SELECT state FROM calibre_arrival_runs ORDER BY id DESC LIMIT 1')
-      .get() as { state: string } | undefined;
+      .prepare(
+        'SELECT state FROM calibre_arrival_runs WHERE library_id = ? ORDER BY id DESC LIMIT 1',
+      )
+      .get(libraryId) as { state: string } | undefined;
     return r?.state === 'stopped';
   }
 
-  resume(): void {
-    this.setState({ pause_reason: null, pause_detail: null, paused_at: null });
+  resume(libraryId?: string | null): void {
+    this.setState({ pause_reason: null, pause_detail: null, paused_at: null }, libraryId);
   }
 
-  private pause(reason: string, detail: string): void {
-    this.setState({
-      pause_reason: reason,
-      pause_detail: detail.slice(0, 1000),
-      paused_at: Date.now(),
-    });
+  private pause(reason: string, detail: string, libraryId: string): void {
+    this.setState(
+      {
+        pause_reason: reason,
+        pause_detail: detail.slice(0, 1000),
+        paused_at: Date.now(),
+      },
+      libraryId,
+    );
     this.log(`New arrivals paused (${reason}): ${detail}`);
   }
 
   /** The pairs as set, each recorded on first sight (a changed folder is a new pair). */
-  private syncPairs(now = Date.now()): RunProgress['pairs'] {
+  private syncPairs(target: string, now = Date.now()): RunProgress['pairs'] {
     const s = getSettings(this.db);
-    const target = this.deps.targetLibrary();
     const out: RunProgress['pairs'] = [];
     for (const p of s.arrivals.pairs) {
       const key = pairKeyOf(p);
@@ -614,8 +689,7 @@ export class BookArrivals {
       const r = this.db
         .prepare('SELECT * FROM calibre_arrival_pairs WHERE pair_key = ?')
         .get(key) as { first_done_at: number | null };
-      // Stages 1-5 run in the library the cleanup cleans: a pair into another library waits for
-      // the English follow-up (plan section 11).
+      // Manga part B: a run takes its own library's pairs (each library has its runs).
       if (p.libraryId !== target) continue;
       out.push({
         key,
@@ -629,13 +703,23 @@ export class BookArrivals {
 
   // ---------------------------------------------------------------- runs
 
+  /** The run going on, of whichever library (one at a time). */
   currentRun(): (RunRow & { p: RunProgress }) | null {
-    const s = this.state();
-    if (s.current_run === null) return null;
+    const s = this.db
+      .prepare(
+        'SELECT current_run FROM calibre_arrivals_state WHERE current_run IS NOT NULL LIMIT 1',
+      )
+      .get() as { current_run: number } | undefined;
+    if (!s) return null;
     const r = this.db
       .prepare('SELECT * FROM calibre_arrival_runs WHERE id = ?')
       .get(s.current_run) as RunRow | undefined;
     return r ? { ...r, p: JSON.parse(r.progress_json) as RunProgress } : null;
+  }
+
+  /** A run's library: its own (a run made before manga part B: the progress's, else the primary). */
+  runLibrary(run: { library_id?: string | null; p: RunProgress }): string {
+    return run.library_id ?? run.p.libraryId ?? this.deps.targetLibrary() ?? '';
   }
 
   private save(runId: number, p: RunProgress): void {
@@ -666,8 +750,8 @@ export class BookArrivals {
     return getSettings(this.db).arrivals.timeZone || undefined;
   }
 
-  nextRunAt(now = Date.now()): number | null {
-    const s = this.state();
+  nextRunAt(libraryId?: string | null, now = Date.now()): number | null {
+    const s = this.state(libraryId);
     if (s.mode === 'off') return null;
     const a = getSettings(this.db).arrivals;
     return nextScheduledRun(
@@ -679,11 +763,12 @@ export class BookArrivals {
   }
 
   /** Starts a run when one is due: Run now, the daily time, or books added by hand settled. */
-  maybeStart(now = Date.now()): number | null {
-    const s = this.state();
-    if (s.mode === 'off' || s.pause_reason || s.current_run !== null) return null;
-    const target = this.deps.targetLibrary();
+  maybeStart(target: string | null = this.deps.targetLibrary(), now = Date.now()): number | null {
     if (!target || !this.deps.calibreDir) return null;
+    const s = this.state(target);
+    if (s.mode === 'off' || s.pause_reason || s.current_run !== null) return null;
+    // One run at a time across the libraries.
+    if (this.currentRun()) return null;
     const a = getSettings(this.db).arrivals;
     const sched = {
       arrivalsTime: a.time,
@@ -695,42 +780,48 @@ export class BookArrivals {
     if (s.run_now) trigger = 'now';
     else if (scheduledRunDue(now, sched, s.last_scheduled_day, this.zone())) trigger = 'schedule';
     else if (
-      !this.lastStopped() &&
+      !this.lastStopped(target) &&
       (s.hand_checked_at === null || now - s.hand_checked_at >= a.handCheckMinutes * 60_000) &&
       this.handSettled(target, now).length > 0
     )
       trigger = 'hand';
     // Files waiting to settle that have settled since: a follow-up run looks at them now instead
     // of at the next day's run (checked at most once a minute).
-    else if (!this.lastStopped() && now - this.settleCheckedAt >= 60_000) {
-      this.settleCheckedAt = now;
-      if (this.settledWaiting(now)) {
+    else if (!this.lastStopped(target) && now - (this.settleCheckedAt.get(target) ?? 0) >= 60_000) {
+      this.settleCheckedAt.set(target, now);
+      if (this.settledWaiting(target, now)) {
         trigger = 'now';
         followUp = 'settle';
       }
     }
     if (s.hand_checked_at === null || now - s.hand_checked_at >= a.handCheckMinutes * 60_000)
-      this.setState({ hand_checked_at: now });
+      this.setState({ hand_checked_at: now }, target);
     if (!trigger) return null;
     const busy = this.deps.libraryBusy();
     if (busy) return null;
     const mode = s.mode === 'on' ? 'on' : 'analyse';
     const p = emptyProgress();
     p.libraryId = target;
+    // Manga part B: a run made now checks new copies against the other libraries too (a run made
+    // before has no such field and works as it did: run 7).
+    p.otherLibraries = this.libraries().filter((l) => l !== target);
     if (followUp) p.followUp = followUp;
     const id = Number(
       this.db
         .prepare(
-          `INSERT INTO calibre_arrival_runs (trigger, mode, state, phase, started_at, progress_json)
-           VALUES (?, ?, 'running', 'scan', ?, ?)`,
+          `INSERT INTO calibre_arrival_runs (trigger, mode, state, phase, started_at, progress_json, library_id)
+           VALUES (?, ?, 'running', 'scan', ?, ?, ?)`,
         )
-        .run(trigger, mode, now, JSON.stringify(p)).lastInsertRowid,
+        .run(trigger, mode, now, JSON.stringify(p), target).lastInsertRowid,
     );
-    this.setState({
-      current_run: id,
-      run_now: 0,
-      ...(trigger === 'schedule' ? { last_scheduled_day: clockNow(now, this.zone()).day } : {}),
-    });
+    this.setState(
+      {
+        current_run: id,
+        run_now: 0,
+        ...(trigger === 'schedule' ? { last_scheduled_day: clockNow(now, this.zone()).day } : {}),
+      },
+      target,
+    );
     this.log(
       `New arrivals: run ${id} started (${followUp ? 'files settled' : trigger}, ${mode === 'on' ? 'On' : 'Preview'})`,
     );
@@ -815,7 +906,8 @@ export class BookArrivals {
     const file = snapshotFile(this.deps.cacheDir, libraryId);
     if (!fs.existsSync(file)) return;
     const presence = readSnapshotPresence(file);
-    const s = this.state();
+    // Manga part B: each library's own baseline (its first look), never another library's.
+    const s = this.state(libraryId);
     const ins = this.db.prepare(
       `INSERT INTO calibre_known_books (library_id, calibre_id, calibre_uuid, origin, added_at)
        VALUES (?, ?, ?, ?, ?) ON CONFLICT(library_id, calibre_id) DO NOTHING`,
@@ -824,7 +916,7 @@ export class BookArrivals {
       this.db.transaction(() => {
         for (const [uuid, b] of presence) ins.run(libraryId, b.calibreId, uuid, 'baseline', now);
       })();
-      this.setState({ baseline_at: now });
+      this.setState({ baseline_at: now }, libraryId);
       return;
     }
     const known = new Set(
@@ -863,7 +955,7 @@ export class BookArrivals {
       .all(libraryId) as { calibre_id: number; added_at: number }[];
     // Books a Preview run took in were only shown: the first On run takes them in again and
     // analyses them as they are then (a Preview's proposals are never written later).
-    if (this.state().mode === 'on')
+    if (this.state(libraryId).mode === 'on')
       rows.push(
         ...(this.db
           .prepare(
@@ -895,14 +987,18 @@ export class BookArrivals {
     const shouldStop = () => this.stopRequested;
     let run = this.currentRun();
     // No run goes on while Off (a run started before Off was set is stopped here too).
-    if (run && this.state().mode === 'off') {
+    if (run && this.state(this.runLibrary(run)).mode === 'off') {
       this.finish(run.id, run.p, 'stopped', 'Stopped: new arrivals set Off');
       this.stepping = false;
       return 'idle';
     }
     try {
       if (!run) {
-        const id = this.maybeStart();
+        let id: number | null = null;
+        for (const lib of this.libraries()) {
+          id = this.maybeStart(lib);
+          if (id !== null) break;
+        }
         if (id === null) return 'idle';
         run = this.currentRun()!;
       }
@@ -916,7 +1012,7 @@ export class BookArrivals {
         const stop = err instanceof RunStop;
         const msg = (err as Error).message ?? String(err);
         this.finish(run.id, p, 'failed', msg);
-        this.pause(stop ? (err as RunStop).reason : 'failed', msg);
+        this.pause(stop ? (err as RunStop).reason : 'failed', msg, this.runLibrary(run));
       }
       this.log(`New arrivals: ${(err as Error).message}`);
       return 'idle';
@@ -951,7 +1047,7 @@ export class BookArrivals {
     p: RunProgress,
     shouldStop: () => boolean,
   ): Promise<'more' | 'wait' | 'idle'> {
-    const libraryId = p.libraryId ?? this.deps.targetLibrary();
+    const libraryId = p.libraryId ?? this.runLibrary(run);
     if (!libraryId || !this.deps.calibreDir)
       throw new RunStop('setup', 'The library to clean is not chosen');
     p.libraryId = libraryId;
@@ -988,17 +1084,17 @@ export class BookArrivals {
     const st = stageOf[p.phase];
     // A run without new books only writes what earlier runs held: a stage that is Off is passed.
     if (st !== undefined && this.emptyScope(p) && /^write/.test(p.phase)) {
-      if (getStage(this.db, st).mode === 'off') {
+      if (getStage(this.db, libraryId, st).mode === 'off') {
         this.next(run.id, p, NEXT_WRITE[p.phase as 'write2' | 'write4' | 'write5']);
         return 'more';
       }
-    } else if (st !== undefined && getStage(this.db, st).mode === 'off') {
+    } else if (st !== undefined && getStage(this.db, libraryId, st).mode === 'off') {
       p.waiting = `Waiting: stage ${st} is Off (set it to Preview or On)`;
       return 'wait';
     }
     switch (p.phase) {
       case 'scan': {
-        p.pairs = this.syncPairs();
+        p.pairs = this.syncPairs(libraryId);
         if (this.importProblem() || !p.pairs.length) {
           this.next(run.id, p, 'identify');
           return 'more';
@@ -1129,16 +1225,11 @@ export class BookArrivals {
       }
       case 'stage2': {
         const uuids = this.scopeUuids(p, libraryId);
-        if (this.deps.stage2 && uuids.length) {
+        const stage2 = this.deps.stage2(libraryId);
+        if (stage2 && uuids.length) {
           const n = await this.withDisk(
             p,
-            () =>
-              stage2Pass(
-                this.passDeps(run.id, libraryId, libDir),
-                this.deps.stage2!,
-                uuids,
-                shouldStop,
-              ),
+            () => stage2Pass(this.passDeps(run.id, libraryId, libDir), stage2, uuids, shouldStop),
             shouldStop,
           );
           if (n === null) return 'wait';
@@ -1158,12 +1249,13 @@ export class BookArrivals {
         return this.writeStep(run, p, libraryId, 4, this.emptyScope(p) ? 'write5' : 'stage5');
       case 'stage5': {
         const uuids = this.stage4Uuids(p);
-        if (!this.s5 || !p.stage4 || !uuids.length) {
+        const s5 = this.s5Of(libraryId);
+        if (!s5 || !p.stage4 || !uuids.length) {
           this.next(run.id, p, 'write5');
           return 'more';
         }
         p.s5 ??= emptyStage5Pass();
-        const r = await this.s5.step(p.stage4, p.s5, uuids, shouldStop);
+        const r = await s5.step(p.stage4, p.s5, uuids, shouldStop);
         p.cost = (p.ai?.cost ?? 0) + (p.s5.cost ?? 0);
         p.waiting = p.s5.wait;
         if (r === 'done') this.next(run.id, p, 'write5');
@@ -2175,9 +2267,9 @@ export class BookArrivals {
    * Whether some file of a folder set up now, waiting to settle, has settled (a follow-up run
    * looks at it; a folder no longer set up never starts one).
    */
-  private settledWaiting(now: number): boolean {
+  private settledWaiting(libraryId: string, now: number): boolean {
     const a = getSettings(this.db).arrivals;
-    const keys = a.pairs.map((x) => `${x.id}|${x.source}`);
+    const keys = a.pairs.filter((x) => x.libraryId === libraryId).map((x) => `${x.id}|${x.source}`);
     if (!keys.length) return false;
     const settleMs = a.settleMinutes * 60_000;
     return !!this.db
@@ -2219,7 +2311,7 @@ export class BookArrivals {
 
   /** Why a write (an add, a removal, a field write) must wait: the safety checks. */
   private checksWait(p: RunProgress): boolean {
-    const c = this.deps.checksPass?.();
+    const c = this.deps.checksPass?.(p.libraryId ?? this.deps.targetLibrary() ?? '');
     if (c && !c.ok) {
       p.waiting = `Waiting for the safety checks: ${c.failing.join('; ')}`;
       return true;
@@ -2730,7 +2822,7 @@ export class BookArrivals {
     libraryId: string,
     shouldStop: () => boolean,
   ): Promise<'more' | 'wait'> {
-    const a4 = this.deps.analysis4;
+    const a4 = this.a4(libraryId);
     const lib4 = a4?.progress() ?? null;
     if (!a4 || !lib4 || lib4.phase !== 'done') {
       if (a4 && lib4 && lib4.phase !== 'done') {
@@ -2772,11 +2864,12 @@ export class BookArrivals {
   private async aiStep(
     run: RunRow & { p: RunProgress },
     p: RunProgress,
-    _libraryId: string,
+    libraryId: string,
     shouldStop: () => boolean,
   ): Promise<'more' | 'wait'> {
-    const a4 = this.deps.analysis4;
-    if (!this.ai4 || !a4 || !p.stage4) {
+    const a4 = this.a4(libraryId);
+    const ai4 = this.ai4Of(libraryId);
+    if (!ai4 || !a4 || !p.stage4) {
       this.next(run.id, p, 'write4');
       return 'more';
     }
@@ -2784,7 +2877,7 @@ export class BookArrivals {
     if (design !== 'E' && !p.jGate) {
       const lib4 = a4.progress();
       if (lib4) {
-        const g = await this.ai4.jGate(lib4, design, shouldStop);
+        const g = await ai4.jGate(lib4, design, shouldStop);
         if (!g.gate) {
           p.waiting =
             g.wait ?? `Asking the stronger pair about the labeled books (the ${design} gate)`;
@@ -2798,7 +2891,7 @@ export class BookArrivals {
     }
     p.ai ??= emptyArrivalAi(design);
     const uuids = this.stage4Uuids(p);
-    const r = await this.ai4.step(p.stage4, p.ai, uuids, p.jGate, shouldStop);
+    const r = await ai4.step(p.stage4, p.ai, uuids, p.jGate, shouldStop);
     p.cost = p.ai.cost;
     p.waiting = p.ai.wait;
     const c = this.count(p, 'ai');
@@ -3203,7 +3296,11 @@ export class BookArrivals {
          WHERE id = ?`,
       )
       .run(state, t, JSON.stringify(p), JSON.stringify(report), error, runId);
-    this.setState({ current_run: null });
+    // The run's own library (its row: a run made before manga part B is the primary library's).
+    const owner = this.db
+      .prepare('SELECT library_id FROM calibre_arrivals_state WHERE current_run = ?')
+      .get(runId) as { library_id: string } | undefined;
+    if (owner) this.setState({ current_run: null }, owner.library_id);
     this.log(
       `New arrivals: run ${runId} ${state}: ${report.added} added, ${report.outcomes.identical ?? 0} identical, ${report.outcomes.duplicate ?? 0} same text, ${report.outcomes.not_imported ?? 0} not imported, ${report.newReview} new to review`,
     );

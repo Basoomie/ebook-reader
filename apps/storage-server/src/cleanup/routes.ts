@@ -52,6 +52,20 @@ function rethrow(err: unknown): never {
   throw err;
 }
 
+/**
+ * Manga part B: the Calibre library a request is about (?library=<reader library id>, or the
+ * body's library), else the primary library. A library the cleanup doesn't work on is refused.
+ */
+function libOf(service: CleanupService, req: Request): string | null {
+  const q = (req.query as Record<string, unknown>).library;
+  const b = (req.body as { library?: unknown } | undefined)?.library;
+  try {
+    return service.libraryOr(typeof q === 'string' && q ? q : b);
+  } catch (err) {
+    throw new ApiError(400, 'bad_library', (err as Error).message);
+  }
+}
+
 function serviceOr503(options: CleanupOptions): CleanupService {
   if (!options.service) {
     throw new ApiError(
@@ -839,12 +853,12 @@ export function createCleanupRouter(options: CleanupOptions): Router {
   const router = express.Router();
   addAudioRoutes(router, options);
 
-  router.get('/cleanup/status', (_req, res) => {
+  router.get('/cleanup/status', (req, res) => {
     if (!options.service) {
       res.json({ available: false, error: options.error ?? 'not set up' });
       return;
     }
-    res.json({ available: true, ...options.service.status() });
+    res.json({ available: true, ...options.service.status(libOf(options.service, req)) });
   });
 
   router.get('/cleanup/settings', (_req, res) => {
@@ -908,26 +922,26 @@ export function createCleanupRouter(options: CleanupOptions): Router {
       throw new ApiError(400, 'bad_request', 'mode must be off, analyse or on');
     }
     try {
-      service.setMode(stage, mode as StageMode);
+      service.setMode(libOf(service, req), stage, mode as StageMode);
     } catch (err) {
       throw new ApiError(409, 'not_available', (err as Error).message);
     }
-    res.json({ stage: getStage(service.db, stage) });
+    res.json({ stage: getStage(service.db, libOf(service, req) ?? '', stage) });
   });
 
   router.post('/cleanup/stages/:stage/resume', (req, res) => {
     const service = serviceOr503(options);
     const stage = parseStage(req.params.stage);
-    resumeStage(service.db, stage);
+    resumeStage(service.db, libOf(service, req) ?? '', stage);
     void service.tick();
-    res.json({ stage: getStage(service.db, stage) });
+    res.json({ stage: getStage(service.db, libOf(service, req) ?? '', stage) });
   });
 
   router.post('/cleanup/stages/:stage/analyse', (req, res) => {
     const service = serviceOr503(options);
     const stage = parseStage(req.params.stage);
     try {
-      res.json({ progress: service.reanalyse(stage) });
+      res.json({ progress: service.reanalyse(libOf(service, req), stage) });
     } catch (err) {
       throw new ApiError(409, 'not_available', (err as Error).message);
     }
@@ -941,7 +955,7 @@ export function createCleanupRouter(options: CleanupOptions): Router {
       throw new ApiError(404, 'not_found', 'No such field');
     }
     try {
-      service.resumeField(stage, req.params.field);
+      service.resumeField(libOf(service, req), stage, req.params.field);
     } catch (err) {
       throw new ApiError(409, 'not_available', (err as Error).message);
     }
@@ -957,8 +971,14 @@ export function createCleanupRouter(options: CleanupOptions): Router {
     const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 50));
     // Only what counts now: the current analysis's copies plus every queued, removed, brought
     // back or kept copy (older analyses' leftovers stay in their batches' history).
-    const where = ['stage = ?', `(${CURRENT_PROPOSALS_SQL} OR decided_by IS NOT NULL)`];
-    const params: unknown[] = [stage, currentAnalysisId(service.db, stage)];
+    // Manga part B: the proposals of the library asked about.
+    const lib = libOf(service, req) ?? '';
+    const where = [
+      'stage = ?',
+      'library_id = ?',
+      `(${CURRENT_PROPOSALS_SQL} OR decided_by IS NOT NULL)`,
+    ];
+    const params: unknown[] = [stage, lib, currentAnalysisId(service.db, lib, stage)];
     if (state) {
       where.push('state = ?');
       params.push(state);
@@ -989,20 +1009,23 @@ export function createCleanupRouter(options: CleanupOptions): Router {
   router.get('/cleanup/review', (req, res) => {
     const service = serviceOr503(options);
     const offset = Math.max(0, Number(req.query.offset) || 0);
+    const lib = libOf(service, req) ?? '';
     const rows = service.db
       .prepare(
         `SELECT id, stage, calibre_id, calibre_uuid, field, class, state, review_reason, source, evidence_json,
                 old_json, new_json
          FROM proposed_changes WHERE class = 'review' AND state = 'proposed' AND decided_by IS NULL
+           AND library_id = ?
          ORDER BY stage, review_reason, id LIMIT 50 OFFSET ?`,
       )
-      .all(offset) as Record<string, unknown>[];
+      .all(lib, offset) as Record<string, unknown>[];
     const total = (
       service.db
         .prepare(
-          `SELECT COUNT(*) AS n FROM proposed_changes WHERE class = 'review' AND state = 'proposed' AND decided_by IS NULL`,
+          `SELECT COUNT(*) AS n FROM proposed_changes WHERE class = 'review' AND state = 'proposed'
+             AND decided_by IS NULL AND library_id = ?`,
         )
-        .get() as { n: number }
+        .get(lib) as { n: number }
     ).n;
     res.json({ total, items: rows.map(proposalView) });
   });
@@ -1033,7 +1056,7 @@ export function createCleanupRouter(options: CleanupOptions): Router {
     const view = typeof req.query.view === 'string' ? req.query.view : 'review';
     try {
       res.json(
-        service.stage3Pairs(view, {
+        service.stage3Pairs(libOf(service, req), view, {
           cls: typeof req.query.class === 'string' ? req.query.class : undefined,
           offset: Math.max(0, Number(req.query.offset) || 0),
           limit: Math.min(200, Math.max(1, Number(req.query.limit) || 50)),
@@ -1060,7 +1083,7 @@ export function createCleanupRouter(options: CleanupOptions): Router {
       );
     }
     try {
-      service.decidePair(Number(req.params.id), decision);
+      service.decidePair(libOf(service, req), Number(req.params.id), decision);
     } catch (err) {
       throw new ApiError(404, 'not_found', (err as Error).message);
     }
@@ -1071,19 +1094,23 @@ export function createCleanupRouter(options: CleanupOptions): Router {
     const service = serviceOr503(options);
     try {
       res.json(
-        service.stage3Books(typeof req.query.view === 'string' ? req.query.view : 'omnibus', {
-          offset: Math.max(0, Number(req.query.offset) || 0),
-          limit: Math.min(200, Math.max(1, Number(req.query.limit) || 50)),
-        }),
+        service.stage3Books(
+          libOf(service, req),
+          typeof req.query.view === 'string' ? req.query.view : 'omnibus',
+          {
+            offset: Math.max(0, Number(req.query.offset) || 0),
+            limit: Math.min(200, Math.max(1, Number(req.query.limit) || 50)),
+          },
+        ),
       );
     } catch (err) {
       throw new ApiError(400, 'bad_request', (err as Error).message);
     }
   });
 
-  router.get('/cleanup/stage3/gate', (_req, res) => {
+  router.get('/cleanup/stage3/gate', (req, res) => {
     const service = serviceOr503(options);
-    res.json({ gate: service.stage3Gate() });
+    res.json({ gate: service.stage3Gate(libOf(service, req)) });
   });
 
   // ---------------------------------------------------------------- stage 4 (WP20d)
@@ -1094,7 +1121,7 @@ export function createCleanupRouter(options: CleanupOptions): Router {
     const offset = Math.max(0, Number(q.offset ?? 0) || 0);
     const limit = Math.min(200, Math.max(1, Number(q.limit ?? 50) || 50));
     res.json(
-      service.stage4Proposals({
+      service.stage4Proposals(libOf(service, req), {
         field: q.field ?? null,
         cls: q.class === 'auto' || q.class === 'review' ? q.class : null,
         source: q.source ?? null,
@@ -1106,19 +1133,21 @@ export function createCleanupRouter(options: CleanupOptions): Router {
 
   // ---- More Bookmeter coverage (step 2): the pass over stage 4's stored answers ----
 
-  const bookmeterOr503 = () => {
+  const bookmeterOr503 = (req: Request) => {
     const service = serviceOr503(options);
-    if (!service.bookmeter) throw new ApiError(503, 'no_calibre', 'No Calibre library is set up');
-    return { service, pass: service.bookmeter };
+    const lib = libOf(service, req);
+    const pass = service.lp(lib).bookmeter;
+    if (!pass) throw new ApiError(503, 'no_calibre', 'No Calibre library is set up');
+    return { service, pass, lib };
   };
 
-  router.get('/cleanup/bookmeter', (_req, res) => {
-    const { service } = bookmeterOr503();
-    res.json(service.bookmeterStatus(service.targetLibrary()));
+  router.get('/cleanup/bookmeter', (req, res) => {
+    const { service } = bookmeterOr503(req);
+    res.json(service.bookmeterStatus(libOf(service, req)));
   });
 
   router.put('/cleanup/bookmeter/mode', (req, res) => {
-    const { service, pass } = bookmeterOr503();
+    const { service, pass } = bookmeterOr503(req);
     const mode = (req.body as { mode?: unknown } | undefined)?.mode;
     if (mode !== 'off' && mode !== 'analyse' && mode !== 'on')
       throw new ApiError(400, 'bad_mode', 'mode must be off, analyse or on');
@@ -1127,13 +1156,13 @@ export function createCleanupRouter(options: CleanupOptions): Router {
     } catch (err) {
       throw new ApiError(409, 'not_now', (err as Error).message);
     }
-    service.bookmeterChanged();
-    res.json(service.bookmeterStatus(service.targetLibrary()));
+    service.bookmeterChanged(libOf(service, req));
+    res.json(service.bookmeterStatus(libOf(service, req)));
   });
 
   router.get('/cleanup/bookmeter/matches', (req, res) => {
-    const { service, pass } = bookmeterOr503();
-    const lib = service.targetLibrary();
+    const { service, pass } = bookmeterOr503(req);
+    const lib = libOf(service, req);
     const q = req.query as Record<string, string | undefined>;
     const offset = Math.max(0, Number(q.offset ?? 0) || 0);
     const limit = Math.min(100, Math.max(1, Number(q.limit ?? 20) || 20));
@@ -1146,9 +1175,9 @@ export function createCleanupRouter(options: CleanupOptions): Router {
     res.json(pass.listMatches(lib, pass.state().progress.run, source, offset, limit));
   });
 
-  router.get('/cleanup/bookmeter/spot', (_req, res) => {
-    const { service, pass } = bookmeterOr503();
-    const lib = service.targetLibrary();
+  router.get('/cleanup/bookmeter/spot', (req, res) => {
+    const { service, pass } = bookmeterOr503(req);
+    const lib = libOf(service, req);
     res.json({
       items: lib ? pass.listSpot(lib, pass.state().progress.run) : [],
       counts: pass.spotCounts(),
@@ -1157,7 +1186,7 @@ export function createCleanupRouter(options: CleanupOptions): Router {
   });
 
   router.put('/cleanup/bookmeter/spot/:uuid', (req, res) => {
-    const { service, pass } = bookmeterOr503();
+    const { service, pass } = bookmeterOr503(req);
     const v = (req.body as { verdict?: unknown } | undefined)?.verdict;
     if (v !== 'right' && v !== 'wrong' && v !== null)
       throw new ApiError(400, 'bad_verdict', 'verdict must be right, wrong or null');
@@ -1166,27 +1195,29 @@ export function createCleanupRouter(options: CleanupOptions): Router {
     } catch (err) {
       throw new ApiError(409, 'not_now', (err as Error).message);
     }
-    service.bookmeterChanged();
+    service.bookmeterChanged(libOf(service, req));
     res.json({ counts: pass.spotCounts(), passed: pass.spotPassed() });
   });
 
   // ---- More direct links: the pass over stage 4's stored store records ----
 
-  const linksOr503 = () => {
+  const linksOr503 = (req: Request) => {
     const service = serviceOr503(options);
-    if (!service.links) throw new ApiError(503, 'no_calibre', 'No Calibre library is set up');
-    return { service, pass: service.links };
+    const lib = libOf(service, req);
+    const pass = service.lp(lib).links;
+    if (!pass) throw new ApiError(503, 'no_calibre', 'No Calibre library is set up');
+    return { service, pass, lib };
   };
   const linkSite = (v: unknown) =>
     v === 'amazon' || v === 'ranobedb' || v === 'bookwalker' ? v : null;
 
-  router.get('/cleanup/links', (_req, res) => {
-    const { service } = linksOr503();
-    res.json(service.linksStatus(service.targetLibrary()));
+  router.get('/cleanup/links', (req, res) => {
+    const { service } = linksOr503(req);
+    res.json(service.linksStatus(libOf(service, req)));
   });
 
   router.put('/cleanup/links/mode', (req, res) => {
-    const { service, pass } = linksOr503();
+    const { service, pass } = linksOr503(req);
     const mode = (req.body as { mode?: unknown } | undefined)?.mode;
     if (mode !== 'off' && mode !== 'analyse' && mode !== 'on')
       throw new ApiError(400, 'bad_mode', 'mode must be off, analyse or on');
@@ -1195,24 +1226,24 @@ export function createCleanupRouter(options: CleanupOptions): Router {
     } catch (err) {
       throw new ApiError(409, 'not_now', (err as Error).message);
     }
-    service.linksChanged();
-    res.json(service.linksStatus(service.targetLibrary()));
+    service.linksChanged(libOf(service, req));
+    res.json(service.linksStatus(libOf(service, req)));
   });
 
-  router.post('/cleanup/links/again', (_req, res) => {
-    const { service, pass } = linksOr503();
+  router.post('/cleanup/links/again', (req, res) => {
+    const { service, pass } = linksOr503(req);
     try {
       pass.again();
     } catch (err) {
       throw new ApiError(409, 'not_now', (err as Error).message);
     }
-    service.linksChanged();
-    res.json(service.linksStatus(service.targetLibrary()));
+    service.linksChanged(libOf(service, req));
+    res.json(service.linksStatus(libOf(service, req)));
   });
 
   router.get('/cleanup/links/list', (req, res) => {
-    const { service, pass } = linksOr503();
-    const lib = service.targetLibrary();
+    const { service, pass } = linksOr503(req);
+    const lib = libOf(service, req);
     const q = req.query as Record<string, string | undefined>;
     const offset = Math.max(0, Number(q.offset ?? 0) || 0);
     const limit = Math.min(100, Math.max(1, Number(q.limit ?? 20) || 20));
@@ -1234,9 +1265,9 @@ export function createCleanupRouter(options: CleanupOptions): Router {
     );
   });
 
-  router.get('/cleanup/links/spot', (_req, res) => {
-    const { service, pass } = linksOr503();
-    const lib = service.targetLibrary();
+  router.get('/cleanup/links/spot', (req, res) => {
+    const { service, pass } = linksOr503(req);
+    const lib = libOf(service, req);
     res.json({
       items: lib ? pass.listSpot(lib, pass.state().progress.run) : [],
       counts: pass.spotCounts(),
@@ -1245,7 +1276,7 @@ export function createCleanupRouter(options: CleanupOptions): Router {
   });
 
   router.put('/cleanup/links/spot/:uuid/:site', (req, res) => {
-    const { service, pass } = linksOr503();
+    const { service, pass } = linksOr503(req);
     const v = (req.body as { verdict?: unknown } | undefined)?.verdict;
     const site = linkSite(req.params.site);
     if (v !== 'right' && v !== 'wrong' && v !== null)
@@ -1256,16 +1287,18 @@ export function createCleanupRouter(options: CleanupOptions): Router {
     } catch (err) {
       throw new ApiError(409, 'not_now', (err as Error).message);
     }
-    service.linksChanged();
+    service.linksChanged(libOf(service, req));
     res.json({ counts: pass.spotCounts(), passed: pass.spotPassed() });
   });
 
   // ---- Bookmeter links: the listing readers log (bookmeter-listings.md) ----
 
-  const listingsOr503 = () => {
+  const listingsOr503 = (req: Request) => {
     const service = serviceOr503(options);
-    if (!service.listings) throw new ApiError(503, 'no_calibre', 'No Calibre library is set up');
-    return { service, pass: service.listings };
+    const lib = libOf(service, req);
+    const pass = service.lp(lib).listings;
+    if (!pass) throw new ApiError(503, 'no_calibre', 'No Calibre library is set up');
+    return { service, pass, lib };
   };
   const LISTING_STATES = [
     'change',
@@ -1278,13 +1311,13 @@ export function createCleanupRouter(options: CleanupOptions): Router {
     'yours',
   ] as const;
 
-  router.get('/cleanup/bookmeter-links', (_req, res) => {
-    const { service } = listingsOr503();
-    res.json(service.listingsStatus(service.targetLibrary()));
+  router.get('/cleanup/bookmeter-links', (req, res) => {
+    const { service } = listingsOr503(req);
+    res.json(service.listingsStatus(libOf(service, req)));
   });
 
   router.put('/cleanup/bookmeter-links/mode', (req, res) => {
-    const { service, pass } = listingsOr503();
+    const { service, pass } = listingsOr503(req);
     const mode = (req.body as { mode?: unknown } | undefined)?.mode;
     if (mode !== 'off' && mode !== 'analyse' && mode !== 'on')
       throw new ApiError(400, 'bad_mode', 'mode must be off, analyse or on');
@@ -1293,24 +1326,24 @@ export function createCleanupRouter(options: CleanupOptions): Router {
     } catch (err) {
       throw new ApiError(409, 'not_now', (err as Error).message);
     }
-    service.listingsChanged();
-    res.json(service.listingsStatus(service.targetLibrary()));
+    service.listingsChanged(libOf(service, req));
+    res.json(service.listingsStatus(libOf(service, req)));
   });
 
-  router.post('/cleanup/bookmeter-links/again', (_req, res) => {
-    const { service, pass } = listingsOr503();
+  router.post('/cleanup/bookmeter-links/again', (req, res) => {
+    const { service, pass } = listingsOr503(req);
     try {
       pass.again();
     } catch (err) {
       throw new ApiError(409, 'not_now', (err as Error).message);
     }
-    service.listingsChanged();
-    res.json(service.listingsStatus(service.targetLibrary()));
+    service.listingsChanged(libOf(service, req));
+    res.json(service.listingsStatus(libOf(service, req)));
   });
 
   router.get('/cleanup/bookmeter-links/list', (req, res) => {
-    const { service, pass } = listingsOr503();
-    const lib = service.targetLibrary();
+    const { service, pass } = listingsOr503(req);
+    const lib = libOf(service, req);
     const q = req.query as Record<string, string | undefined>;
     const offset = Math.max(0, Number(q.offset ?? 0) || 0);
     const limit = Math.min(100, Math.max(1, Number(q.limit ?? 20) || 20));
@@ -1324,9 +1357,9 @@ export function createCleanupRouter(options: CleanupOptions): Router {
     res.json(pass.listBooks(lib, pass.state().progress.run, state, offset, limit));
   });
 
-  router.get('/cleanup/bookmeter-links/spot', (_req, res) => {
-    const { service, pass } = listingsOr503();
-    const lib = service.targetLibrary();
+  router.get('/cleanup/bookmeter-links/spot', (req, res) => {
+    const { service, pass } = listingsOr503(req);
+    const lib = libOf(service, req);
     res.json({
       items: lib ? pass.listSpot(lib, pass.state().progress.run) : [],
       counts: pass.spotCounts(),
@@ -1335,7 +1368,7 @@ export function createCleanupRouter(options: CleanupOptions): Router {
   });
 
   router.put('/cleanup/bookmeter-links/spot/:uuid', (req, res) => {
-    const { service, pass } = listingsOr503();
+    const { service, pass } = listingsOr503(req);
     const v = (req.body as { verdict?: unknown } | undefined)?.verdict;
     if (v !== 'right' && v !== 'wrong' && v !== null)
       throw new ApiError(400, 'bad_verdict', 'verdict must be right, wrong or null');
@@ -1344,43 +1377,45 @@ export function createCleanupRouter(options: CleanupOptions): Router {
     } catch (err) {
       throw new ApiError(409, 'not_now', (err as Error).message);
     }
-    service.listingsChanged();
+    service.listingsChanged(libOf(service, req));
     res.json({ counts: pass.spotCounts(), passed: pass.spotPassed() });
   });
 
   // ---- Tier 4, Part 3: series under a short and a full name ----
 
-  const seriesPairsOr503 = () => {
+  const seriesPairsOr503 = (req: Request) => {
     const service = serviceOr503(options);
-    if (!service.seriesPairs) throw new ApiError(503, 'no_calibre', 'No Calibre library is set up');
-    return { service, pass: service.seriesPairs };
+    const lib = libOf(service, req);
+    const pass = service.lp(lib).seriesPairs;
+    if (!pass) throw new ApiError(503, 'no_calibre', 'No Calibre library is set up');
+    return { service, pass, lib };
   };
 
-  router.get('/cleanup/series-pairs', (_req, res) => {
-    const { service } = seriesPairsOr503();
-    res.json(service.seriesPairsStatus(service.targetLibrary()));
+  router.get('/cleanup/series-pairs', (req, res) => {
+    const { service } = seriesPairsOr503(req);
+    res.json(service.seriesPairsStatus(libOf(service, req)));
   });
 
   router.put('/cleanup/series-pairs/mode', (req, res) => {
-    const { service, pass } = seriesPairsOr503();
+    const { service, pass } = seriesPairsOr503(req);
     const mode = (req.body as { mode?: unknown } | undefined)?.mode;
     if (mode !== 'off' && mode !== 'analyse' && mode !== 'on')
       throw new ApiError(400, 'bad_mode', 'mode must be off, analyse or on');
     pass.setMode(mode);
-    service.seriesPairsChanged();
-    res.json(service.seriesPairsStatus(service.targetLibrary()));
+    service.seriesPairsChanged(libOf(service, req));
+    res.json(service.seriesPairsStatus(libOf(service, req)));
   });
 
-  router.post('/cleanup/series-pairs/again', (_req, res) => {
-    const { service, pass } = seriesPairsOr503();
+  router.post('/cleanup/series-pairs/again', (req, res) => {
+    const { service, pass } = seriesPairsOr503(req);
     pass.again();
-    service.seriesPairsChanged();
-    res.json(service.seriesPairsStatus(service.targetLibrary()));
+    service.seriesPairsChanged(libOf(service, req));
+    res.json(service.seriesPairsStatus(libOf(service, req)));
   });
 
   router.get('/cleanup/series-pairs/pairs', (req, res) => {
-    const { service, pass } = seriesPairsOr503();
-    const lib = service.targetLibrary();
+    const { service, pass } = seriesPairsOr503(req);
+    const lib = libOf(service, req);
     const q = req.query as Record<string, string | undefined>;
     const view =
       q.view === 'merge' || q.view === 'separate' || q.view === 'decided' ? q.view : 'review';
@@ -1390,8 +1425,8 @@ export function createCleanupRouter(options: CleanupOptions): Router {
   });
 
   router.post('/cleanup/series-pairs/pairs/:id', (req, res) => {
-    const { service, pass } = seriesPairsOr503();
-    const lib = service.targetLibrary();
+    const { service, pass } = seriesPairsOr503(req);
+    const lib = libOf(service, req);
     if (!lib) throw new ApiError(409, 'not_now', 'No library is chosen for the cleanup');
     const choice = (req.body as { choice?: unknown } | undefined)?.choice;
     if (choice !== 'merge' && choice !== 'separate' && choice !== 'clear')
@@ -1402,7 +1437,7 @@ export function createCleanupRouter(options: CleanupOptions): Router {
     } catch (err) {
       throw new ApiError(409, 'not_now', (err as Error).message);
     }
-    service.seriesPairsChanged();
+    service.seriesPairsChanged(libOf(service, req));
     res.json(pair);
   });
 
@@ -1493,9 +1528,9 @@ export function createCleanupRouter(options: CleanupOptions): Router {
 
   // ---- WP20g: the Calibre library's new arrivals ----
 
-  router.get('/cleanup/arrivals', (_req, res) => {
+  router.get('/cleanup/arrivals', (req, res) => {
     const service = serviceOr503(options);
-    res.json(arrivalsStatus(service.arrivals, service.db));
+    res.json(arrivalsStatus(service.arrivals, service.db, libOf(service, req)));
   });
 
   router.put('/cleanup/arrivals/mode', (req, res) => {
@@ -1503,33 +1538,33 @@ export function createCleanupRouter(options: CleanupOptions): Router {
     const mode = (req.body as { mode?: unknown } | undefined)?.mode;
     if (mode !== 'off' && mode !== 'analyse' && mode !== 'on')
       throw new ApiError(400, 'bad_mode', 'mode must be off, analyse or on');
-    service.arrivals.setMode(mode);
+    service.arrivals.setMode(mode, libOf(service, req));
     void service.tick();
-    res.json(arrivalsStatus(service.arrivals, service.db));
+    res.json(arrivalsStatus(service.arrivals, service.db, libOf(service, req)));
   });
 
-  router.post('/cleanup/arrivals/run-now', (_req, res) => {
+  router.post('/cleanup/arrivals/run-now', (req, res) => {
     const service = serviceOr503(options);
     try {
-      service.arrivals.requestRun();
+      service.arrivals.requestRun(libOf(service, req));
     } catch (err) {
       throw new ApiError(409, 'not_now', (err as Error).message);
     }
     void service.tick();
-    res.json(arrivalsStatus(service.arrivals, service.db));
+    res.json(arrivalsStatus(service.arrivals, service.db, libOf(service, req)));
   });
 
-  router.post('/cleanup/arrivals/stop', (_req, res) => {
+  router.post('/cleanup/arrivals/stop', (req, res) => {
     const service = serviceOr503(options);
     service.arrivals.stopRun();
-    res.json(arrivalsStatus(service.arrivals, service.db));
+    res.json(arrivalsStatus(service.arrivals, service.db, libOf(service, req)));
   });
 
-  router.post('/cleanup/arrivals/resume', (_req, res) => {
+  router.post('/cleanup/arrivals/resume', (req, res) => {
     const service = serviceOr503(options);
-    service.arrivals.resume();
+    service.arrivals.resume(libOf(service, req));
     void service.tick();
-    res.json(arrivalsStatus(service.arrivals, service.db));
+    res.json(arrivalsStatus(service.arrivals, service.db, libOf(service, req)));
   });
 
   router.get('/cleanup/arrivals/lists/:list', (req, res) => {
@@ -1585,7 +1620,14 @@ export function createCleanupRouter(options: CleanupOptions): Router {
     const q = req.query as Record<string, string | undefined>;
     const offset = Math.max(0, Number(q.offset ?? 0) || 0);
     const limit = Math.min(100, Math.max(1, Number(q.limit ?? 20) || 20));
-    res.json(service.stage4Guesses(q.kind === 'other' ? 'other' : 'series', offset, limit));
+    res.json(
+      service.stage4Guesses(
+        libOf(service, req),
+        q.kind === 'other' ? 'other' : 'series',
+        offset,
+        limit,
+      ),
+    );
   });
 
   router.get('/cleanup/titles/shortened', (req, res) => {
@@ -1593,7 +1635,7 @@ export function createCleanupRouter(options: CleanupOptions): Router {
     const q = req.query as Record<string, string | undefined>;
     const offset = Math.max(0, Number(q.offset ?? 0) || 0);
     const limit = Math.min(100, Math.max(1, Number(q.limit ?? 20) || 20));
-    res.json(service.titleFits(offset, limit));
+    res.json(service.titleFits(libOf(service, req), offset, limit));
   });
 
   router.get('/cleanup/stage4/readings', (req, res) => {
@@ -1609,15 +1651,15 @@ export function createCleanupRouter(options: CleanupOptions): Router {
     res.json({ ok: true });
   });
 
-  router.post('/cleanup/stage4/ai/ask-again', (_req, res) => {
+  router.post('/cleanup/stage4/ai/ask-again', (req, res) => {
     const service = serviceOr503(options);
-    res.json(service.askStage4AiAgain());
+    res.json(service.askStage4AiAgain(libOf(service, req)));
   });
 
-  router.post('/cleanup/stage4/repropose-undone', async (_req, res, next) => {
+  router.post('/cleanup/stage4/repropose-undone', async (req, res, next) => {
     try {
       const service = serviceOr503(options);
-      res.json(await service.reproposeStage4Undone());
+      res.json(await service.reproposeStage4Undone(libOf(service, req)));
     } catch (err) {
       next(err);
     }
@@ -1634,17 +1676,17 @@ export function createCleanupRouter(options: CleanupOptions): Router {
       ? (q.state as string)
       : 'proposed';
     const outside = q.outside === '1' ? true : q.outside === '0' ? false : null;
-    res.json(service.stage5Proposals({ state, outside, offset, limit }));
+    res.json(service.stage5Proposals(libOf(service, req), { state, outside, offset, limit }));
   });
 
-  router.post('/cleanup/stage5/ai/ask-again', (_req, res) => {
+  router.post('/cleanup/stage5/ai/ask-again', (req, res) => {
     const service = serviceOr503(options);
-    res.json(service.askStage5AiAgain());
+    res.json(service.askStage5AiAgain(libOf(service, req)));
   });
 
   router.post('/cleanup/stage4/sites/:site/retry', (req, res) => {
     const service = serviceOr503(options);
-    res.json({ retried: service.retryStage4Site(req.params.site) });
+    res.json({ retried: service.retryStage4Site(libOf(service, req), req.params.site) });
   });
 
   router.get('/cleanup/batches', (_req, res) => {
@@ -1680,19 +1722,20 @@ export function createCleanupRouter(options: CleanupOptions): Router {
   router.get('/cleanup/spot-check', (req, res) => {
     const service = serviceOr503(options);
     const stage = parseStage(String(req.query.stage ?? '1'));
+    const lib = libOf(service, req) ?? '';
     const rows = service.db
       .prepare(
         stage === 2
           ? `SELECT c.id, c.calibre_id, c.calibre_uuid, c.state, c.batch_id, c.field, c.source,
                     c.old_json, c.new_json, c.evidence_json, f.last_modified_after
              FROM proposed_changes c LEFT JOIN field_undo f ON f.change_id = c.id AND f.batch_id = c.batch_id
-             WHERE c.stage = 2 AND c.state = 'applied' ORDER BY RANDOM() LIMIT 30`
+             WHERE c.stage = 2 AND c.library_id = ? AND c.state = 'applied' ORDER BY RANDOM() LIMIT 30`
           : `SELECT c.id, c.calibre_id, c.calibre_uuid, c.state, c.batch_id, c.evidence_json,
                 u.handoff_json, u.quarantine_dir
          FROM proposed_changes c LEFT JOIN undo_records u ON u.change_id = c.id
-         WHERE c.stage = ? AND c.state = 'applied' ORDER BY RANDOM() LIMIT 30`,
+         WHERE c.stage = ? AND c.library_id = ? AND c.state = 'applied' ORDER BY RANDOM() LIMIT 30`,
       )
-      .all(...(stage === 2 ? [] : [stage])) as Record<string, unknown>[];
+      .all(...(stage === 2 ? [lib] : [stage, lib])) as Record<string, unknown>[];
     res.json({ items: rows.map(proposalView) });
   });
 

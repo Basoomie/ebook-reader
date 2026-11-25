@@ -263,8 +263,13 @@ export interface BlState0 {
   updatedAt: number;
 }
 
-export function getBlState(db: Database.Database): BlState0 {
-  const r = db.prepare('SELECT * FROM bookmeter_listing_state WHERE id = 1').get() as {
+export function getBlState(db: Database.Database, libraryId: string): BlState0 {
+  db.prepare(
+    `INSERT OR IGNORE INTO bookmeter_listing_state (library_id, updated_at) VALUES (?, 0)`,
+  ).run(libraryId);
+  const r = db
+    .prepare('SELECT * FROM bookmeter_listing_state WHERE library_id = ?')
+    .get(libraryId) as {
     library_id: string | null;
     mode: BlMode;
     progress_json: string;
@@ -286,10 +291,13 @@ export function getBlState(db: Database.Database): BlState0 {
   };
 }
 
-function saveProgress(db: Database.Database, p: BlProgress): void {
+function saveProgress(db: Database.Database, libraryId: string, p: BlProgress): void {
   db.prepare(
-    'UPDATE bookmeter_listing_state SET progress_json = ?, library_id = ?, updated_at = ? WHERE id = 1',
-  ).run(JSON.stringify(p), p.libraryId, Date.now());
+    `INSERT OR IGNORE INTO bookmeter_listing_state (library_id, updated_at) VALUES (?, 0)`,
+  ).run(libraryId);
+  db.prepare(
+    'UPDATE bookmeter_listing_state SET progress_json = ?, updated_at = ? WHERE library_id = ?',
+  ).run(JSON.stringify(p), Date.now(), libraryId);
 }
 
 /** The draw's order: a fixed hash of the run and the book. */
@@ -338,6 +346,11 @@ export interface BlBook {
 }
 
 export class BookmeterListings {
+  /** Manga part B: the library this pass works on (one instance per library). */
+  private lib(): string {
+    return this.deps.targetLibrary() ?? '';
+  }
+
   private readonly db: Database.Database;
   private saved: {
     lib: string;
@@ -350,7 +363,7 @@ export class BookmeterListings {
   }
 
   state(): BlState0 {
-    return getBlState(this.db);
+    return getBlState(this.db, this.lib());
   }
 
   /** Off / Preview / On. On only after the spot check passed. */
@@ -358,8 +371,13 @@ export class BookmeterListings {
     if (mode === 'on' && !this.spotPassed())
       throw new Error('On needs the spot check first: every one of its books marked, none wrong');
     this.db
-      .prepare('UPDATE bookmeter_listing_state SET mode = ?, updated_at = ? WHERE id = 1')
-      .run(mode, Date.now());
+      .prepare(
+        `INSERT OR IGNORE INTO bookmeter_listing_state (library_id, updated_at) VALUES (?, 0)`,
+      )
+      .run(this.lib());
+    this.db
+      .prepare('UPDATE bookmeter_listing_state SET mode = ?, updated_at = ? WHERE library_id = ?')
+      .run(mode, Date.now(), this.lib());
     this.deps.log?.(`Bookmeter links: ${mode === 'analyse' ? 'Preview' : mode}`);
   }
 
@@ -378,13 +396,13 @@ export class BookmeterListings {
     const db = this.db;
     db.transaction(() => {
       db.prepare(
-        `DELETE FROM proposed_changes WHERE stage = 4 AND field = 'identifiers'
+        `DELETE FROM proposed_changes WHERE stage = 4 AND field = 'identifiers' AND library_id = ?
            AND analysis_id LIKE '${ANALYSIS_PREFIX}%' AND state = 'proposed' AND batch_id IS NULL`,
-      ).run();
-      db.prepare('DELETE FROM bookmeter_listing_books').run();
-      db.prepare('DELETE FROM bookmeter_listing_waiters').run();
-      db.prepare('DELETE FROM bookmeter_listing_spot').run();
-      saveProgress(db, fresh);
+      ).run(this.lib());
+      db.prepare('DELETE FROM bookmeter_listing_books WHERE library_id = ?').run(this.lib());
+      db.prepare('DELETE FROM bookmeter_listing_waiters WHERE library_id = ?').run(this.lib());
+      db.prepare('DELETE FROM bookmeter_listing_spot WHERE library_id = ?').run(this.lib());
+      saveProgress(db, this.lib(), fresh);
     })();
   }
 
@@ -423,7 +441,7 @@ export class BookmeterListings {
       const ms = performance.now() - t;
       p.times[phase] = (p.times[phase] ?? 0) + ms;
       if (phase !== 'write' && ms > p.longestStepMs) p.longestStepMs = Math.round(ms);
-      saveProgress(this.db, p);
+      saveProgress(this.db, this.lib(), p);
     }
     return r;
   }
@@ -922,7 +940,7 @@ export class BookmeterListings {
        VALUES (?, ?, ?, NULL, NULL)`,
     );
     db.transaction(() => {
-      db.prepare('DELETE FROM bookmeter_listing_spot').run();
+      db.prepare('DELETE FROM bookmeter_listing_spot WHERE library_id = ?').run(this.lib());
       pick.forEach((x, i) => put.run(lib, x.uuid, i));
     })();
     p.spot.drawnAt = Date.now();
