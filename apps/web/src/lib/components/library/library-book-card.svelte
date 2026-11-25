@@ -45,6 +45,8 @@
   export let selected = false;
   /** Recently viewed (2026-11-24): the ⋮ menu offers Remove from Recently viewed. */
   export let forgettable = false;
+  /** Next in your series (2026-11-25): the ⋮ menu offers Hide this series. */
+  export let seriesHideable = false;
   /** The list's sort key: under a store ratings' sort the card shows that figure. */
   export let sortKey: string | null = null;
 
@@ -56,6 +58,7 @@
     collect: CatalogBook;
     remove: CatalogBook;
     forget: CatalogBook;
+    hideSeries: CatalogBook;
   }>();
 
   /** WP19a: where an author name leads (default: that author in the Library). */
@@ -187,6 +190,8 @@
         on:remove={() => dispatch('remove', book)}
         {forgettable}
         on:forget={() => dispatch('forget', book)}
+        {seriesHideable}
+        on:hideSeries={() => dispatch('hideSeries', book)}
       />
     </div>
   {/if}

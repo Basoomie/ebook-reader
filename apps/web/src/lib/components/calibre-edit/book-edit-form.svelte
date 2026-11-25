@@ -20,7 +20,7 @@
    */
   import { createEventDispatcher, onDestroy, onMount } from 'svelte';
   import Fa from 'svelte-fa';
-  import { faImage, faUpload, faXmark } from '@fortawesome/free-solid-svg-icons';
+  import { faImage, faStore, faUpload, faXmark } from '@fortawesome/free-solid-svg-icons';
   import Modal from '$lib/components/modal/modal.svelte';
   import ModalSection from '$lib/components/modal/modal-section.svelte';
   import InlineConfirm from '$lib/components/confirm/inline-confirm.svelte';
@@ -34,7 +34,25 @@
     fieldLabel
   } from '$lib/calibre-edit/format';
   import { NAME_MAX_BYTES, authorNameBytes, calibreNameBytes } from '$lib/calibre-edit/names';
-  import type { EditForm, EditValues, SharedRename, TagList } from '$lib/calibre-edit/types';
+  import type {
+    CoverStore,
+    EarlierCover,
+    EarlierCovers,
+    EditForm,
+    EditValues,
+    SharedRename,
+    StoreCover,
+    TagList
+  } from '$lib/calibre-edit/types';
+  import {
+    STORE_NAMES,
+    coverStoresOf,
+    earlierCoverLabel,
+    hasEarlierCovers,
+    pictureSize,
+    storeCoverText,
+    storesWaiting
+  } from '$lib/calibre-edit/covers';
   import { BOOK_LINKS } from '$lib/book-links/links';
   import { sharedRenameCopy } from '$lib/confirm/confirm-copy';
   import type { LibraryApi } from '$lib/library/api';
@@ -76,6 +94,17 @@
   let pickingIllustration = false;
   let illustrations: { n: number; thumb: string; full: string }[] | null = null;
   let fileInput: HTMLInputElement;
+  /** Book covers: the pictures the server kept (Earlier covers) and the stores' pictures. */
+  let earlier: EarlierCovers | null = null;
+  let earlierThumbs: Record<string, string> = {};
+  let storesOpen = false;
+  let stores: StoreCover[] | null = null;
+  let fetcherOnline = true;
+  let storeThumbs: Partial<Record<CoverStore, string>> = {};
+  let storeTimer: ReturnType<typeof setTimeout> | null = null;
+  let destroyed = false;
+  /** Object URLs made here (thumbnails), revoked when the form closes. */
+  const madeUrls: string[] = [];
 
   onMount(async () => {
     try {
@@ -90,6 +119,7 @@
       vals = structuredClone(v);
       pubdateText = dateInputValue(v.pubdate);
       indexText = v.series.index !== null ? String(v.series.index) : '';
+      void loadEarlierCovers();
     } catch (err) {
       loadError = editUnreachable(err)
         ? 'Editing needs the library server, which can’t be reached right now.'
@@ -98,8 +128,98 @@
   });
 
   onDestroy(() => {
+    destroyed = true;
     if (cover) URL.revokeObjectURL(cover.preview);
+    if (storeTimer) clearTimeout(storeTimer);
+    for (const u of madeUrls) URL.revokeObjectURL(u);
   });
+
+  function objectUrl(blob: Blob): string {
+    const u = URL.createObjectURL(blob);
+    madeUrls.push(u);
+    return u;
+  }
+
+  // Book covers: the pictures the book's cover had (kept by the server). A failure only hides
+  // the row: the rest of the form works without it.
+  async function loadEarlierCovers() {
+    try {
+      const list = await api.earlierCovers(bookId);
+      if (destroyed) return;
+      earlier = list;
+      for (const c of list.covers) {
+        if (c.current) continue;
+        const blob = await api.earlierCoverPicture(bookId, c.sha256).catch(() => null);
+        if (destroyed) return;
+        if (blob) earlierThumbs = { ...earlierThumbs, [c.sha256]: objectUrl(blob) };
+      }
+    } catch {
+      earlier = null;
+    }
+  }
+
+  async function pickEarlier(c: EarlierCover, label: string) {
+    coverError = '';
+    coverBusy = true;
+    try {
+      const blob = await api.earlierCoverPicture(bookId, c.sha256);
+      const { token } = await api.useEarlierCover(bookId, c.sha256);
+      if (cover) URL.revokeObjectURL(cover.preview);
+      cover = {
+        token,
+        preview: URL.createObjectURL(blob),
+        label: label === 'Original' ? 'Original cover' : `Earlier cover (${label})`
+      };
+    } catch (err) {
+      coverError = (err as Error).message;
+    } finally {
+      coverBusy = false;
+    }
+  }
+
+  // The stores' pictures: the server asks the stores through its fetch queue; the row asks
+  // the server again every few seconds while a store is still being asked.
+  async function loadStores(again = false) {
+    storesOpen = true;
+    if (storeTimer) clearTimeout(storeTimer);
+    storeTimer = null;
+    try {
+      const r = await api.storeCovers(bookId, again);
+      if (destroyed) return;
+      stores = r.stores;
+      fetcherOnline = r.fetcher;
+      for (const s of r.stores) {
+        if (s.state !== 'ready' || storeThumbs[s.store]) continue;
+        const blob = await api.storeCoverPicture(bookId, s.store).catch(() => null);
+        if (destroyed) return;
+        if (blob) storeThumbs = { ...storeThumbs, [s.store]: objectUrl(blob) };
+      }
+    } catch (err) {
+      coverError = editUnreachable(err)
+        ? 'The library server can’t be reached right now.'
+        : (err as Error).message;
+    }
+    if (!destroyed && storesWaiting(stores)) storeTimer = setTimeout(() => loadStores(), 3000);
+  }
+
+  async function pickStore(s: StoreCover) {
+    coverError = '';
+    coverBusy = true;
+    try {
+      const blob = await api.storeCoverPicture(bookId, s.store);
+      const { token } = await api.useStoreCover(bookId, s.store);
+      if (cover) URL.revokeObjectURL(cover.preview);
+      cover = {
+        token,
+        preview: URL.createObjectURL(blob),
+        label: `${STORE_NAMES[s.store]}’s cover`
+      };
+    } catch (err) {
+      coverError = (err as Error).message;
+    } finally {
+      coverBusy = false;
+    }
+  }
 
   $: changed = start && vals ? changedFields(start, vals) : [];
   $: dirty = changed.length > 0 || !!cover || confirm.size > 0;
@@ -110,6 +230,7 @@
   $: unconfirmed = new Map((form?.unconfirmed ?? []).map((u) => [u.field, u.reason]));
   $: yours = new Set((form?.yours ?? []).map((y) => y.field));
   $: pickable = pickableTags(tagList, vals?.tags ?? [], tagFilter);
+  $: coverStores = start ? coverStoresOf(start.identifiers) : [];
   $: knownIds = new Set([...BOOK_LINKS.map((l) => l.key), 'isbn']);
   $: otherIds = vals ? Object.keys(vals.identifiers).filter((k) => !knownIds.has(k)) : [];
   $: canSave =
@@ -379,6 +500,16 @@
                 ><Fa icon={faImage} />Pick from the book’s illustrations</button
               >
             {/if}
+            {#if coverStores.length > 0}
+              <button
+                type="button"
+                class="c-btn c-btn-secondary c-btn-sm"
+                disabled={coverBusy}
+                aria-expanded={storesOpen}
+                data-testid="edit-cover-stores"
+                on:click={() => loadStores()}><Fa icon={faStore} />From the stores</button
+              >
+            {/if}
             {#if cover}
               <button
                 type="button"
@@ -427,6 +558,95 @@
               {/each}
             </div>
           {/if}
+        </div>
+      {/if}
+      {#if storesOpen}
+        <div class="mt-3" data-testid="edit-store-covers">
+          <p class={labelClass}>From the stores</p>
+          {#if stores === null}
+            <p class="text-sm text-c-muted">Asking the stores…</p>
+          {:else}
+            {#if !fetcherOnline && storesWaiting(stores)}
+              <p class="c-notice mb-2 text-sm" data-testid="edit-store-fetcher">
+                The stores are asked by the library’s fetcher, which isn’t running: the pictures
+                come once it is.
+              </p>
+            {/if}
+            <div class="c-edit-pics">
+              {#each stores as s (s.store)}
+                <div class="c-edit-pic" data-testid="edit-store-cover" data-store={s.store}>
+                  {#if s.state === 'ready' && storeThumbs[s.store]}
+                    <button
+                      type="button"
+                      class="c-edit-pic-btn"
+                      disabled={coverBusy}
+                      aria-label="Use {STORE_NAMES[s.store]}’s cover"
+                      data-testid="edit-store-cover-use"
+                      on:click={() => pickStore(s)}
+                      ><img src={storeThumbs[s.store]} alt="" /></button
+                    >
+                  {:else}
+                    <div class="c-edit-pic-empty">{storeCoverText(s)}</div>
+                  {/if}
+                  <p class="text-xs">{STORE_NAMES[s.store]}</p>
+                  {#if s.state === 'ready'}
+                    <p class="text-xs text-c-muted">{pictureSize(s.width, s.height)}</p>
+                  {/if}
+                  {#if s.same}<p class="text-xs text-c-muted" data-testid="edit-store-same">
+                      ✓ Same as current
+                    </p>{/if}
+                  {#if s.state === 'failed'}
+                    <button
+                      type="button"
+                      class="c-btn c-btn-ghost c-btn-sm"
+                      data-testid="edit-store-again"
+                      on:click={() => loadStores(true)}>Ask again</button
+                    >
+                  {/if}
+                </div>
+              {/each}
+            </div>
+          {/if}
+        </div>
+      {/if}
+      {#if earlier && hasEarlierCovers(earlier.covers)}
+        <div class="mt-3" data-testid="edit-earlier-covers">
+          <p class={labelClass}>Earlier covers</p>
+          <div class="c-edit-pics">
+            {#each earlier.covers as c, i (c.sha256)}
+              <div class="c-edit-pic" data-testid="edit-earlier-cover">
+                {#if c.current}
+                  {#if coverThumb}
+                    <img class="c-edit-pic-empty" src={coverThumb} alt="The cover now" />
+                  {:else}
+                    <div class="c-edit-pic-empty">The cover now</div>
+                  {/if}
+                {:else if earlierThumbs[c.sha256]}
+                  <button
+                    type="button"
+                    class="c-edit-pic-btn"
+                    disabled={coverBusy}
+                    aria-label={i === 0
+                      ? 'Use the original cover'
+                      : `Use the earlier cover from ${earlierCoverLabel(earlier.covers, i)}`}
+                    data-testid="edit-earlier-cover-use"
+                    on:click={() => earlier && pickEarlier(c, earlierCoverLabel(earlier.covers, i))}
+                    ><img src={earlierThumbs[c.sha256]} alt="" /></button
+                  >
+                {:else}
+                  <div class="c-edit-pic-empty">Loading…</div>
+                {/if}
+                <p class="text-xs">
+                  {c.current
+                    ? i === 0
+                      ? 'Now · Original'
+                      : 'Now'
+                    : earlierCoverLabel(earlier.covers, i)}
+                </p>
+                <p class="text-xs text-c-muted">{pictureSize(c.width, c.height)}</p>
+              </div>
+            {/each}
+          </div>
         </div>
       {/if}
     </ModalSection>
@@ -869,6 +1089,52 @@
   .c-edit-ill:focus-visible {
     outline: 2px solid var(--c-link);
     outline-offset: 2px;
+  }
+
+  /* Book covers: Earlier covers and From the stores, one card per picture. */
+  .c-edit-pics {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(6.5rem, 1fr));
+    gap: 0.75rem;
+  }
+
+  .c-edit-pic {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.25rem;
+    min-width: 0;
+  }
+
+  .c-edit-pic-btn,
+  .c-edit-pic-empty {
+    display: block;
+    width: 100%;
+    aspect-ratio: 2 / 3;
+    border-radius: 0.375rem;
+    overflow: hidden;
+    border: var(--c-border-width) solid var(--c-line);
+    background-color: var(--c-tint);
+  }
+
+  .c-edit-pic-btn img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+
+  .c-edit-pic-btn:focus-visible {
+    outline: 2px solid var(--c-link);
+    outline-offset: 2px;
+  }
+
+  .c-edit-pic-empty {
+    display: grid;
+    place-items: center;
+    padding: 0.5rem;
+    text-align: center;
+    font-size: 0.75rem;
+    color: var(--c-muted);
   }
 
   .c-edit-chip {

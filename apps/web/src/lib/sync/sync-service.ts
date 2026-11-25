@@ -41,6 +41,14 @@ import {
 } from '$lib/recently-viewed/recently-viewed-service';
 import type { ViewedEntry } from '$lib/recently-viewed/recently-viewed';
 import { currentKeep } from '$lib/recently-viewed/settings';
+import {
+  hiddenStore,
+  hideSeries,
+  loadHidden,
+  showSeries,
+  type NextInSeriesDeps
+} from '$lib/library/next-in-series-service';
+import type { HiddenSeries } from '$lib/library/next-in-series';
 import { localBookmarkForTitle, localTitleSummaries } from '$lib/migration/local-summary';
 import { applyReadingGoals, applyStatDays } from '$lib/sync/apply-records';
 import {
@@ -1002,6 +1010,30 @@ export function recentlyViewedApi() {
 }
 
 export type RecentlyViewedApi = ReturnType<typeof recentlyViewedApi>;
+
+// ---------------------------------------------------------------------------
+// Next in your series (2026-11-25, docs/design/next-in-series.md)
+// ---------------------------------------------------------------------------
+
+const nextInSeriesDeps: NextInSeriesDeps = { getEngine: getSyncEngine, warn };
+
+let nextInSeriesHidden: Readable<HiddenSeries[] | null> | null = null;
+
+/**
+ * The series hidden from Next in your series (synced, one record per series in a library).
+ * `hide` and `show` reject when the change can't be saved.
+ */
+export function nextInSeriesApi() {
+  if (!nextInSeriesHidden) nextInSeriesHidden = hiddenStore(nextInSeriesDeps);
+  return {
+    hidden: nextInSeriesHidden,
+    loadHidden: () => loadHidden(nextInSeriesDeps),
+    hide: (libraryId: string, name: string) => hideSeries(libraryId, name, nextInSeriesDeps),
+    show: (libraryId: string, name: string) => showSeries(libraryId, name, nextInSeriesDeps)
+  };
+}
+
+export type NextInSeriesApi = ReturnType<typeof nextInSeriesApi>;
 
 const notesDeps: NotesDeps = { getEngine: getSyncEngine, warn };
 

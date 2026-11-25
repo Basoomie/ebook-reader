@@ -40,6 +40,7 @@ import { CALIBRE_AUTHOR_WORDS } from './calibre-names';
 import { currentAnalysisId, pauseStage } from './stages';
 import { movedFrom } from './move/rekey';
 import { EDIT_STAGE } from './field-stages';
+import type { CoverArchive } from './edits/cover-archive';
 import { aiYoursAfterWrite } from './edits/yours';
 import { applyTagChange, sameTags, undoTagChange, type TagChange } from './stage5/decide';
 
@@ -338,6 +339,12 @@ export interface VerifyAnswer {
   items: { itemId: number; field: string; state: ItemState; detail: string | null }[];
 }
 
+/** Book covers: whether Calibre's current picture was kept in the cover archive before a write. */
+export interface CoverKept {
+  kept: boolean | null;
+  error: string | null;
+}
+
 export interface WrittenReport {
   current: ListedBook | null;
   error?: string | null;
@@ -469,6 +476,8 @@ const STAGE4_PAUSED_FIELDS: Record<string, string[]> = {
 export class Stage2Batches {
   /** Stage 4's cover pictures come from the fetch cache (the store's image by its address). */
   private storeCover: ((url: string) => Buffer | null) | null = null;
+  /** Book covers: where Calibre's picture is kept before a cover write (edits/cover-archive.ts). */
+  private archive: CoverArchive | null = null;
 
   constructor(
     private readonly batches: BatchService,
@@ -485,6 +494,11 @@ export class Stage2Batches {
   /** Stage 4: where the store covers are read (the fetch queue's cached answers). */
   setStoreCover(read: (url: string) => Buffer | null): void {
     this.storeCover = read;
+  }
+
+  /** Book covers: the archive every cover write keeps Calibre's current picture in first. */
+  setCoverArchive(archive: CoverArchive): void {
+    this.archive = archive;
   }
 
   private get db() {
@@ -1165,6 +1179,45 @@ export class Stage2Batches {
     return sort === null ? current : { ...current, titleSort: sort };
   }
 
+  /**
+   * Book covers: before a cover write, Calibre's current picture goes into the cover archive
+   * (once per item: an item verified already was kept by its first verify). kept: true = kept,
+   * false = Calibre has a cover that couldn't be kept (the cover is then not written), null =
+   * nothing to keep (no archive, no cover item, or Calibre has no cover).
+   */
+  async keepCurrentCover(
+    batchId: string,
+    calibreId: number,
+    listed: ListedBook | null,
+    now = Date.now(),
+  ): Promise<CoverKept> {
+    if (!this.archive) return { kept: null, error: null };
+    const { batch, rows } = this.requireBook(batchId, calibreId);
+    if (batch.kind !== 'apply') return { kept: null, error: null };
+    const r = rows.find(
+      (x) =>
+        x.field === 'cover' && !STAGE2_TERMINAL_APPLY.includes(x.state) && x.state !== 'verified',
+    );
+    if (!r) return { kept: null, error: null };
+    const current = listed ? parseListed(listed) : null;
+    if (!current || current.uuid !== r.calibre_uuid || !current.hasCover)
+      return { kept: null, error: null };
+    const bytes = await this.readCalibreCover(batch.libraryId, calibreId, r.calibre_uuid);
+    if (!bytes) return { kept: false, error: "Calibre's cover.jpg can't be read" };
+    try {
+      await this.archive.keep(
+        { libraryId: batch.libraryId, uuid: r.calibre_uuid, calibreId },
+        bytes,
+        'before',
+        r.change_id,
+        now,
+      );
+      return { kept: true, error: null };
+    } catch (err) {
+      return { kept: false, error: (err as Error).message };
+    }
+  }
+
   /** The sidecar shows what Calibre has now; the server says what to write. */
   verify(
     batchId: string,
@@ -1172,6 +1225,7 @@ export class Stage2Batches {
     listed: ListedBook | null,
     oldCoverPath: string | null = null,
     now = Date.now(),
+    coverKept: CoverKept = { kept: null, error: null },
   ): VerifyAnswer {
     const { batch, rows } = this.requireBook(batchId, calibreId);
     const current = listed ? this.withLiveSort(batch, parseListed(listed), rows) : null;
@@ -1193,7 +1247,7 @@ export class Stage2Batches {
         }
         const gone = !current || current.uuid !== r.calibre_uuid;
         if (batch.kind === 'apply')
-          this.verifyApply(batch, r, current, gone, answer, oldCoverPath, now, rows);
+          this.verifyApply(batch, r, current, gone, answer, oldCoverPath, now, rows, coverKept);
         else this.verifyUndo(batch, r, current, gone, answer, now, rows);
       }
     })();
@@ -1210,6 +1264,7 @@ export class Stage2Batches {
     oldCoverPath: string | null,
     now: number,
     siblings: ItemRow[] = [],
+    coverKept: CoverKept = { kept: null, error: null },
   ) {
     const push = (state: ItemState, detail: string | null) =>
       answer.items.push({ itemId: r.item_id, field: r.field, state, detail });
@@ -1217,6 +1272,13 @@ export class Stage2Batches {
       this.setItem(r.item_id, 'skipped', 'The book is no longer in Calibre', null, now);
       this.skipChange(r.change_id, 'The book is no longer in Calibre', now);
       return push('skipped', 'The book is no longer in Calibre');
+    }
+    // Book covers: a cover is never replaced unless Calibre's current picture was kept first.
+    if (r.field === 'cover' && coverKept.kept === false && current?.hasCover) {
+      const why = `Calibre's current cover couldn't be kept, so it wasn't replaced: ${coverKept.error ?? 'unknown error'}`;
+      this.setItem(r.item_id, 'skipped', why, null, now);
+      this.skipChange(r.change_id, why, now);
+      return push('skipped', why);
     }
     const open = (field: string) =>
       siblings.find(
@@ -1251,8 +1313,10 @@ export class Stage2Batches {
       }
       this.setItem(r.item_id, 'verified', null, { ...seen, oldValue: cur.hasCover }, now);
       answer.cover = true;
-      answer.saveOldCover = cur.hasCover;
-      // Undo of a cover: the earlier picture from the sidecar's quarantine (1.5.0).
+      // Book covers: the server's cover archive keeps Calibre's picture (keepCurrentCover); the
+      // sidecar's quarantine only when the server runs without one.
+      answer.saveOldCover = cur.hasCover && !this.archive;
+      // Undo of a cover made before the archive: the earlier picture from the quarantine (1.5.0).
       const q = (ev as { cover?: { quarantine?: string } }).cover?.quarantine;
       if (q) answer.coverFrom = q;
       return push('verified', null);
@@ -1804,17 +1868,44 @@ export class Stage2Batches {
     const book = snap.books.get(calibreId);
     if (!book || !book.hasCover)
       throw new BatchError(404, 'not_found', 'Calibre lists no cover for this book');
-    const libDir = this.libDir(batch.libraryId);
+    const bytes = await this.readCalibreCover(batch.libraryId, calibreId, book.uuid, book.path);
+    if (!bytes) throw new BatchError(404, 'not_found', "Calibre's cover.jpg can't be read");
+    return bytes;
+  }
+
+  /**
+   * A book's cover.jpg as Calibre holds it now (read only): from the folder the reader's index
+   * knows, else the book's folder now (every write can move it), by its UUID in the live
+   * metadata.db. Null when there is none.
+   */
+  private async readCalibreCover(
+    libraryId: string,
+    calibreId: number,
+    uuid: string,
+    knownPath?: string | null,
+  ): Promise<Buffer | null> {
+    const libDir = this.libDir(libraryId);
     const read = (folder: string) =>
       readSourceFile(resolveInside(libDir, `${folder}/cover.jpg`)).catch(() => null);
-    // The folder the reader's index knows, else the book's folder now (a write may have moved it).
-    let bytes = await read(book.path);
+    // The reader's index (one row by its key; never the whole snapshot per book).
+    const folder =
+      knownPath ??
+      (
+        this.deps.main
+          .prepare(
+            `SELECT calibre_path FROM book_sources
+             WHERE library_id = ? AND calibre_uuid = ? AND kind = 'calibre' LIMIT 1`,
+          )
+          .get(libraryId, uuid) as { calibre_path: string | null } | undefined
+      )?.calibre_path ??
+      null;
+    void calibreId;
+    let bytes = folder ? await read(folder) : null;
     if (!bytes) {
-      const now = await currentCalibreEpub(libDir, book.uuid);
-      const folder = now ? path.posix.dirname(now) : null;
-      if (folder && folder !== book.path) bytes = await read(folder);
+      const now = await currentCalibreEpub(libDir, uuid);
+      const live = now ? path.posix.dirname(now) : null;
+      if (live && live !== folder) bytes = await read(live);
     }
-    if (!bytes) throw new BatchError(404, 'not_found', "Calibre's cover.jpg can't be read");
     return bytes;
   }
 

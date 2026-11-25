@@ -59,8 +59,11 @@ import { columnShape, MOVE_STAGE, MoveWorker } from './move';
  * a moved book go to its new library), move batches (stage 11, move.ts) move books from one
  * library to another, `#characters` and `timestamp` join set_fields, and the move's target
  * library is checked (`move_target`: the same #illustrator and #characters as the old one).
+ * 1.6.4 (book covers): the one-shot `import-covers.js` sends the quarantine's earlier covers to
+ * the server's cover archive; the worker itself is unchanged (the server keeps Calibre's picture
+ * before an edit's cover write and answers saveOldCover false).
  */
-export const SIDECAR_VERSION = '1.6.3';
+export const SIDECAR_VERSION = '1.6.4';
 
 /** The wait after a batch before asking for the next one (WP20g: the full poll after every batch cost ~1 h of run 7). */
 export const AFTER_BATCH_MS = 1000;

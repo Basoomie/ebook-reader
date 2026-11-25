@@ -43,6 +43,9 @@ const WITH_ID = [
   'link_discovery_picks',
   // Bookmeter links (stage4/bookmeter-listing.ts, cleanup.db v35): one row per saved id.
   'bookmeter_listing_books',
+  // Book covers (edits/cover-archive.ts, cleanup.db v37): the pictures kept and still wanted.
+  'cover_archive',
+  'cover_archive_wanted',
 ];
 /** Tables keyed by (library_id, calibre_uuid) without a calibre_id. */
 const WITHOUT_ID = [

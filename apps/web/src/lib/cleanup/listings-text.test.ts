@@ -89,6 +89,16 @@ describe('Bookmeter links: the card', () => {
     );
   });
 
+  it('says why a change was not written: the saved link changed, or the book is gone', () => {
+    const s = status();
+    const lines = listingsLines({
+      ...s,
+      progress: { ...s.progress, propose: { ...s.progress.propose, gone: 2, removed: 188 } }
+    });
+    expect(lines).toContain('2 not changed: their saved link changed since the search.');
+    expect(lines).toContain('188 not changed: no longer in Calibre (removed since the search).');
+  });
+
   it('says what the spot check needs', () => {
     expect(listingsSpotLine(status())).toBe('');
     expect(listingsSpotLine(status({ spot: { size: 50, right: 49, wrong: 1, open: 0 } }))).toMatch(
