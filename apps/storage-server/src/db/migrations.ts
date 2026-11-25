@@ -1,6 +1,32 @@
 import type Database from 'better-sqlite3';
 
 /**
+ * Migration 33's SET clause for one book's rating columns (correlated on `books.id`): the pooled
+ * Amazon + BOOK☆WALKER average (x10, rounded) and count, the sort score (the average pulled toward
+ * store_rating_params.m by c ratings, x1000) and 読書メーター's 登録数. Shipped with migration 33:
+ * never change it; a new rule needs a new migration (ratings/sql.ts reuses it).
+ */
+export const BOOK_RATING_SET = `
+  rating_count = (SELECT SUM(r.count) FROM book_identifiers bi
+    JOIN store_ratings r ON r.site = bi.type AND r.site_id = bi.value
+    WHERE bi.book_id = books.id AND bi.type IN ('amazon_jp', 'bookwalker')
+      AND r.avg IS NOT NULL AND r.count > 0),
+  rating_x10 = (SELECT CAST(ROUND(SUM(r.avg * r.count) * 10.0 / SUM(r.count)) AS INTEGER)
+    FROM book_identifiers bi
+    JOIN store_ratings r ON r.site = bi.type AND r.site_id = bi.value
+    WHERE bi.book_id = books.id AND bi.type IN ('amazon_jp', 'bookwalker')
+      AND r.avg IS NOT NULL AND r.count > 0),
+  rating_score = (SELECT CAST(ROUND(1000.0 * (p.c * p.m + SUM(r.avg * r.count)) / (p.c + SUM(r.count))) AS INTEGER)
+    FROM book_identifiers bi
+    JOIN store_ratings r ON r.site = bi.type AND r.site_id = bi.value
+    JOIN store_rating_params p ON p.id = 1
+    WHERE bi.book_id = books.id AND bi.type IN ('amazon_jp', 'bookwalker')
+      AND r.avg IS NOT NULL AND r.count > 0),
+  readers = (SELECT MAX(r.count) FROM book_identifiers bi
+    JOIN store_ratings r ON r.site = 'bookmeter' AND r.site_id = bi.value
+    WHERE bi.book_id = books.id AND bi.type = 'bookmeter' AND r.count IS NOT NULL)`;
+
+/**
  * Schema migrations, applied in order and tracked with PRAGMA user_version.
  * Never edit a migration that has shipped; add a new one instead.
  */
@@ -1409,6 +1435,96 @@ export const MIGRATIONS: { version: number; name: string; sql: string }[] = [
       CREATE TRIGGER book_identifiers_natively_del AFTER DELETE ON book_identifiers
         WHEN OLD.type = 'natively' BEGIN
         UPDATE books SET natively_level = NULL, natively_temporary = NULL WHERE id = OLD.book_id;
+      END;
+    `,
+  },
+  {
+    version: 33,
+    name: 'Store ratings',
+    // Store ratings (2026-11-25, docs/design/store-ratings.md): what other readers thought, read
+    // from a book's store pages by its saved ids. One row per site and id (copies of a book share
+    // it); `site` is the identifier type it was read for (amazon_jp, bookwalker, bookmeter,
+    // natively). avg/count are the last good answer (an error keeps them; "no ratings" and a
+    // removed page clear them); bookmeter's count is its 登録数 and `reviews` its 感想 count.
+    // books.rating_x10/rating_count/rating_score mirror the pooled Amazon + BOOK☆WALKER rating
+    // (rating_score: the average pulled toward store_rating_params.m by c ratings, x1000, for the
+    // Rating sort) and books.readers 読書メーター's 登録数, kept by the triggers below (ratings/sql.ts
+    // holds the same SET clause for the server's own recomputes). store_rating_requests: the
+    // cleanup fetch queue's request each id waits on.
+    sql: `
+      CREATE TABLE store_ratings (
+        site        TEXT NOT NULL CHECK (site IN ('amazon_jp', 'bookwalker', 'bookmeter', 'natively')),
+        site_id     TEXT NOT NULL,
+        avg         REAL,
+        count       INTEGER,
+        reviews     INTEGER,
+        state       TEXT NOT NULL CHECK (state IN ('ok', 'none', 'gone', 'error')),
+        checked_at  INTEGER NOT NULL,
+        error       TEXT,
+        fails       INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (site, site_id)
+      );
+      CREATE INDEX store_ratings_due ON store_ratings (site, checked_at);
+      CREATE TABLE store_rating_requests (
+        site        TEXT NOT NULL,
+        site_id     TEXT NOT NULL,
+        request_id  INTEGER NOT NULL,
+        asked_at    INTEGER NOT NULL,
+        urgent      INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (site, site_id)
+      );
+      CREATE TABLE store_rating_params (
+        id  INTEGER PRIMARY KEY CHECK (id = 1),
+        m   REAL NOT NULL,
+        c   REAL NOT NULL
+      );
+      INSERT INTO store_rating_params (id, m, c) VALUES (1, 4.1, 20);
+      CREATE TABLE store_rating_settings (
+        id    INTEGER PRIMARY KEY CHECK (id = 1),
+        json  TEXT NOT NULL
+      );
+      ALTER TABLE books ADD COLUMN rating_x10 INTEGER;
+      ALTER TABLE books ADD COLUMN rating_count INTEGER;
+      ALTER TABLE books ADD COLUMN rating_score INTEGER;
+      ALTER TABLE books ADD COLUMN readers INTEGER;
+      CREATE INDEX books_sort_rating_asc ON books (IFNULL(rating_score, 9000000000000000), id);
+      CREATE INDEX books_sort_rating_desc ON books (IFNULL(rating_score, -1), id);
+      CREATE INDEX books_sort_ratings_asc ON books (IFNULL(rating_count, 9000000000000000), id);
+      CREATE INDEX books_sort_ratings_desc ON books (IFNULL(rating_count, -1), id);
+      CREATE INDEX books_sort_readers_asc ON books (IFNULL(readers, 9000000000000000), id);
+      CREATE INDEX books_sort_readers_desc ON books (IFNULL(readers, -1), id);
+      CREATE INDEX book_identifiers_type_value ON book_identifiers (type, value);
+
+      CREATE TRIGGER store_ratings_ins AFTER INSERT ON store_ratings
+        WHEN NEW.site IN ('amazon_jp', 'bookwalker', 'bookmeter') BEGIN
+        UPDATE books SET ${BOOK_RATING_SET}
+          WHERE id IN (SELECT book_id FROM book_identifiers
+                       WHERE type = NEW.site AND value = NEW.site_id);
+      END;
+      CREATE TRIGGER store_ratings_upd AFTER UPDATE OF avg, count, state ON store_ratings
+        WHEN NEW.site IN ('amazon_jp', 'bookwalker', 'bookmeter') BEGIN
+        UPDATE books SET ${BOOK_RATING_SET}
+          WHERE id IN (SELECT book_id FROM book_identifiers
+                       WHERE type = NEW.site AND value = NEW.site_id);
+      END;
+      CREATE TRIGGER store_ratings_del AFTER DELETE ON store_ratings
+        WHEN OLD.site IN ('amazon_jp', 'bookwalker', 'bookmeter') BEGIN
+        UPDATE books SET ${BOOK_RATING_SET}
+          WHERE id IN (SELECT book_id FROM book_identifiers
+                       WHERE type = OLD.site AND value = OLD.site_id);
+      END;
+      CREATE TRIGGER book_identifiers_rating_ins AFTER INSERT ON book_identifiers
+        WHEN NEW.type IN ('amazon_jp', 'bookwalker', 'bookmeter') BEGIN
+        UPDATE books SET ${BOOK_RATING_SET} WHERE id = NEW.book_id;
+      END;
+      CREATE TRIGGER book_identifiers_rating_upd AFTER UPDATE ON book_identifiers
+        WHEN NEW.type IN ('amazon_jp', 'bookwalker', 'bookmeter')
+          OR OLD.type IN ('amazon_jp', 'bookwalker', 'bookmeter') BEGIN
+        UPDATE books SET ${BOOK_RATING_SET} WHERE id = NEW.book_id;
+      END;
+      CREATE TRIGGER book_identifiers_rating_del AFTER DELETE ON book_identifiers
+        WHEN OLD.type IN ('amazon_jp', 'bookwalker', 'bookmeter') BEGIN
+        UPDATE books SET ${BOOK_RATING_SET} WHERE id = OLD.book_id;
       END;
     `,
   },

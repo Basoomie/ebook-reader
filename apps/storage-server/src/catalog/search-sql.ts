@@ -6,6 +6,8 @@
  * - author/series/tag and plain text: the matching author, series and tag ids are
  *   computed once per term from their small tables (IN (SELECT ...)), never per book.
  * - chars: books.char_count; books without a count never match (also when negated).
+ * - rating/ratings/readers: the store ratings' columns (migration 33), myrating: books.rating;
+ *   books without a value never match (also when negated).
  * - level: books.natively_level (the Natively level, migration 32); books without one never
  *   match (also when negated).
  * - status/favorite: the user's own book-state records (sync_records primary key
@@ -186,6 +188,13 @@ function deviceAudioSql(userId: string, deviceId: string | null): SqlCondition {
   };
 }
 
+const RANGE_COLUMNS = {
+  rating: 'b.rating_x10',
+  ratings: 'b.rating_count',
+  readers: 'b.readers',
+  myrating: '(NULLIF(b.rating, 0) * 5)',
+} as const;
+
 function charsSql(min: number | null, max: number | null, column = 'b.char_count'): SqlCondition {
   const parts = [`${column} IS NOT NULL`];
   const params: unknown[] = [];
@@ -223,6 +232,21 @@ export function termSql(
     // A book without a level is never included, negated or not.
     return term.negated
       ? { sql: `(b.natively_level IS NOT NULL AND NOT ${range.sql})`, params: range.params }
+      : range;
+  }
+  if (
+    term.type === 'rating' ||
+    term.type === 'myrating' ||
+    term.type === 'ratings' ||
+    term.type === 'readers'
+  ) {
+    // Store ratings (migration 33): rating: the pooled stars x10, ratings: their count, readers:
+    // 読書メーター's 登録数; myrating: your Calibre rating (0-10 half stars) as tenths of a star.
+    const column = RANGE_COLUMNS[term.type];
+    const range = charsSql(term.min, term.max, column);
+    // A book without a value is never included, negated or not.
+    return term.negated
+      ? { sql: `(${column} IS NOT NULL AND NOT ${range.sql})`, params: range.params }
       : range;
   }
   let cond: SqlCondition;

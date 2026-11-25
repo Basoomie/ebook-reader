@@ -51,6 +51,8 @@ export interface IndexerOptions {
   counts?: { wake(): void } | null;
   /** The Natively level (2026-11-24): looks for newly linked books after a poll. */
   natively?: { wake(): void } | null;
+  /** Store ratings (2026-11-25): newly linked books get their cached figures. */
+  ratings?: { wake(): void } | null;
   /**
    * WP20a: true while the library cleanup's sidecar is applying a batch to this library.
    * The indexer then leaves the library alone (no snapshot, no ingest) until the batch is
@@ -202,6 +204,7 @@ export class CalibreIndexer {
         this.opts.thumbnails?.wake();
         this.opts.counts?.wake();
         this.opts.natively?.wake();
+        this.opts.ratings?.wake();
       }
     })();
     return this.ticking;

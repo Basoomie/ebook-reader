@@ -48,6 +48,12 @@ describe('describeQuery', () => {
     expect(reads('level:<25')).toBe('Natively level under 25');
     expect(reads('level:>=30')).toBe('Natively level 30 or higher');
     expect(reads('level:25')).toBe('Natively level 25');
+    expect(reads('rating:>=4')).toBe('readers rated it 4 stars or higher');
+    expect(reads('rating:4')).toBe('readers rated it 4.0 to 4.9 stars');
+    expect(reads('rating:4-4.5')).toBe('readers rated it 4 to 4.5 stars');
+    expect(reads('myrating:5')).toBe('you rated it 5 stars');
+    expect(reads('ratings:>=1k')).toBe('at least 1,000 ratings');
+    expect(reads('readers:<100')).toBe('under 100 readers on 読書メーター');
   });
 
   it('reads status, favorite and device terms', () => {

@@ -1,0 +1,107 @@
+/**
+ * Store ratings' server settings (2026-11-25; Settings › Library › Book page › Ratings). One JSON
+ * value in ttsu.db `store_rating_settings`, laid over the defaults (as natively/settings.ts).
+ */
+import type Database from 'better-sqlite3';
+
+export interface RatingSettings {
+  /**
+   * Fetching through the cleanup's fetch container. Off after deploy: the first fill reads only
+   * the cleanup's cached pages; requests start on the user's word.
+   */
+  refresh: boolean;
+  /**
+   * 読書メーター: fetched and shown only when on (its saved links point at Kindle listings until
+   * the link fix; user 2026-11-25).
+   */
+  bookmeter: boolean;
+  /** Read again after this many days: books published in the last 6 months. */
+  newDays: number;
+  /** … published in the last 2 years. */
+  recentDays: number;
+  /** … older (or no date). */
+  oldDays: number;
+  /** A book page whose rating is older than this asks again on open (needs `refresh`). */
+  openMaxAgeDays: number;
+  /** The Rating sort's pull: a book starts with this many imagined ratings at the median. */
+  scoreRatings: number;
+  /** Requests waiting in the fetch queue at once, per site (the queue paces them). */
+  queuedPerSite: number;
+}
+
+export const DEFAULT_RATING_SETTINGS: RatingSettings = {
+  refresh: false,
+  bookmeter: false,
+  newDays: 7,
+  recentDays: 30,
+  oldDays: 90,
+  openMaxAgeDays: 30,
+  scoreRatings: 20,
+  queuedPerSite: 20,
+};
+
+export class RatingSettingsError extends Error {}
+
+const NUMBERS: Partial<Record<keyof RatingSettings, [number, number]>> = {
+  newDays: [1, 365],
+  recentDays: [1, 730],
+  oldDays: [1, 1825],
+  openMaxAgeDays: [1, 3650],
+  scoreRatings: [0, 1000],
+  queuedPerSite: [1, 500],
+};
+const FLAGS: (keyof RatingSettings)[] = ['refresh', 'bookmeter'];
+
+export function readRatingSettings(db: Database.Database): RatingSettings {
+  const row = db.prepare('SELECT json FROM store_rating_settings WHERE id = 1').get() as
+    | { json: string }
+    | undefined;
+  let stored: Record<string, unknown> = {};
+  try {
+    stored = row ? (JSON.parse(row.json) as Record<string, unknown>) : {};
+  } catch {
+    stored = {};
+  }
+  const out: RatingSettings = { ...DEFAULT_RATING_SETTINGS };
+  for (const [key, [min, max]] of Object.entries(NUMBERS) as [
+    keyof RatingSettings,
+    [number, number],
+  ][]) {
+    const v = stored[key];
+    if (typeof v === 'number' && Number.isFinite(v) && v >= min && v <= max) {
+      (out as unknown as Record<string, unknown>)[key] = v;
+    }
+  }
+  for (const key of FLAGS) {
+    if (typeof stored[key] === 'boolean')
+      (out as unknown as Record<string, unknown>)[key] = stored[key];
+  }
+  return out;
+}
+
+/** Saves the given fields (others kept); throws RatingSettingsError on a bad value. */
+export function saveRatingSettings(
+  db: Database.Database,
+  patch: Record<string, unknown>,
+): RatingSettings {
+  const next = readRatingSettings(db) as unknown as Record<string, unknown>;
+  for (const [key, v] of Object.entries(patch)) {
+    if (FLAGS.includes(key as keyof RatingSettings)) {
+      if (typeof v !== 'boolean') throw new RatingSettingsError(`${key} must be true or false`);
+      next[key] = v;
+      continue;
+    }
+    const range = NUMBERS[key as keyof RatingSettings];
+    if (!range) throw new RatingSettingsError(`Unknown setting: ${key}`);
+    const [min, max] = range;
+    if (typeof v !== 'number' || !Number.isFinite(v) || v < min || v > max) {
+      throw new RatingSettingsError(`${key} must be a number from ${min} to ${max}`);
+    }
+    next[key] = v;
+  }
+  db.prepare(
+    `INSERT INTO store_rating_settings (id, json) VALUES (1, ?)
+     ON CONFLICT(id) DO UPDATE SET json = excluded.json`,
+  ).run(JSON.stringify(next));
+  return next as unknown as RatingSettings;
+}

@@ -16,10 +16,14 @@
  *
  * Only Natively's book pages are asked (robots.txt allows them; never its search). The cleanup's
  * fetch container and cache are not used.
+ *
+ * Store ratings (2026-11-25): the same page's learners' rating is saved too (store_ratings, site
+ * 'natively'); the first pass also reads every id without one, once.
  */
 import type Database from 'better-sqlite3';
 import { noteCatalogWrite } from '../catalog/catalog-version';
-import { NATIVELY_ID_RE, parseNativelyLevel } from './parse';
+import { saveRating } from '../ratings/store';
+import { NATIVELY_ID_RE, parseNativelyLevel, parseNativelyReviews } from './parse';
 import { readNativelySettings, type NativelySettings } from './settings';
 
 export const NATIVELY_BASE_URL = 'https://learnnatively.com';
@@ -238,9 +242,11 @@ export class NativelyLevels {
         `SELECT DISTINCT bi.value AS id FROM book_identifiers bi
          JOIN book_sources s ON s.book_id = bi.book_id AND s.missing_at IS NULL
          LEFT JOIN natively_levels nl ON nl.natively_id = bi.value
+         LEFT JOIN store_ratings sr ON sr.site = 'natively' AND sr.site_id = bi.value
          WHERE bi.type = 'natively'
            AND (nl.natively_id IS NULL
-                OR (nl.state = 'error' AND nl.checked_at = 0 AND nl.fails < 3))
+                OR (nl.state = 'error' AND nl.checked_at = 0 AND nl.fails < 3)
+                OR (sr.site IS NULL AND nl.state <> 'error'))
          ORDER BY bi.value`,
       )
       .all() as { id: string }[];
@@ -362,6 +368,7 @@ export class NativelyLevels {
     clearTimeout(timer);
     if (status === 404 || status === 410) {
       this.save(id, { level: null, temporary: false, state: 'gone' });
+      this.saveReviews(id, null, true);
       this.succeeded();
       return false;
     }
@@ -369,6 +376,7 @@ export class NativelyLevels {
     if (status !== 200) return this.failed(id, `HTTP ${status}`, false);
     const parsed = parseNativelyLevel(body);
     this.succeeded();
+    this.saveReviews(id, body, false);
     if (parsed.kind === 'level') {
       this.save(id, { level: parsed.level, temporary: parsed.temporary, state: 'ok' });
     } else if (parsed.kind === 'none') {
@@ -377,6 +385,32 @@ export class NativelyLevels {
       this.failed(id, "the page's level couldn't be read", false);
     }
     return false;
+  }
+
+  /** The page's learners' rating (store ratings); never breaks the level's read. */
+  private saveReviews(id: string, body: string | null, gone: boolean): void {
+    try {
+      const now = this.now();
+      if (gone) {
+        saveRating(this.db, 'natively', id, { kind: 'gone' }, now);
+        return;
+      }
+      const r = body ? parseNativelyReviews(body) : null;
+      if (!r) return;
+      saveRating(
+        this.db,
+        'natively',
+        id,
+        r.count > 0 && r.avg !== null
+          ? { kind: 'rating', avg: r.avg, count: r.count, reviews: null }
+          : { kind: 'none' },
+        now,
+      );
+    } catch (err) {
+      this.log(
+        `Natively levels: ${id}: the learners' rating wasn't saved: ${(err as Error).message}`,
+      );
+    }
   }
 
   private succeeded(): void {

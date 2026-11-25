@@ -239,6 +239,48 @@ describe('parseQuery: level (the Natively level)', () => {
   });
 });
 
+describe('parseQuery: rating, myrating, ratings and readers (store ratings)', () => {
+  const bounds = (q: string) => {
+    const [t] = terms(q);
+    return 'min' in t ? [t.type, t.min, t.max, t.negated] : null;
+  };
+
+  it('reads stars as tenths; a bare whole number is that star', () => {
+    expect(bounds('rating:>=4')).toEqual(['rating', 40, null, false]);
+    expect(bounds('rating:>4')).toEqual(['rating', 41, null, false]);
+    expect(bounds('rating:<3.5')).toEqual(['rating', null, 34, false]);
+    expect(bounds('rating:<=4.5')).toEqual(['rating', null, 45, false]);
+    expect(bounds('rating:4')).toEqual(['rating', 40, 49, false]);
+    expect(bounds('rating:5')).toEqual(['rating', 50, 50, false]);
+    expect(bounds('rating:4.5')).toEqual(['rating', 45, 45, false]);
+    expect(bounds('rating:=4')).toEqual(['rating', 40, 40, false]);
+    expect(bounds('Rating：4-4.5')).toEqual(['rating', 40, 45, false]);
+    expect(bounds('-myrating:>=4')).toEqual(['myrating', 40, null, true]);
+  });
+
+  it('reads counts like chars:', () => {
+    expect(bounds('ratings:>=100')).toEqual(['ratings', 100, null, false]);
+    expect(bounds('ratings:<20')).toEqual(['ratings', null, 19, false]);
+    expect(bounds('readers:>=1k')).toEqual(['readers', 1000, null, false]);
+    expect(bounds('readers:1,000-5k')).toEqual(['readers', 1000, 5000, false]);
+  });
+
+  it('says what went wrong', () => {
+    for (const q of ['rating:', 'rating:6', 'rating:4.55', 'rating:abc', 'rating:1-2-3']) {
+      expect(error(q).message, q).toMatch(/rating/);
+    }
+    expect(error('rating:4.5-4').message).toMatch(/smaller one/);
+    expect(error('ratings:abc').message).toMatch(/ratings:>=100/);
+    expect(error('readers:').message).toMatch(/readers: needs a number/);
+  });
+
+  it('keeps plain words that only start like a field', () => {
+    expect(shapes('ratingless')).toEqual([
+      { type: 'any', negated: false, matcher: { kind: 'text', value: 'ratingless', exact: false } }
+    ]);
+  });
+});
+
 describe('parseQuery: status and favorite', () => {
   it('reads one or more statuses, ignoring case and repeats', () => {
     expect(shapes('status:Reading,completed,reading')).toEqual([

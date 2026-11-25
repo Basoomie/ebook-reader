@@ -58,6 +58,7 @@
   import ToolbarSettings from '$lib/components/settings/toolbar-settings.svelte';
   import BookLinksSettings from '$lib/components/settings/book-links-settings.svelte';
   import NativelyLevelSettings from '$lib/components/settings/natively-level-settings.svelte';
+  import StoreRatingsSettings from '$lib/components/settings/store-ratings-settings.svelte';
   import {
     bookLinksMoreAs$,
     bookLinksPlacement$,
@@ -1478,6 +1479,9 @@
       </SettingRow>
       <SettingRow id="natively-levels" shared layout="stack">
         {#if browser}<NativelyLevelSettings />{/if}
+      </SettingRow>
+      <SettingRow id="store-ratings" shared layout="stack">
+        {#if browser}<StoreRatingsSettings />{/if}
       </SettingRow>
     </SettingsGroup>
     <!-- Book summaries session 4: after Book page. -->

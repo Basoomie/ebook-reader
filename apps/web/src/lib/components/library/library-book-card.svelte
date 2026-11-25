@@ -6,7 +6,8 @@
    * Tapping the cover or title opens the book; a hidden cover is revealed by the first
    * tap. The ⋮ in the cover's corner (on hover; always on touch screens and E-ink) has
    * Continue reading / Read, Book status… and Add to collection…. The cover's bottom left
-   * shows "Uploaded" or the Natively level ("Level 25??" when temporary), the bottom right
+   * shows "Uploaded" or the Natively level ("Level 25??" when temporary) — or, while the list is
+   * sorted by Rating, Most rated or Most read, that figure (store ratings) — the bottom right
    * "on this device".
    */
   import type { CatalogBook } from '$lib/library/types';
@@ -26,6 +27,7 @@
   import CoverImage from './cover-image.svelte';
   import LibraryBookMenu from './library-book-menu.svelte';
   import NativelyLevelTag from './natively-level.svelte';
+  import { cardRatingText } from '$lib/library/store-ratings';
 
   export let book: CatalogBook;
   export let thumbnailUrl: string;
@@ -43,6 +45,8 @@
   export let selected = false;
   /** Recently viewed (2026-11-24): the ⋮ menu offers Remove from Recently viewed. */
   export let forgettable = false;
+  /** The list's sort key: under a store ratings' sort the card shows that figure. */
+  export let sortKey: string | null = null;
 
   const dispatch = createEventDispatcher<{
     open: CatalogBook;
@@ -72,6 +76,7 @@
       ? formatSeriesIndex(book.series.index)
       : '';
   $: readLabel = progressFraction !== null ? 'Continue reading' : 'Read';
+  $: ratingText = cardRatingText(book, sortKey);
 
   /** The title: a link to the details, except in select mode (then it selects). */
   function onTitleClick(ev: MouseEvent) {
@@ -117,6 +122,13 @@
         >
           Uploaded
         </span>
+      {:else if ratingText}
+        <!-- Store ratings (2026-11-25): only while sorted by one of their sorts. -->
+        <span
+          class="c-badge absolute bottom-2 left-2 px-2 text-[0.7rem]"
+          class:hidden={selectMode}
+          data-testid="card-store-rating">{ratingText}</span
+        >
       {:else if book.nativelyLevel}
         <!-- The Natively level (2026-11-24), bottom left as "on this device" is bottom right. -->
         <span

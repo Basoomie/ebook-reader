@@ -188,6 +188,51 @@ export class FetchQueue {
     return row;
   }
 
+  // -------------------------------------------- requests asked again (store ratings)
+
+  /** A request's state ('queued', 'leased', 'done', 'gone', 'failed'), or null when unknown. */
+  requestState(id: number): string | null {
+    const r = this.db.prepare('SELECT state FROM fetch_requests WHERE id = ?').get(id) as
+      | { state: string }
+      | undefined;
+    return r?.state ?? null;
+  }
+
+  /**
+   * Puts an answered request back in line to be asked again (store ratings read a page again
+   * when its figures are old). A request still waiting keeps its place (its priority raised).
+   */
+  requeue(id: number, priority: number, now = Date.now()): void {
+    this.db
+      .prepare(
+        `UPDATE fetch_requests SET state = 'queued', attempts = 0, next_at = 0, priority = ?,
+           status = NULL, outcome = NULL, error = NULL, lease_token = NULL, lease_until = NULL,
+           updated_at = ?
+         WHERE id = ? AND state IN ('done', 'gone', 'failed')`,
+      )
+      .run(priority, now, id);
+    this.db
+      .prepare(
+        `UPDATE fetch_requests SET priority = MAX(priority, ?), updated_at = ?
+         WHERE id = ? AND state = 'queued'`,
+      )
+      .run(priority, now, id);
+  }
+
+  /** Deletes a read answer's cached file (the request row stays, to be asked again). */
+  forgetAnswer(id: number): void {
+    const r = this.db.prepare('SELECT cache_file FROM fetch_requests WHERE id = ?').get(id) as
+      | { cache_file: string | null }
+      | undefined;
+    if (!r?.cache_file) return;
+    try {
+      fs.rmSync(path.join(this.cacheDir, r.cache_file), { force: true });
+    } catch {
+      // A file that can't be removed is overwritten by the next answer.
+    }
+    this.db.prepare('UPDATE fetch_requests SET cache_file = NULL WHERE id = ?').run(id);
+  }
+
   // ------------------------------------------------------------ pacing
 
   private site(key: string, now: number): SiteRow {

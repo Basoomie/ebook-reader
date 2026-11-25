@@ -57,6 +57,7 @@ import { parseNotificationsConfig } from './notifications/config';
 import { NotificationService } from './notifications/service';
 import { NotificationWatcher } from './notifications/watcher';
 import { NativelyLevels } from './natively/levels';
+import { StoreRatings } from './ratings/service';
 
 // Every console line is also kept (secrets removed) for the bug report (WP18).
 captureConsole(serverLogs);
@@ -246,6 +247,17 @@ const natively =
       })
     : null;
 
+// Store ratings (2026-11-25): first filled from the cleanup's cached store pages; refreshed
+// through the cleanup's fetch queue (its container and VPN) when switched on.
+const ratings = database.ok
+  ? new StoreRatings({
+      db: database.db,
+      cacheDir: config.calibre.cacheDir ?? null,
+      queue: () => cleanup?.fetchQueue ?? null,
+    })
+  : null;
+if (cleanup && ratings) cleanup.onAnswerArrived(() => ratings.answerArrived());
+
 if (database.ok && config.calibre.dir) {
   try {
     thumbnails = new ThumbnailService({
@@ -281,6 +293,7 @@ if (database.ok && config.calibre.dir) {
       thumbnails,
       counts,
       natively,
+      ratings,
       holdIngest: (libraryId) => cleanup?.holdsIngest(libraryId) ?? false,
       wantsIngest: (libraryId) => cleanup?.wantsIngest(libraryId) ?? false,
       // Calibre metadata editing: what the index saw change, sorted out (whose change it was).
@@ -611,9 +624,11 @@ const app = createApp({
   summariesTest,
   summaries,
   natively,
+  ratings,
 });
 cleanup?.start();
 natively?.start();
+ratings?.start();
 cleanupOptions.audio?.start();
 notifications?.start();
 
@@ -640,6 +655,7 @@ function shutdown(signal: string): void {
   summariesSnapshots?.stop();
   void summaries?.stop();
   void natively?.stop();
+  ratings?.stop();
   aiCore?.stop();
   void notifications?.stop();
   void cleanup?.stop();

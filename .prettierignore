@@ -6,3 +6,5 @@ apps/storage-server/vendor/
 apps/web/src/lib/whispersync/
 # Saved Natively pages: the level parser reads them byte for byte (2026-11-24).
 apps/storage-server/tests/fixtures/natively/
+# Store pages cut from real pages: the store ratings parsers read them byte for byte (2026-11-25).
+apps/storage-server/tests/fixtures/store-ratings/

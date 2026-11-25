@@ -216,6 +216,8 @@ export const SETTINGS_REGISTRY: Record<string, SettingSpec> = {
   bookLinksPlacement: d('String'),
   bookLinksMoreAs: d('String'),
   bookLinksSearch: d('Boolean'),
+  // lib/library/store-ratings.ts (per device: the store ratings' parts on the book page)
+  bookRatingParts: d('Array'),
 
   // --- lib/summaries/settings.ts (book summaries: languages and spoiler blur the same on every
   // device; the Characters and Relationships layouts per device; the last language chosen

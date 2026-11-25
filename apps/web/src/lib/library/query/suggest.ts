@@ -61,12 +61,17 @@ const FIELD_HELP: Record<(typeof QUERY_FIELDS)[number], string> = {
   tag: 'Tag contains the text',
   chars: 'Number of characters: <150000, 50k-150k',
   level: 'Natively level: <25, 20-29',
+  rating: "Readers' stars on the stores: >=4, 3.5-4.5",
+  ratings: 'How many people rated it: >=100',
+  readers: 'People who logged it on 読書メーター: >=1000',
+  myrating: 'Your own rating: >=4, 5',
   status: 'Unread, reading, completed or dropped',
   favorite: 'Your favorites: yes or no',
   on: 'On this device: device or audio'
 };
 
-const FIELD_AT = /^(author|illustrator|series|tag|chars|level|status|favorite|on)[:：]/i;
+const FIELD_AT =
+  /^(author|illustrator|series|tag|chars|level|ratings|rating|readers|myrating|status|favorite|on)[:：]/i;
 
 /** The same folding as the search itself (full/half width, case). */
 export function foldName(text: string): string {
@@ -175,6 +180,23 @@ const EXAMPLES: Record<string, { value: string; detail: string }[]> = {
     { value: '<25', detail: 'Natively level under 25' },
     { value: '>=30', detail: '30 or higher' },
     { value: '20-29', detail: '20 to 29' }
+  ],
+  rating: [
+    { value: '>=4', detail: 'Readers rated it 4 stars or higher' },
+    { value: '<3.5', detail: 'Under 3.5 stars' },
+    { value: '4-4.5', detail: '4 to 4.5 stars' }
+  ],
+  ratings: [
+    { value: '>=100', detail: 'At least 100 ratings' },
+    { value: '<20', detail: 'Fewer than 20 ratings' }
+  ],
+  readers: [
+    { value: '>=1000', detail: 'At least 1,000 readers on 読書メーター' },
+    { value: '<100', detail: 'Fewer than 100 readers' }
+  ],
+  myrating: [
+    { value: '>=4', detail: 'You rated it 4 stars or higher' },
+    { value: '5', detail: 'You rated it 5 stars' }
   ]
 };
 

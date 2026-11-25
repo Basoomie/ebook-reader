@@ -58,6 +58,18 @@ export interface BookSummary {
    * link only); `temporary` is Natively's "Level 25??". Null without one.
    */
   nativelyLevel: { level: number; temporary: boolean } | null;
+  /**
+   * Store ratings (migration 33): the stores' pooled stars (Amazon and BOOK☆WALKER; `avg` to one
+   * decimal), how many rated it, and the Rating sort's score (x1000). Null without one.
+   */
+  storeRating: { avg: number; count: number; score: number } | null;
+  /** 読書メーター's 登録数 (people who logged it); null without one. */
+  readers: number | null;
+  /**
+   * Calibre's rating (yours), 1-10 half stars (9 = four and a half); null without one. In lists
+   * since store ratings (myrating: works offline).
+   */
+  rating: number | null;
   publisher: string | null;
   publishedAt: number | null;
   addedAt: number;
@@ -88,8 +100,6 @@ export interface BookDetail extends BookSummary {
   sources: BookSourceView[];
   /** Calibre's identifiers, type (lower case) -> value; {} for uploads. The book page's links. */
   identifiers: Record<string, string>;
-  /** Calibre's rating, 1-10 half stars (9 = four and a half); null without one. */
-  rating: number | null;
   /** Calibre's language codes ("jpn"); [] when unknown. */
   languages: string[];
 }
@@ -125,6 +135,11 @@ interface BookRow {
   char_count: number | null;
   natively_level: number | null;
   natively_temporary: number | null;
+  rating_x10: number | null;
+  rating_count: number | null;
+  rating_score: number | null;
+  readers: number | null;
+  rating: number | null;
   description: string | null;
   missing: number;
   has_cover: number;
@@ -151,7 +166,8 @@ export const SQL_CATALOG_SOURCE = "s.kind IN ('calibre', 'upload')";
 const BOOK_SELECT = `
   SELECT b.id, b.library_id, b.title, b.title_sort, b.author_sort, se.name AS series_name,
          b.series_index, b.publisher, b.published_at, b.added_at, b.char_count, b.description,
-         b.natively_level, b.natively_temporary,
+         b.natively_level, b.natively_temporary, b.rating_x10, b.rating_count, b.rating_score,
+         b.readers, b.rating,
          (s.missing_at IS NOT NULL) AS missing, s.has_cover, s.kind AS source_kind,
          s.calibre_path, s.content_hash, s.calibre_last_modified, c.status AS count_status, c.spec AS count_spec,
          (c.source_key = ${SQL_COUNT_SOURCE_KEY}) AS count_key_current
@@ -247,6 +263,12 @@ function attachLists(
       r.natively_level === null || r.natively_level === undefined
         ? null
         : { level: r.natively_level, temporary: r.natively_temporary === 1 },
+    storeRating:
+      r.rating_x10 === null || r.rating_x10 === undefined || !r.rating_count
+        ? null
+        : { avg: r.rating_x10 / 10, count: r.rating_count, score: r.rating_score ?? 0 },
+    readers: r.readers ?? null,
+    rating: r.rating && r.rating > 0 ? r.rating : null,
     publisher: r.publisher,
     publishedAt: r.published_at,
     addedAt: r.added_at,

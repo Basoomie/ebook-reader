@@ -83,5 +83,39 @@ export function parseNativelyLevel(html: string): ParsedLevel {
   return { kind: 'unreadable' };
 }
 
+/**
+ * The learners' rating on the same page (store ratings, 2026-11-25): the item's
+ * `reviewData.overall {count, sum, avg}` (avg is a string, "3"). `count` 0 = nobody rated it.
+ * Null when the page's data can't be read.
+ */
+export function parseNativelyReviews(html: string): { avg: number | null; count: number } | null {
+  for (const m of html.matchAll(PUSH_RE)) {
+    let s: string;
+    try {
+      s = JSON.parse(m[1]) as string;
+    } catch {
+      continue;
+    }
+    if (!s.includes('"item":{') || !s.includes('"reviewData":')) continue;
+    let data: unknown;
+    try {
+      data = JSON.parse(s.slice(s.indexOf(':') + 1));
+    } catch {
+      continue;
+    }
+    const item = findItem(data);
+    if (!item || !isObj(item.reviewData)) continue;
+    const overall = item.reviewData.overall;
+    if (!isObj(overall)) continue;
+    const count = Number(overall.count);
+    const avg = Number(overall.avg);
+    if (!Number.isSafeInteger(count) || count < 0) continue;
+    if (count === 0) return { avg: null, count: 0 };
+    if (!(avg >= 1 && avg <= 5)) continue;
+    return { avg: Math.round(avg * 100) / 100, count };
+  }
+  return null;
+}
+
 /** A Natively id as the book page's links take it (lib/book-links/links.ts idPattern). */
 export const NATIVELY_ID_RE = /^[0-9a-z]+$/i;
