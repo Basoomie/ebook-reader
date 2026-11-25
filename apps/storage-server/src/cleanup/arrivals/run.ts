@@ -127,6 +127,11 @@ export type RunPhase =
   | 'report'
   | 'done';
 
+/** Stage 1's parts on the run's books: their files' sizes, then the library's of those sizes. */
+const STAGE1_PARTS = ['stat', 'match'] as const;
+/** The AI step's parts while the models answer: the first pair, then the stronger pair. */
+const AI_PARTS = ['cheap', 'strong'] as const;
+
 export const RUN_PHASES: readonly RunPhase[] = [
   'scan',
   'archives',
@@ -248,6 +253,13 @@ export interface RunProgress {
     cursor: number;
     pairs?: { a: number; b: number }[];
   };
+  /**
+   * The part of another phase that runs in parts counted on their own (stage 1's file sizes,
+   * then its same-size books; the AI's first pair, then the stronger pair), with its own start
+   * (the bar's pace). WP20g run 7, 2026-11-25: steps without a count showed no time left and
+   * the bar jumped from step to step.
+   */
+  part?: { name: string; index: number; count: number; startedAt: number; startDone: number };
   /**
    * Since when the run waits for another stage's analysis. The bar shows no time left meanwhile,
    * and the wait is taken out of the pace when the run goes on (WP20g, 2026-11-24: a two-hour
@@ -772,7 +784,65 @@ export class BookArrivals {
     p.phaseStartedAt = t;
     p.phaseStartDone = 0;
     p.waiting = null;
+    delete p.part;
     this.save(runId, p);
+  }
+
+  /** This phase's part (a new part counts from its own start). */
+  private setPart(p: RunProgress, name: string, parts: readonly string[]): void {
+    if (parts.length < 2) return;
+    if (p.part?.name === name) return;
+    p.part = {
+      name,
+      index: Math.max(0, parts.indexOf(name)),
+      count: parts.length,
+      startedAt: Date.now(),
+      startDone: 0,
+    };
+  }
+
+  private lastPassSave = 0;
+
+  /** A long pass's progress into the phase's count, saved at most every 5 s for the card. */
+  private passProgress(
+    runId: number,
+    p: RunProgress,
+    parts: readonly string[],
+    name: string,
+    done: number,
+    total: number,
+  ): void {
+    this.setPart(p, name, parts);
+    const c = this.count(p, p.phase);
+    c.done = done;
+    c.total = total;
+    const t = Date.now();
+    if (t - this.lastPassSave >= 5000) {
+      this.lastPassSave = t;
+      this.save(runId, p);
+    }
+  }
+
+  /** The run's changes of these stages written so far, of those it will write (class auto). */
+  private writeCount(
+    p: RunProgress,
+    phase: RunPhase,
+    stages: number[],
+    libraryId: string,
+    runId: number,
+  ): void {
+    const rows = this.db
+      .prepare(
+        `SELECT state, COUNT(*) AS n FROM proposed_changes INDEXED BY proposed_changes_counts
+         WHERE stage IN (${stages.map(() => '?').join(', ')}) AND library_id = ? AND analysis_id = ?
+           AND class = 'auto' GROUP BY state`,
+      )
+      .all(...stages, libraryId, arrivalAnalysisId(runId)) as { state: string; n: number }[];
+    const c = this.count(p, phase);
+    c.total = rows.reduce((a, r) => a + r.n, 0);
+    c.done = rows
+      .filter((r) => r.state !== 'proposed' && r.state !== 'queued')
+      .reduce((a, r) => a + r.n, 0);
   }
 
   /** The time zone the schedule uses (blank: the server's). */
@@ -1099,6 +1169,7 @@ export class BookArrivals {
       const waited = Date.now() - p.waitingSince;
       p.phaseStartedAt += waited;
       if (p.cmp) p.cmp.startedAt += waited;
+      if (p.part) p.part.startedAt += waited;
       delete p.waitingSince;
     }
     // A stage set Off is not run for the arrivals either: the run waits for it (as the
@@ -1213,7 +1284,13 @@ export class BookArrivals {
         const books = this.snapshotBooks(libraryId);
         const res = await this.withDisk(
           p,
-          () => stage1Pass(this.passDeps(run.id, libraryId, libDir), scope, books, shouldStop),
+          () =>
+            stage1Pass(
+              this.passDeps(run.id, libraryId, libDir, p, STAGE1_PARTS),
+              scope,
+              books,
+              shouldStop,
+            ),
           shouldStop,
         );
         if (!res) return 'wait';
@@ -1231,6 +1308,7 @@ export class BookArrivals {
           return 'more';
         }
         const id = arrivalAnalysisId(run.id);
+        this.writeCount(p, 'removals', [1, 3], libraryId, run.id);
         if (this.checksWait(p)) return 'wait';
         for (const stage of [1, 3] as const) {
           const r =
@@ -1262,7 +1340,13 @@ export class BookArrivals {
         if (stage2 && uuids.length) {
           const n = await this.withDisk(
             p,
-            () => stage2Pass(this.passDeps(run.id, libraryId, libDir), stage2, uuids, shouldStop),
+            () =>
+              stage2Pass(
+                this.passDeps(run.id, libraryId, libDir, p, ['read']),
+                stage2,
+                uuids,
+                shouldStop,
+              ),
             shouldStop,
           );
           if (n === null) return 'wait';
@@ -1290,6 +1374,15 @@ export class BookArrivals {
         p.s5 ??= emptyStage5Pass();
         const r = await s5.step(p.stage4, p.s5, uuids, shouldStop);
         p.cost = (p.ai?.cost ?? 0) + (p.s5.cost ?? 0);
+        const c5 = this.count(p, 'stage5');
+        // Two questions a book while the models answer, then the books decided.
+        c5.total = p.s5.phase === 'models' ? p.s5.keys.length * 2 : uuids.length;
+        c5.done =
+          p.s5.phase === 'models'
+            ? p.s5.pending === undefined
+              ? 0
+              : Math.max(0, c5.total - p.s5.pending)
+            : p.s5.decided;
         p.waiting = p.s5.wait;
         if (r === 'done') this.next(run.id, p, 'write5');
         return r === 'done' ? 'more' : r;
@@ -1309,8 +1402,17 @@ export class BookArrivals {
     }
   }
 
-  private passDeps(runId: number, libraryId: string, libDir: string): PassDeps {
+  private passDeps(
+    runId: number,
+    libraryId: string,
+    libDir: string,
+    p?: RunProgress,
+    parts: readonly string[] = [],
+  ): PassDeps {
     return {
+      progress: p
+        ? (name, done, total) => this.passProgress(runId, p, parts, name, done, total)
+        : undefined,
       cleanup: this.db,
       main: this.deps.main,
       libraryId,
@@ -3333,8 +3435,15 @@ export class BookArrivals {
     p.cost = p.ai.cost;
     p.waiting = p.ai.wait;
     const c = this.count(p, 'ai');
-    c.total = uuids.length;
-    c.done = p.ai.decided;
+    if (p.ai.phase === 'cheap' || p.ai.phase === 'strong') {
+      // While the models answer: their questions (two a book), each pair counted on its own.
+      this.setPart(p, p.ai.phase, p.ai.design === 'E' ? ['cheap'] : AI_PARTS);
+      c.total = (p.ai.phase === 'cheap' ? p.ai.keys.length : p.ai.strongKeys.length) * 2;
+      c.done = p.ai.pending === undefined ? 0 : Math.max(0, c.total - p.ai.pending);
+    } else {
+      c.total = uuids.length;
+      c.done = p.ai.decided;
+    }
     if (r === 'done') this.next(run.id, p, 'write4');
     return r === 'done' ? 'more' : r;
   }
@@ -3359,6 +3468,7 @@ export class BookArrivals {
           ? this.deps.stage4Batches
           : this.deps.stage5Batches;
     const w = (p.writes[`s${stage}`] ??= { batches: [], applied: 0, failed: 0 });
+    this.writeCount(p, p.phase, [stage], libraryId, run.id);
     if (this.checksWait(p)) return 'wait';
     if (this.deps.batches.open()) {
       p.waiting = 'A batch is being applied';
@@ -3601,6 +3711,9 @@ export class BookArrivals {
         )
         .get(libraryId, analysisId) as { n: number }
     ).n;
+    const cm = this.count(p, 'move');
+    cm.total = p.move.auto;
+    cm.done = Math.max(0, p.move.auto - left);
     if (left === 0) {
       p.move.moved = (
         this.db

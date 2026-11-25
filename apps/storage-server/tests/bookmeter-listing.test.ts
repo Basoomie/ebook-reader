@@ -619,6 +619,52 @@ describe('Bookmeter links: the pass', () => {
     expect(() => p.setVerdict(spot[0].uuid, 'wrong')).toThrow(/closed/);
   });
 
+  it('drops the changes of books removed from Calibre before each batch (never pausing stage 4 on them)', async () => {
+    const p = pass();
+    p.setMode('analyse');
+    await runUntil(p, () => false);
+    fetchAll(byUrl);
+    await runUntil(p, (ph) => ph === 'spot');
+    await p.step();
+    for (const s of p.listSpot(LIB, 1)) p.setVerdict(s.uuid, 'right');
+    // Removed before On (the rebuild finds it gone): its Preview proposal goes too.
+    const c = books.get('c')!;
+    books.delete('c');
+    p.setMode('on');
+    for (let i = 0; i < 50 && !p.state().progress.write.rebuilt; i++) await p.step();
+    expect(proposals().map((x) => x.u)).toEqual(['a']);
+    expect(p.state().progress.propose).toMatchObject({ proposed: 1, removed: 1, gone: 0 });
+    // Removed after the rebuild, while the write waits: dropped before the batch is planned.
+    books.set('c', c);
+    expect(p.proposeOne(LIB, 1, 'c')).toBe('proposed');
+    books.delete('a');
+    for (let i = 0; i < 50 && p.state().progress.phase !== 'done'; i++) await p.step();
+    expect(planned).toEqual([listingAnalysisId(1)]);
+    expect(proposals().map((x) => [x.u, x.state])).toEqual([['c', 'applied']]);
+    // Counted from the database as it is now, each book once ('c' is back in Calibre).
+    expect(p.state().progress.propose).toMatchObject({ proposed: 1, removed: 1, gone: 0, held: 0 });
+  });
+
+  it('takes the card counts from the database once for a run rebuilt before (never twice)', async () => {
+    const p = pass();
+    p.setMode('analyse');
+    await runUntil(p, () => false);
+    fetchAll(byUrl);
+    await runUntil(p, (ph) => ph === 'spot');
+    await p.step();
+    for (const s of p.listSpot(LIB, 1)) p.setVerdict(s.uuid, 'right');
+    p.setMode('on');
+    for (let i = 0; i < 50 && !p.state().progress.write.rebuilt; i++) await p.step();
+    // As the old code left it: a book gone from Calibre counted as "saved link changed", its
+    // Preview proposal still open, the counts never taken from the database.
+    db.prepare(
+      `UPDATE bookmeter_listing_state SET progress_json = json_set(json_remove(progress_json, '$.write.recounted'), '$.propose.gone', 1, '$.propose.proposed', 1)`,
+    ).run();
+    books.delete('c');
+    for (let i = 0; i < 50 && p.state().progress.phase !== 'done'; i++) await p.step();
+    expect(p.state().progress.propose).toMatchObject({ proposed: 1, removed: 1, gone: 0 });
+  });
+
   it('never decides a book from a refused search: asks it again until it is answered', async () => {
     const s0 = getSettings(db).fetch;
     updateSettings(db, { fetch: { ...s0, maxAttempts: 1 } });

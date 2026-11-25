@@ -710,6 +710,17 @@ export class LibraryApi {
   }
 
   /**
+   * Next in your series (docs/design/next-in-series.md): the next volume of each series you
+   * are reading, the series whose volume you finished last first. Ids only; the cards come
+   * from `lookup`.
+   */
+  async nextInSeries(options?: RequestOptions): Promise<string[]> {
+    return ((await this.get('/next-in-series', options)).json() as Promise<{ ids: string[] }>).then(
+      (r) => r.ids
+    );
+  }
+
+  /**
    * The given books in the given order (at most 200), without hidden ones and the ones
    * that don't match `q` (WP8b: a list collection, in its own order).
    */

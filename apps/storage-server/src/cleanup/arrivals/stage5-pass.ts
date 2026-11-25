@@ -34,6 +34,8 @@ export interface Stage5PassProgress {
   keys: string[];
   cursor: number;
   decided: number;
+  /** Questions not answered yet (the run's bar while the models answer). */
+  pending?: number;
   proposed: number;
   wait: string | null;
   cost: number;
@@ -128,6 +130,7 @@ export class ArrivalStage5 {
     if (prog.phase === 'models') {
       const r = await runner.step(STAGE5_SPEC, runId, shouldStop);
       prog.cost = (runSpend(this.db, 'calibre5', runId) as { costUsd: number }).costUsd ?? 0;
+      prog.pending = r.pending;
       if (r.wait) {
         prog.wait = waitText(r.wait);
         if (waitNeedsUser(r.wait)) return 'wait';

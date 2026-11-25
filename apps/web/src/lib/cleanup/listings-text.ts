@@ -48,6 +48,7 @@ export interface ListingsStatus {
       held: number;
       yours: number;
       gone: number;
+      removed?: number;
     };
     spot: { drawnAt: number | null; size: number };
     write: { rebuilt: boolean; batches: string[]; waiting: string | null };
@@ -214,6 +215,10 @@ export function listingsLines(s: ListingsStatus | null): string[] {
     out.push(`${n(p.propose.held)} wait: another change of their store links is still open.`);
   if (p.propose.gone)
     out.push(`${n(p.propose.gone)} not changed: their saved link changed since the search.`);
+  if (p.propose.removed)
+    out.push(
+      `${n(p.propose.removed)} not changed: no longer in Calibre (removed since the search).`
+    );
   if (p.labeled)
     out.push(
       `Labeled books: ${n(p.labeled.changes)} links change; ${n(p.labeled.flagged.length)} flagged by the checker for a look.`

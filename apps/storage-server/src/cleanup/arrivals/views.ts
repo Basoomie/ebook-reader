@@ -42,14 +42,20 @@ export interface Bar {
    * which one the count and the time left are for (WP20g, 2026-11-24: the bar went from 60 % to
    * 2 % when the reading part ended and the measuring began, which looked like a restart).
    */
-  part: { index: number; count: number; stage: CompareStage } | null;
+  part: { index: number; count: number; stage: CompareStage | string } | null;
 }
 
 /** The running phase's bar and its time left (from what this phase measured since it started). */
 export function runBar(p: RunProgress, now = Date.now()): Bar {
   const c = p.counts[p.phase] ?? { done: 0, total: 0 };
   // The compare phase's stages each count on their own: the pace from the stage's start.
-  const sub = p.phase === 'compare' && p.cmp ? p.cmp : null;
+  // Other phases in parts (stage 1, the AI step): the same, from the part's start.
+  const sub =
+    p.phase === 'compare' && p.cmp
+      ? { ...p.cmp, index: COMPARE_STAGES.indexOf(p.cmp.stage), count: COMPARE_STAGES.length }
+      : p.part
+        ? { ...p.part, stage: p.part.name }
+        : null;
   const elapsed = now - (sub ? sub.startedAt : p.phaseStartedAt);
   const byBytes = c.bytesTotal !== undefined && c.bytesTotal > 0;
   const done = byBytes ? (c.bytesDone ?? 0) : c.done;
@@ -68,13 +74,7 @@ export function runBar(p: RunProgress, now = Date.now()): Bar {
       p.waitingSince === undefined && rate > 0 && total > done
         ? Math.round((total - done) / rate / 1000)
         : null,
-    part: sub
-      ? {
-          index: COMPARE_STAGES.indexOf(sub.stage),
-          count: COMPARE_STAGES.length,
-          stage: sub.stage,
-        }
-      : null,
+    part: sub ? { index: sub.index, count: sub.count, stage: sub.stage } : null,
   };
 }
 

@@ -26,7 +26,8 @@ import {
   bookStateApi,
   collectionsApi,
   getSyncEngine,
-  libraryViewApi
+  libraryViewApi,
+  nextInSeriesApi
 } from '$lib/sync/sync-service';
 import { copyFromDetail, refreshCopies, type RefreshResult } from './copies';
 import { updateChangedFiles, type FileUpdateDeps } from './file-updates';
@@ -36,6 +37,7 @@ import { getOfflineStore, type OfflineCopy } from './offline-db';
 import { OfflineCatalog, type OfflineData } from './offline-catalog';
 import { firstServerAnswer, serverReachability, type FirstAnswer } from './reachability';
 import { serverCheckSeconds } from '$lib/library/settings';
+import { nextInSeriesBonus$, nextInSeriesOn$ } from '$lib/library/next-in-series-settings';
 
 /**
  * The offline Library in the browser: keeping the copies current (copies.ts) and the
@@ -344,15 +346,18 @@ export function bookFromLink(link: CalibreLink, thumbnail: string | null): Catal
 
 export async function loadOfflineData(): Promise<OfflineData> {
   const started = Date.now();
-  const [{ links, ids }, copies, saved, states, positions, view, audio] = await Promise.all([
-    deviceLinks(),
-    getOfflineStore().getAll(),
-    getOfflineStore().getLibraries(),
-    bookStateApi().getAll(),
-    libraryViewApi().positions(),
-    collectionsApi().view(),
-    audioBookIdsOnDevice().catch(() => [] as string[])
-  ]);
+  const [{ links, ids }, copies, saved, states, positions, view, audio, hidden] = await Promise.all(
+    [
+      deviceLinks(),
+      getOfflineStore().getAll(),
+      getOfflineStore().getLibraries(),
+      bookStateApi().getAll(),
+      libraryViewApi().positions(),
+      collectionsApi().view(),
+      audioBookIdsOnDevice().catch(() => [] as string[]),
+      nextInSeriesApi().loadHidden()
+    ]
+  );
   const byId = new Map(copies.map((c) => [c.bookId, c]));
   const linkById = new Map(links.map((l) => [l.bookId, l]));
   // Books without a copy yet: their EPUB covers are read together, not one after another.
@@ -376,7 +381,10 @@ export async function loadOfflineData(): Promise<OfflineData> {
     positions,
     collections: view.collections,
     items: view.items,
-    audioOnDevice: new Set(audio)
+    audioOnDevice: new Set(audio),
+    nextHidden: new Set(hidden.map((h) => h.id)),
+    nextOn: nextInSeriesOn$.getValue(),
+    nextBonus: nextInSeriesBonus$.getValue()
   };
 }
 
@@ -392,6 +400,10 @@ export function offlineCatalog(): OfflineCatalog {
     void bookStateApi().onChanged(invalidate);
     void libraryViewApi().onChanged(invalidate);
     void collectionsApi().onChanged(invalidate);
+    // Next in your series: a series hidden or shown again, or its settings changed.
+    nextInSeriesApi().hidden.subscribe(invalidate);
+    nextInSeriesOn$.subscribe(invalidate);
+    nextInSeriesBonus$.subscribe(invalidate);
   }
   return catalog;
 }

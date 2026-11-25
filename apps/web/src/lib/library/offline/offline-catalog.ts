@@ -31,6 +31,7 @@ import type { BookState } from '$lib/sync/book-state';
 import type { LocalRecord } from '$lib/sync/sync-db';
 import { summaryOf } from './copies';
 import { fieldNames, groupNameMatches, matchesQuery, type MatchContext } from './match';
+import { hideRecordId, nextInSeries, nextStateOf, type NextEntry } from '../next-in-series';
 import {
   bookComparator,
   DEFAULT_SORT,
@@ -67,6 +68,42 @@ export interface OfflineData {
    * this device count, as on the server).
    */
   audioOnDevice?: ReadonlySet<string>;
+  /**
+   * Next in your series: the ids of the hidden series' records, and the two settings
+   * (absent = the defaults: on, bonus books not offered).
+   */
+  nextHidden?: ReadonlySet<string>;
+  nextOn?: boolean;
+  nextBonus?: boolean;
+}
+
+/** Next in your series of one read of the device's data (computed once per read). */
+const nextCache = new WeakMap<OfflineData, NextEntry[]>();
+
+/** The next volumes among this device's books, newest finished series first. */
+export function offlineNext(data: OfflineData): NextEntry[] {
+  let entries = nextCache.get(data);
+  if (!entries) {
+    entries =
+      data.nextOn === false
+        ? []
+        : nextInSeries(
+            data.books.map((b) => ({
+              id: b.id,
+              libraryId: b.libraryId,
+              series: b.series,
+              addedAt: b.addedAt,
+              visible: !b.missing
+            })),
+            (id) => nextStateOf(data.states.get(id)),
+            {
+              bonus: data.nextBonus === true,
+              hidden: (lib, name) => data.nextHidden?.has(hideRecordId(lib, name)) ?? false
+            }
+          );
+    nextCache.set(data, entries);
+  }
+  return entries;
 }
 
 const DEFAULT_PAGE_SIZE = 50;
@@ -232,10 +269,15 @@ export class OfflineCatalog {
   private context(data: OfflineData): MatchContext {
     const ids = new Set(data.books.map((b) => b.id));
     const audio = data.audioOnDevice ?? new Set<string>();
+    let next: Set<string> | undefined;
     return {
       states: data.states,
       onDevice: (id) => ids.has(id),
-      audioOnDevice: (id) => ids.has(id) && audio.has(id)
+      audioOnDevice: (id) => ids.has(id) && audio.has(id),
+      isNext: (id) => {
+        next ??= new Set(offlineNext(data).map((e) => e.bookId));
+        return next.has(id);
+      }
     };
   }
 
@@ -308,6 +350,13 @@ export class OfflineCatalog {
     const n = this.listed(data, query).length;
     checkAborted(options);
     return n;
+  }
+
+  /** Next in your series: the books' ids in the row's order (this device's books only). */
+  async nextInSeries(options?: RequestOptions): Promise<string[]> {
+    const data = await this.data();
+    checkAborted(options);
+    return offlineNext(data).map((e) => e.bookId);
   }
 
   async lookup(
