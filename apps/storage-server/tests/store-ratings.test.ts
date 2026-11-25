@@ -320,6 +320,7 @@ function ratingsService(
     now,
     log: () => {},
     tickMs: 3_600_000,
+    paceMinAnswers: 2,
   });
   services.push(s);
   return s;
@@ -521,6 +522,10 @@ describe('the refresher (the cleanup fetch queue)', () => {
     expect(p.waiting).toBe(2);
     expect(p.due).toEqual({ amazon_jp: 0, bookwalker: 0 });
     expect(p.secondsLeft).toBe(1200);
+
+    // A quick later check of stage 4's saved pages runs without a bar.
+    await s.firstFill(true);
+    expect(s.progress().fill.running).toBe(false);
   });
 });
 

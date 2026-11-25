@@ -125,6 +125,8 @@ interface Options {
   log?: (line: string) => void;
   /** How often the refresher looks (ms; default 5 min). */
   tickMs?: number;
+  /** Answers needed before the time left is shown (default 10; tests use fewer books). */
+  paceMinAnswers?: number;
 }
 
 export class StoreRatings {
@@ -134,8 +136,10 @@ export class StoreRatings {
   private readonly now: () => number;
   private readonly log: (line: string) => void;
   private readonly tickMs: number;
+  private readonly paceMinAnswers: number;
 
-  private fill = { running: false, total: 0, done: 0, found: 0, startedAt: 0 };
+  /** `quiet`: a later check for pages stage 4 saved since (every 10 minutes), shown without a bar. */
+  private fill = { running: false, quiet: false, total: 0, done: 0, found: 0, startedAt: 0 };
   private lastFillAt = 0;
   private lastParamsAt = 0;
   private lastError: string | null = null;
@@ -160,6 +164,7 @@ export class StoreRatings {
     this.now = opts.now ?? Date.now;
     this.log = opts.log ?? ((l) => console.log(l));
     this.tickMs = opts.tickMs ?? 5 * 60_000;
+    this.paceMinAnswers = opts.paceMinAnswers ?? 10;
   }
 
   settings(): RatingSettings {
@@ -186,7 +191,7 @@ export class StoreRatings {
   /** After an index of the library: new ids get a first fill, at most every 10 minutes. */
   wake(): void {
     if (this.stopped || this.now() - this.lastFillAt < 600_000) return;
-    void this.firstFill();
+    void this.firstFill(true);
   }
 
   /** An answer arrived in the fetch queue: collect ours soon. */
@@ -218,7 +223,7 @@ export class StoreRatings {
   }
 
   /** Reads every unfilled id's cached page; resolves when done (in short turns). */
-  async firstFill(): Promise<void> {
+  async firstFill(quiet = false): Promise<void> {
     if (this.fill.running || !this.cacheDir) return;
     const root = path.join(this.cacheDir, 'cleanup');
     if (!fs.existsSync(path.join(root, 'fetch'))) return;
@@ -228,7 +233,14 @@ export class StoreRatings {
       this.updateParams();
       return;
     }
-    this.fill = { running: true, total: ids.length, done: 0, found: 0, startedAt: this.now() };
+    this.fill = {
+      running: true,
+      quiet,
+      total: ids.length,
+      done: 0,
+      found: 0,
+      startedAt: this.now(),
+    };
     // Runs again every 10 minutes for new books' pages: logged only when it found some.
     try {
       for (let i = 0; i < ids.length && !this.halted; i += 50) {
@@ -535,15 +547,19 @@ export class StoreRatings {
     const now = this.now();
     const hourAgo = now - 3_600_000;
     this.readTimes = this.readTimes.filter((t) => t > hourAgo);
-    // The pace over the last hour (or since switching on, at least 10 minutes in, 2 answers).
+    // The pace over the last hour (or since switching on: at least 2 minutes in, 10 answers).
     const span = now - Math.max(hourAgo, this.onAt);
     // What is left: due and not yet asked, plus asked and not yet answered.
     const dueTotal = Object.values(due).reduce((a, b) => a + b, 0) + waiting;
-    const perMs = span >= 600_000 && this.readTimes.length >= 2 ? this.readTimes.length / span : 0;
+    const perMs =
+      span >= 120_000 && this.readTimes.length >= this.paceMinAnswers
+        ? this.readTimes.length / span
+        : 0;
     const refreshLeft = dueTotal === 0 ? 0 : perMs > 0 ? Math.round(dueTotal / perMs / 1000) : null;
     return {
       fill: {
-        running: this.fill.running,
+        // A quick later check has no bar on the page (it would flash every 10 minutes).
+        running: this.fill.running && !this.fill.quiet,
         total: this.fill.total,
         done: this.fill.done,
         found: this.fill.found,
