@@ -24,7 +24,15 @@ async function retry<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
-function setup(opts: { downloadFails: number; reportFails: number; refuse?: boolean }) {
+function setup(opts: {
+  downloadFails: number;
+  reportFails: number;
+  refuse?: boolean;
+  /** The "added" report refused this many times (a final 4xx: not retried). */
+  addedRefused?: number;
+  /** The book shows in Calibre after the add (the lookup's answer). */
+  inCalibre?: boolean;
+}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ttsu-arr-retry-'));
   dirs.push(root);
   const bytes = Buffer.from('epub bytes');
@@ -33,6 +41,7 @@ function setup(opts: { downloadFails: number; reportFails: number; refuse?: bool
   let downloads = 0;
   let reportFails = opts.reportFails;
   let adds = 0;
+  let addedRefused = opts.addedRefused ?? 0;
   const api = {
     claimArrivals: async () => ({
       batch: {
@@ -59,6 +68,10 @@ function setup(opts: { downloadFails: number; reportFails: number; refuse?: bool
         reportFails--;
         throw new TypeError('fetch failed');
       }
+      if (r.step === 'added' && addedRefused > 0) {
+        addedRefused--;
+        throw new ServerError(409, 'not_claimed', 'The batch is not being worked on');
+      }
       reports.push(r);
       return { state: r.step };
     },
@@ -76,7 +89,7 @@ function setup(opts: { downloadFails: number; reportFails: number; refuse?: bool
     },
   };
   const calibredb = {
-    idsWithTitle: async () => [],
+    idsWithTitle: async () => (adds > 0 && (opts.inCalibre ?? true) ? [99] : []),
     ok: async () => {
       adds++;
       return { stdout: 'Added book ids: 99', stderr: '' };
@@ -117,5 +130,24 @@ describe('arrival adds through network drops', () => {
     expect(s.downloads()).toBe(1);
     expect(s.adds()).toBe(0);
     expect(s.reports.map((r) => r.step)).toEqual(['failed']);
+  });
+
+  it('an error after the add was sent is never reported as failed: the book is looked for', async () => {
+    const s = setup({ downloadFails: 0, reportFails: 0, addedRefused: 1 });
+    await s.w.cycle({} as never);
+    expect(s.adds()).toBe(1);
+    expect(s.reports.map((r) => r.step)).toEqual(['fetched', 'adding', 'added']);
+    expect(s.reports[2]).toMatchObject({ calibreId: 99, uuid: 'u-99' });
+  });
+
+  it('when the lookup cannot report either, the batch is left unfinished (claimed again later)', async () => {
+    const s = setup({ downloadFails: 0, reportFails: 0, addedRefused: 2 });
+    await expect(s.w.cycle({} as never)).rejects.toThrow(/left unfinished/);
+    expect(s.adds()).toBe(1);
+    expect(s.reports.map((r) => r.step)).toEqual(['fetched', 'adding']);
+    // Claimed again: the add is looked for, never sent twice.
+    await s.w.cycle({} as never);
+    expect(s.adds()).toBe(1);
+    expect(s.reports.map((r) => r.step)).toEqual(['fetched', 'adding', 'added']);
   });
 });

@@ -60,7 +60,7 @@ import { columnShape, MOVE_STAGE, MoveWorker } from './move';
  * library to another, `#characters` and `timestamp` join set_fields, and the move's target
  * library is checked (`move_target`: the same #illustrator and #characters as the old one).
  */
-export const SIDECAR_VERSION = '1.6.2';
+export const SIDECAR_VERSION = '1.6.3';
 
 /** The wait after a batch before asking for the next one (WP20g: the full poll after every batch cost ~1 h of run 7). */
 export const AFTER_BATCH_MS = 1000;

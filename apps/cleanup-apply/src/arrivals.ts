@@ -83,6 +83,13 @@ export interface ArrivalWorkerOptions {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/** A batch left unfinished on purpose (its lease runs out and it is claimed again). */
+export class UnfinishedBatch extends Error {
+  constructor(detail: string) {
+    super(`Batch left unfinished, an added book could not be looked for: ${detail}`);
+  }
+}
+
 /** The only name a file to add may have in the temporary folder (an EPUB, one per item). */
 export function arrivalTmpFile(tmpDir: string, itemId: number, name: string): string {
   const base = path.basename(name).replace(/[\\/\0]/g, '_');
@@ -127,14 +134,31 @@ export class ArrivalWorker {
         } catch (err) {
           const detail = shorten((err as Error).message, 500);
           this.o.log.error(`Arrival item ${item.itemId}: ${detail}`);
+          if (batch.kind === 'add' && (await exists(this.sentFile(batch.id, item.itemId)))) {
+            // The add was sent: an error after it (the server gone while the book was added,
+            // WP20g run 7) is no proof the book isn't in Calibre. Look for it, as after a restart.
+            try {
+              await this.add(login, batch, item);
+            } catch (err2) {
+              // Still unreachable: leave the batch unfinished, so its lease runs out and it is
+              // claimed again, and the add looked for then (never failed, never sent twice).
+              throw new UnfinishedBatch(shorten((err2 as Error).message, 300));
+            }
+            continue;
+          }
           await this.report(item.itemId, { step: 'failed', detail });
         }
       }
     } catch (err) {
+      if (err instanceof UnfinishedBatch) throw err;
       error = shorten((err as Error).message, 500);
     }
     if (!this.o.isStopped()) await this.retry(() => this.o.api.finishArrivals(batch.id, error));
     return true;
+  }
+
+  private sentFile(batchId: number, itemId: number): string {
+    return path.join(this.arrivalDir(batchId), `${itemId}.add-sent`);
   }
 
   /** The ids of Calibre's books with this title that appeared since `before`. */
@@ -164,7 +188,7 @@ export class ArrivalWorker {
   private async add(login: Login, batch: ArrivalBatch, item: ArrivalItem): Promise<void> {
     const dir = this.arrivalDir(batch.id);
     const note = path.join(dir, `${item.itemId}.add.json`);
-    const sent = path.join(dir, `${item.itemId}.add-sent`);
+    const sent = this.sentFile(batch.id, item.itemId);
     let before: number[];
     if (await exists(note)) {
       before = (JSON.parse(await fsp.readFile(note, 'utf8')) as { idsBefore: number[] }).idsBefore;
