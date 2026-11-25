@@ -18,6 +18,7 @@
     faArrowDown,
     faArrowUp,
     faCheck,
+    faGripVertical,
     faMagnifyingGlass,
     faPen,
     faRotateRight
@@ -619,6 +620,34 @@
     $homeRows$ = next;
   }
 
+  /** With a mouse, rows can be dragged by their handle (as in a collection's reorder list). */
+  const canDrag = typeof matchMedia === 'function' && matchMedia('(pointer: fine)').matches;
+
+  function dragRows(node: HTMLElement) {
+    let sortable: { destroy: () => void } | null = null;
+    let gone = false;
+    void import('sortablejs').then(({ default: SortableJs }) => {
+      if (gone) return;
+      sortable = SortableJs.create(node, {
+        handle: '[data-drag-handle]',
+        animation: 0,
+        ghostClass: 'opacity-40',
+        onEnd({ oldIndex, newIndex, item, from }) {
+          if (oldIndex === undefined || newIndex === undefined || oldIndex === newIndex) return;
+          // Put the row back: Svelte owns the DOM and re-renders the new order.
+          from.insertBefore(item, from.children[oldIndex + (oldIndex > newIndex ? 1 : 0)] ?? null);
+          save(moveRow(rows, oldIndex, newIndex - oldIndex));
+        }
+      });
+    });
+    return {
+      destroy() {
+        gone = true;
+        sortable?.destroy();
+      }
+    };
+  }
+
   function showRow(index: number, hidden: boolean) {
     save(setRowHidden(rows, index, hidden));
   }
@@ -707,12 +736,21 @@
           />
         </div>
       {/if}
-      <ul class="flex flex-col gap-2">
+      <ul class="flex flex-col gap-2" use:dragRows>
         {#each rows as row, i (rowKey(row))}
           <li
             class="c-edit-row flex flex-wrap items-center gap-2 rounded p-2"
             data-testid="home-edit-row"
           >
+            {#if canDrag}
+              <span
+                class="flex h-10 w-8 shrink-0 cursor-grab items-center justify-center"
+                title="Drag to move"
+                data-drag-handle
+              >
+                <Fa icon={faGripVertical} />
+              </span>
+            {/if}
             <span class="min-w-0 grow font-medium">
               {rowTitle(row, collectionName)}
               {#if row.hidden}<span class="text-sm font-normal"> (hidden)</span>{/if}
