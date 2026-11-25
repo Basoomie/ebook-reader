@@ -22,6 +22,7 @@
     RATING_PARTS,
     bookRatingParts$,
     formatCount,
+    refreshLeftText,
     ratingFeatures$,
     type RatingPart
   } from '$lib/library/store-ratings';
@@ -75,7 +76,13 @@
   $: fraction = fill && fill.total ? Math.min(1, fill.done / fill.total) : 0;
   $: dirty = !!draft && JSON.stringify(draft) !== JSON.stringify(saved);
   $: shownParts = new Set($bookRatingParts$);
-  $: dueTotal = progress ? Object.values(progress.refresh.due).reduce((a, b) => a + b, 0) : 0;
+  // Left to fetch: due and not yet asked, plus waiting in the fetch queue.
+  $: dueTotal = progress
+    ? Object.values(progress.refresh.due).reduce((a, b) => a + b, 0) + progress.refresh.waiting
+    : 0;
+  $: readCount = progress?.refresh.read ?? 0;
+  $: refreshFraction =
+    readCount + dueTotal > 0 ? Math.min(1, readCount / (readCount + dueTotal)) : 1;
 
   function togglePart(part: RatingPart, on: boolean) {
     const next = RATING_PARTS.filter((p) => (p === part ? on : shownParts.has(p)));
@@ -161,15 +168,36 @@
       </div>
     {/if}
     {#if progress.refresh.on}
-      <p class="text-sm text-c-muted" data-testid="ratings-refresh-status">
-        {#if !progress.refresh.available}
-          The library cleanup isn't running on the server, so nothing is fetched.
-        {:else}
-          {formatCount(progress.refresh.waiting)} waiting in the fetch queue · {formatCount(
-            dueTotal
-          )} due
-        {/if}
-      </p>
+      {#if !progress.refresh.available || dueTotal === 0}
+        <p class="text-sm text-c-muted" data-testid="ratings-refresh-status">
+          {#if !progress.refresh.available}
+            The library cleanup isn't running on the server, so nothing is fetched.
+          {:else}
+            Every store figure is up to date.
+          {/if}
+        </p>
+      {:else}
+        <div class="space-y-1.5" data-testid="ratings-refresh">
+          <div class="flex flex-wrap justify-between gap-2 text-sm">
+            <span
+              >Fetching ratings: {formatCount(readCount)} of {formatCount(
+                readCount + dueTotal
+              )}</span
+            >
+            <span class="text-c-muted">{refreshLeftText(progress.refresh.secondsLeft)}</span>
+          </div>
+          <div
+            class="c-progress h-2 overflow-hidden rounded-full bg-c-track"
+            role="progressbar"
+            aria-label="Fetching ratings"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={Math.floor(refreshFraction * 100)}
+          >
+            <div class="h-full bg-c-fill" style="width: {refreshFraction * 100}%" />
+          </div>
+        </div>
+      {/if}
     {/if}
     {#if progress.lastError}
       <p class="text-sm" role="status">Last problem: {progress.lastError}</p>
@@ -257,6 +285,19 @@
           value={draft.scoreRatings}
           data-testid="ratings-score"
           on:change={(e) => change({ scoreRatings: num(e, 0, 1000, draft?.scoreRatings ?? 20) })}
+        />
+      </label>
+      <label>
+        <span>New books wait for the cleanup's lookup (hours)</span>
+        <input
+          class="c-input"
+          type="number"
+          min="0"
+          max="720"
+          value={draft.newBookWaitHours}
+          data-testid="ratings-new-wait"
+          on:change={(e) =>
+            change({ newBookWaitHours: num(e, 0, 720, draft?.newBookWaitHours ?? 48) })}
         />
       </label>
     </div>

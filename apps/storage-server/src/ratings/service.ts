@@ -104,6 +104,11 @@ export interface RatingsProgress {
     waiting: number;
     /** Ids due now (never read or old), per site. */
     due: Record<string, number>;
+    /** Answers read since fetching was switched on (or the server started). */
+    read: number;
+    /** The time left for what is due now at the pace measured over the last hour; null until
+     * enough answers came back to measure it. */
+    secondsLeft: number | null;
   };
   /** Saved figures per site (state ok). */
   saved: Record<string, number>;
@@ -139,8 +144,14 @@ export class StoreRatings {
   /** Set by stop(): a running first fill ends early. */
   private halted = false;
   private ticking = false;
+  private collectTimer: NodeJS.Timeout | null = null;
   private dueCounts: Record<string, number> = {};
   private dueAt = 0;
+  /** When fetching was switched on (or the server started), the answers read since, and the
+   * times of those read in the last hour (the measured pace). */
+  private onAt = 0;
+  private readSinceOn = 0;
+  private readTimes: number[] = [];
 
   constructor(opts: Options) {
     this.db = opts.db;
@@ -159,6 +170,7 @@ export class StoreRatings {
     if (!this.stopped) return;
     this.stopped = false;
     this.halted = false;
+    this.onAt = this.now();
     void this.firstFill();
     this.timer = setInterval(() => void this.tick(), this.tickMs);
     this.timer.unref?.();
@@ -179,8 +191,13 @@ export class StoreRatings {
 
   /** An answer arrived in the fetch queue: collect ours soon. */
   answerArrived(): void {
-    if (this.stopped || this.ticking) return;
-    setTimeout(() => void this.collect(), 1000).unref?.();
+    if (this.stopped || this.collectTimer) return;
+    // One collect per second at most, however many of the cleanup's answers arrive.
+    this.collectTimer = setTimeout(() => {
+      this.collectTimer = null;
+      void this.collect();
+    }, 1000);
+    this.collectTimer.unref?.();
   }
 
   // ------------------------------------------------------------ first fill
@@ -212,7 +229,7 @@ export class StoreRatings {
       return;
     }
     this.fill = { running: true, total: ids.length, done: 0, found: 0, startedAt: this.now() };
-    this.log(`Store ratings: reading ${ids.length} cached store pages`);
+    // Runs again every 10 minutes for new books' pages: logged only when it found some.
     try {
       for (let i = 0; i < ids.length && !this.halted; i += 50) {
         this.db.transaction(() => {
@@ -230,7 +247,10 @@ export class StoreRatings {
             }
             const parsed = parsePage(site, id, html);
             // A cached page that can't be read is left to the refresher (no row).
-            if (parsed.kind !== 'unreadable') {
+            if (parsed.kind === 'blocked') {
+              // Never readable through the VPN: recorded, so the refresher waits the long pace.
+              saveRating(this.db, site, id, parsed, mtime);
+            } else if (parsed.kind !== 'unreadable') {
               saveRating(this.db, site, id, parsed, mtime);
               this.fill.found += 1;
             } else if (
@@ -245,9 +265,11 @@ export class StoreRatings {
         })();
         await new Promise<void>((r) => setImmediate(r));
       }
-      this.log(
-        `Store ratings: read ${this.fill.found} of ${this.fill.total} ids from cached pages`,
-      );
+      if (this.fill.found > 0) {
+        this.log(
+          `Store ratings: read ${this.fill.found} of ${this.fill.total} ids from cached pages`,
+        );
+      }
     } catch (err) {
       this.lastError = `first fill: ${(err as Error).message}`;
       console.error('Store ratings: the first fill stopped:', err);
@@ -277,6 +299,8 @@ export class StoreRatings {
       const s = this.settings();
       const q = this.queue();
       if (!q) return;
+      // Pages stage 4 saved since (new arrivals) are read from its cache, not asked again.
+      this.wake();
       this.collectWith(q);
       if (!s.refresh) return;
       for (const site of FETCHED_SITES) {
@@ -296,7 +320,15 @@ export class StoreRatings {
     if (!q || this.ticking) return;
     this.ticking = true;
     try {
-      this.collectWith(q);
+      if (this.collectWith(q) === 0) return;
+      // Top the queue up as it drains (not only every round), so the fetchers never wait on us:
+      // once half of a site's requests are answered (the due query runs once per half-queue).
+      const s = this.settings();
+      if (!s.refresh) return;
+      for (const site of FETCHED_SITES) {
+        if (site === 'bookmeter' && !s.bookmeter) continue;
+        if (this.waitingFor(site) <= s.queuedPerSite / 2) this.enqueueDue(q, s, site);
+      }
     } catch (err) {
       this.lastError = (err as Error).message;
     } finally {
@@ -330,6 +362,8 @@ export class StoreRatings {
         .prepare('DELETE FROM store_rating_requests WHERE site = ? AND site_id = ?')
         .run(w.site, w.site_id);
       saved += 1;
+      this.readSinceOn += 1;
+      this.readTimes.push(now);
     }
     return saved;
   }
@@ -341,7 +375,7 @@ export class StoreRatings {
     const rows = this.db
       .prepare(
         `SELECT bi.value AS id, MIN(b.published_at) AS pub, r.checked_at AS checked, r.state AS state,
-                r.fails AS fails
+                r.fails AS fails, MIN(b.created_at) AS created
          FROM book_identifiers bi
          JOIN books b ON b.id = bi.book_id
          JOIN book_sources src ON src.book_id = bi.book_id AND src.missing_at IS NULL
@@ -358,11 +392,19 @@ export class StoreRatings {
       checked: number | null;
       state: RatingRow['state'] | null;
       fails: number | null;
+      created: number;
     }[];
+    const q = this.queue();
     const out: string[] = [];
     for (const r of rows) {
       const id = r.id.trim();
       if (!SITE_ID_RE[site].test(id)) continue;
+      if (r.checked === null && site !== 'bookmeter') {
+        // Never read: a new book's page is fetched by the cleanup's stage 4 (new arrivals) and
+        // read from its saved copy by the first fill, so it isn't asked twice.
+        if (now - r.created < s.newBookWaitHours * 3_600_000) continue;
+        if (q?.isOpen(QUEUE_SITE[site], site === 'amazon_jp' ? id : pageUrl(site, id))) continue;
+      }
       if (r.checked !== null) {
         // A failed read is tried again after a day (three times), then at the old-book pace.
         const wait =
@@ -375,13 +417,16 @@ export class StoreRatings {
     return out;
   }
 
-  private enqueueDue(q: FetchQueue, s: RatingSettings, site: FetchedSite): void {
-    const waiting = (
+  private waitingFor(site: FetchedSite): number {
+    return (
       this.db
         .prepare('SELECT COUNT(*) AS n FROM store_rating_requests WHERE site = ?')
         .get(site) as { n: number }
     ).n;
-    const room = s.queuedPerSite - waiting;
+  }
+
+  private enqueueDue(q: FetchQueue, s: RatingSettings, site: FetchedSite): void {
+    const room = s.queuedPerSite - this.waitingFor(site);
     if (room <= 0) return;
     for (const id of this.dueIds(site, room)) this.ask(q, site, id, ROUTINE_PRIORITY);
   }
@@ -447,6 +492,11 @@ export class StoreRatings {
   /** After a settings change: the score follows its setting; switching on starts a round. */
   settingsChanged(before: RatingSettings, after: RatingSettings): void {
     this.dueAt = 0;
+    if (after.refresh && !before.refresh) {
+      this.onAt = this.now();
+      this.readSinceOn = 0;
+      this.readTimes = [];
+    }
     if (before.scoreRatings !== after.scoreRatings) this.updateParams();
     if (after.refresh && (!before.refresh || after.bookmeter !== before.bookmeter)) {
       void this.tick();
@@ -482,6 +532,15 @@ export class StoreRatings {
       this.dueAt = this.now();
     }
     const due = this.dueCounts;
+    const now = this.now();
+    const hourAgo = now - 3_600_000;
+    this.readTimes = this.readTimes.filter((t) => t > hourAgo);
+    // The pace over the last hour (or since switching on, at least 10 minutes in, 2 answers).
+    const span = now - Math.max(hourAgo, this.onAt);
+    // What is left: due and not yet asked, plus asked and not yet answered.
+    const dueTotal = Object.values(due).reduce((a, b) => a + b, 0) + waiting;
+    const perMs = span >= 600_000 && this.readTimes.length >= 2 ? this.readTimes.length / span : 0;
+    const refreshLeft = dueTotal === 0 ? 0 : perMs > 0 ? Math.round(dueTotal / perMs / 1000) : null;
     return {
       fill: {
         running: this.fill.running,
@@ -490,7 +549,14 @@ export class StoreRatings {
         found: this.fill.found,
         secondsLeft: this.fill.running ? Math.round((left * perId) / 1000) : 0,
       },
-      refresh: { on: s.refresh, available: this.queue() !== null, waiting, due },
+      refresh: {
+        on: s.refresh,
+        available: this.queue() !== null,
+        waiting,
+        due,
+        read: this.readSinceOn,
+        secondsLeft: s.refresh ? refreshLeft : 0,
+      },
       saved,
       lastError: this.lastError,
     };

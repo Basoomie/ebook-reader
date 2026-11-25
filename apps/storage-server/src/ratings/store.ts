@@ -66,9 +66,15 @@ export function savedRating(
   return r ? toRow(r) : null;
 }
 
+/** A region-blocked page's error text and failure count (the due query's daily retries stop at 3). */
+export const BLOCKED_ERROR = "sold only in Japan: the store hides it from the VPN's country";
+export const BLOCKED_FAILS = 3;
+
 /**
  * Saves an answer. `rating`/`none` replace the figures; `gone` clears them; `unreadable` and
- * errors keep the last good figures and count a failure. Returns true when a shown figure changed.
+ * errors keep the last good figures and count a failure. `blocked` (the store hides the book from
+ * the fetcher's country) is an error that waits at once at the old-book pace: asking again daily
+ * can't help. Returns true when a shown figure changed.
  */
 export function saveRating(
   db: Database.Database,
@@ -78,6 +84,15 @@ export function saveRating(
   checkedAt: number,
 ): boolean {
   const before = savedRating(db, site, siteId);
+  if (answer.kind === 'blocked') {
+    db.prepare(
+      `INSERT INTO store_ratings (site, site_id, avg, count, reviews, state, checked_at, error, fails)
+       VALUES (?, ?, NULL, NULL, NULL, 'error', ?, ?, ?)
+       ON CONFLICT(site, site_id) DO UPDATE SET state = 'error', error = excluded.error,
+         checked_at = excluded.checked_at, fails = MAX(fails + 1, excluded.fails)`,
+    ).run(site, siteId, checkedAt, BLOCKED_ERROR, BLOCKED_FAILS);
+    return false;
+  }
   if (answer.kind === 'unreadable' || answer.kind === 'error') {
     const error = answer.kind === 'error' ? answer.error : "the page's rating couldn't be read";
     db.prepare(

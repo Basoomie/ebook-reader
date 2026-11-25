@@ -44,6 +44,7 @@ const natively = (name: string) =>
 
 const BW_RATED = '5b1a695e-9481-4a89-8bc2-c924090c6114';
 const BW_NONE = 'c9ff099a-bd34-4a00-b4e9-4c549d557fb0';
+const BW_JAPAN_ONLY = '00032b54-6ea6-4f3a-856b-2d153df41f55';
 
 describe('the store pages (real pages)', () => {
   it("reads Amazon's own figures, not another product's stars on the page", () => {
@@ -75,6 +76,10 @@ describe('the store pages (real pages)', () => {
     // Another book's page is not this book's figure.
     expect(parseBookwalkerRating(page('bookwalker-rated.html'), BW_NONE)).toEqual({
       kind: 'unreadable',
+    });
+    // A Japan-only title seen through the VPN (United States): the store's error page.
+    expect(parseBookwalkerRating(page('bookwalker-japan-only.html'), BW_JAPAN_ONLY)).toEqual({
+      kind: 'blocked',
     });
   });
 
@@ -371,7 +376,7 @@ describe('the refresher (the cleanup fetch queue)', () => {
     await s.tick();
     expect(cdb.prepare('SELECT COUNT(*) AS n FROM fetch_requests').get()).toEqual({ n: 0 });
 
-    saveRatingSettings(e.db, { refresh: true });
+    saveRatingSettings(e.db, { refresh: true, newBookWaitHours: 0 });
     await s.tick();
     const reqs = cdb.prepare('SELECT * FROM fetch_requests').all() as {
       id: number;
@@ -424,7 +429,7 @@ describe('the refresher (the cleanup fetch queue)', () => {
     link('Alpha', 'amazon_jp', 'B000000009');
     link('Beta', 'bookwalker', BW_RATED);
     const { q } = fetchQueue();
-    saveRatingSettings(e.db, { refresh: true });
+    saveRatingSettings(e.db, { refresh: true, newBookWaitHours: 0 });
     const s = ratingsService(e.db, null, q);
     s.start();
     await s.tick();
@@ -438,6 +443,84 @@ describe('the refresher (the cleanup fetch queue)', () => {
     await s.tick();
     expect(savedRating(e.db, 'amazon_jp', 'B000000009')).toMatchObject({ state: 'gone' });
     expect(savedRating(e.db, 'bookwalker', BW_RATED)).toMatchObject({ state: 'error', fails: 1 });
+  });
+
+  it('asks a Japan-only page again only at the old-book pace', async () => {
+    const { e, link } = await env();
+    link('Alpha', 'bookwalker', BW_JAPAN_ONLY);
+    const { q } = fetchQueue();
+    saveRatingSettings(e.db, { refresh: true, newBookWaitHours: 0 });
+    const s = ratingsService(e.db, null, q);
+    s.start();
+    await s.tick();
+    for (const c of q.claim().requests) {
+      q.report(c.id, c.leaseToken, answer(page('bookwalker-japan-only.html')));
+    }
+    await s.tick();
+    expect(savedRating(e.db, 'bookwalker', BW_JAPAN_ONLY)).toMatchObject({
+      state: 'error',
+      fails: 3,
+      avg: null,
+    });
+    const day = 86_400_000;
+    e.db.prepare('UPDATE store_ratings SET checked_at = ?').run(Date.now() - 2 * day);
+    expect(s.dueIds('bookwalker', 10)).toEqual([]);
+    e.db.prepare('UPDATE store_ratings SET checked_at = ?').run(Date.now() - 91 * day);
+    expect(s.dueIds('bookwalker', 10)).toEqual([BW_JAPAN_ONLY]);
+  });
+
+  it("leaves a new book's first rating to stage 4's page (no second request)", async () => {
+    const { e, link } = await env();
+    link('Alpha', 'amazon_jp', 'B07DXV5BP2');
+    link('Beta', 'amazon_jp', 'B009NNZQVS');
+    const { q } = fetchQueue();
+    saveRatingSettings(e.db, { refresh: true });
+    let now = Date.now();
+    const s = ratingsService(e.db, null, q, () => now);
+    // Books new to the reader wait (48 h by default) for the new arrivals' stage 4.
+    expect(s.dueIds('amazon_jp', 10)).toEqual([]);
+    // Stage 4's own request for Beta's page is still open: Beta waits on, Alpha is asked.
+    q.enqueue(
+      {
+        site: 'amazon-dp',
+        key: 'B009NNZQVS',
+        url: 'https://www.amazon.co.jp/dp/B009NNZQVS',
+        priority: 0,
+      },
+      null,
+      now,
+    );
+    now += 49 * 3_600_000;
+    expect(s.dueIds('amazon_jp', 10)).toEqual(['B07DXV5BP2']);
+  });
+
+  it('measures the time left from the answers of the last hour', async () => {
+    const { e, link } = await env();
+    let now = Date.now();
+    for (const [i, b] of BOOKS.entries()) link(b.title, 'amazon_jp', `B00000020${i}`);
+    const { q } = fetchQueue();
+    saveRatingSettings(e.db, { refresh: true, queuedPerSite: 2, newBookWaitHours: 0 });
+    const s = ratingsService(e.db, null, q, () => now);
+    s.start();
+    expect(s.progress().refresh.secondsLeft).toBeNull();
+    await s.tick();
+    // The queue hands out one request per site at its pace (0.25 s here).
+    for (let got = 0; got < 2; ) {
+      for (const c of q.claim().requests) {
+        q.report(c.id, c.leaseToken, answer(page('amazon-rated-1.html')));
+        got += 1;
+      }
+      if (got < 2) await new Promise((r) => setTimeout(r, 300));
+    }
+    now += 20 * 60_000;
+    await s.tick();
+    const p = s.progress().refresh;
+    // 2 answers in 20 minutes; the 2 still due take about 20 minutes more.
+    expect(p.read).toBe(2);
+    // The other 2 were asked as the first answers came back (the queue topped up).
+    expect(p.waiting).toBe(2);
+    expect(p.due).toEqual({ amazon_jp: 0, bookwalker: 0 });
+    expect(p.secondsLeft).toBe(1200);
   });
 });
 

@@ -181,3 +181,17 @@ export function cardRatingText(
   }
   return null;
 }
+
+/** The refresher's time left: hours and minutes, days from two days on. */
+export function refreshLeftText(seconds: number | null): string {
+  if (seconds === null) return 'working out the time left';
+  if (!Number.isFinite(seconds) || seconds <= 0) return '';
+  if (seconds < 60) return 'less than a minute left';
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `about ${minutes} min left`;
+  const hours = Math.round(minutes / 60);
+  if (hours >= 48) return `about ${Math.round(hours / 24)} days left`;
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  return m ? `about ${h} h ${m} min left` : `about ${h} h left`;
+}
