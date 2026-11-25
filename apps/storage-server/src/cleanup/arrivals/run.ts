@@ -201,6 +201,16 @@ export interface CompareFacts {
   [k: string]: unknown;
 }
 
+/** A catalog file the run added to Calibre. */
+interface AddedFile {
+  id: number;
+  sha256: string;
+  size: number;
+  /** When the add phase ended (every index-step check of the book came after it). */
+  decided_at: number;
+  facts_json: string | null;
+}
+
 export interface RunProgress {
   phase: RunPhase;
   phaseStartedAt: number;
@@ -733,38 +743,64 @@ export class BookArrivals {
 
   // ---------------------------------------------------------------- books added by hand
 
+  /**
+   * An added book's EPUB hashed in Calibre: kept in stage 1's file_facts as stage 1 would keep it
+   * (path, size, mtime, SHA-256), so stage 1's pass reuses it instead of reading the file again.
+   */
+  private keepLibraryHash(
+    libraryId: string,
+    b: SnapshotBook,
+    st: { size: number; mtimeMs: number },
+    sha256: string,
+  ): void {
+    const now = Date.now();
+    this.db
+      .prepare(
+        `INSERT INTO file_facts (library_id, calibre_id, calibre_uuid, file_path, size, mtime_ms,
+           calibre_last_modified, sha256, stat_at, hashed_at, error)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+         ON CONFLICT(library_id, calibre_id) DO UPDATE SET calibre_uuid = excluded.calibre_uuid,
+           file_path = excluded.file_path, size = excluded.size, mtime_ms = excluded.mtime_ms,
+           calibre_last_modified = excluded.calibre_last_modified, sha256 = excluded.sha256,
+           stat_at = excluded.stat_at, hashed_at = excluded.hashed_at, error = NULL`,
+      )
+      .run(
+        libraryId,
+        b.calibreId,
+        b.uuid,
+        b.filePath,
+        st.size,
+        st.mtimeMs,
+        b.lastModified,
+        sha256,
+        now,
+        now,
+      );
+  }
+
   /** The run's added books (Calibre id) and the catalog file each came from (by primary key). */
-  private addedFiles(
-    runId: number,
-  ): Map<number, { id: number; sha256: string; facts_json: string | null }> {
+  private addedFiles(runId: number): Map<number, AddedFile> {
     const rows = this.db
       .prepare(
-        `SELECT i.calibre_id, f.id, f.sha256, f.facts_json FROM calibre_arrival_batch_items i
+        `SELECT i.calibre_id, f.id, f.sha256, f.size, f.decided_at, f.facts_json FROM calibre_arrival_batch_items i
          JOIN calibre_arrival_batches b ON b.id = i.batch_id
          JOIN calibre_arrival_files f ON f.id = i.file_id
          WHERE b.run_id = ? AND b.kind = 'add' AND i.state = 'added' AND i.calibre_id IS NOT NULL
          ORDER BY f.id`,
       )
-      .all(runId) as {
-      calibre_id: number;
-      id: number;
-      sha256: string;
-      facts_json: string | null;
-    }[];
-    const m = new Map<number, { id: number; sha256: string; facts_json: string | null }>();
+      .all(runId) as (AddedFile & { calibre_id: number })[];
+    const m = new Map<number, AddedFile>();
     for (const r of rows) if (!m.has(r.calibre_id)) m.set(r.calibre_id, r);
     return m;
   }
 
   /** A book of the scope not among the run's add items (none expected): the catalog scanned. */
-  private addedFileByScan(
-    calibreId: number,
-  ): { id: number; sha256: string; facts_json: string | null } | undefined {
+  private addedFileByScan(calibreId: number): AddedFile | undefined {
     return this.db
       .prepare(
-        `SELECT id, sha256, facts_json FROM calibre_arrival_files WHERE json_extract(facts_json, '$.addedAs.calibreId') = ?`,
+        `SELECT id, sha256, size, decided_at, facts_json FROM calibre_arrival_files WHERE json_extract(facts_json, '$.addedAs.calibreId') = ?`,
       )
-      .get(calibreId) as { id: number; sha256: string; facts_json: string | null } | undefined;
+      .get(calibreId) as AddedFile | undefined;
   }
 
   private snapshotBooks(libraryId: string): Map<number, SnapshotBook> {
@@ -2365,11 +2401,16 @@ export class BookArrivals {
         continue;
       }
       const facts = f.facts_json ? JSON.parse(f.facts_json) : {};
-      if (facts.inCalibre) {
+      const b = books.get(id);
+      const checked = facts.inCalibre as
+        | { sameBytes: boolean; sha256: string | null; mtimeMs?: number | null }
+        | undefined;
+      // Checked before its hash was kept for stage 1 (run 7, before this change): kept now when the
+      // file has not changed since the add phase ended (every check came after that).
+      if (checked && (checked.mtimeMs !== undefined || !checked.sha256 || !b)) {
         c.done++;
         continue;
       }
-      const b = books.get(id);
       if (!b) {
         c.done++;
         continue;
@@ -2379,14 +2420,38 @@ export class BookArrivals {
         continue;
       }
       const epub = resolveInside(libDir, b.filePath);
+      if (checked) {
+        const st = await statFile(epub);
+        const kept = !!st && st.size === f.size && st.mtimeMs <= f.decided_at;
+        if (kept) this.keepLibraryHash(libraryId, b, st, checked.sha256!);
+        this.db
+          .prepare(
+            `UPDATE calibre_arrival_files SET facts_json = json_set(facts_json, '$.inCalibre.mtimeMs', ?) WHERE id = ?`,
+          )
+          .run(kept ? st.mtimeMs : null, f.id);
+        c.done++;
+        continue;
+      }
       const st = await statFile(epub);
       const h = st ? await hashSourceFile(epub, pacer) : null;
+      const after = h ? await statFile(epub) : null;
+      // The hash is kept for stage 1 (its file_facts) only when the file did not change while read:
+      // stage 1 then never reads the added books again (WP20g run 7: 430 GB, about 3 hours).
+      const stable = !!st && !!after && after.size === st.size && after.mtimeMs === st.mtimeMs;
       const same = !!h && h.sha256 === f.sha256;
+      if (stable && h) this.keepLibraryHash(libraryId, b, st, h.sha256);
       this.db
         .prepare(
           `UPDATE calibre_arrival_files SET facts_json = json_set(COALESCE(facts_json, '{}'), '$.inCalibre', json(?)) WHERE id = ?`,
         )
-        .run(JSON.stringify({ sameBytes: same, sha256: h?.sha256 ?? null }), f.id);
+        .run(
+          JSON.stringify({
+            sameBytes: same,
+            sha256: h?.sha256 ?? null,
+            mtimeMs: stable ? st.mtimeMs : null,
+          }),
+          f.id,
+        );
       if (st && facts.text) {
         saveLibraryText(
           cd,
