@@ -139,6 +139,14 @@ export const COMPARE_PART_LABELS: Record<string, string> = {
   decide: 'deciding each book'
 };
 
+/** The parts of the other steps that run in parts (stage 1, the AI check). */
+export const STEP_PART_LABELS: Record<string, string> = {
+  stat: 'reading the new books’ file sizes',
+  match: 'hashing the library’s books of the same sizes',
+  cheap: 'the first pair of models answering',
+  strong: 'the stronger pair answering'
+};
+
 /** Outcomes of a file in plain words (the lists' names and the summary). */
 export const OUTCOME_LABELS: Record<string, string> = {
   new: 'Would add',
@@ -168,7 +176,7 @@ export function arrivalsBar(s: ArrivalsStatus | null): ProgressBar | null {
   // The compare step runs six parts, each counted from its own start: say which one this is.
   const part = b.part ?? null;
   const label = part
-    ? `${step}, part ${part.index + 1} of ${part.count}: ${COMPARE_PART_LABELS[part.stage] ?? part.stage}`
+    ? `${step}, part ${part.index + 1} of ${part.count}: ${COMPARE_PART_LABELS[part.stage] ?? STEP_PART_LABELS[part.stage] ?? part.stage}`
     : step;
   const total = b.bytesTotal ?? b.total;
   const done = b.bytesTotal !== null ? (b.bytesDone ?? 0) : b.done;
@@ -183,7 +191,10 @@ export function arrivalsBar(s: ArrivalsStatus | null): ProgressBar | null {
     eta:
       b.secondsLeft === null
         ? null
-        : part && part.stage !== 'measure' && part.stage !== 'decide'
+        : part &&
+            (part.stage in COMPARE_PART_LABELS
+              ? part.stage !== 'measure' && part.stage !== 'decide'
+              : part.index < part.count - 1)
           ? `${etaText(b.secondsLeft * 1000)} in this part`
           : etaText(b.secondsLeft * 1000)
   };

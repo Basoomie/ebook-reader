@@ -34,6 +34,11 @@ export interface PassDeps {
    * stays (calibre metadata editing); returns the edit's batch, or null when there is none.
    */
   carry?: (fromUuid: string, toUuid: string) => string | null;
+  /**
+   * How far a long pass is (the run's bar and time left): `part` names the pass's part, `done`
+   * of `total` books through it. Called often; the run decides how often to save.
+   */
+  progress?: (part: string, done: number, total: number) => void;
 }
 
 /** Whether a Calibre book's reader book holds reader data (handoff.ts' test). */
@@ -43,7 +48,11 @@ export function hasReaderData(deps: PassDeps, uuid: string): boolean {
 }
 
 /** stat of books' EPUBs into file_facts (stage 1's statStep): the SHA-256 kept when unchanged. */
-export async function statBooks(deps: PassDeps, books: SnapshotBook[]): Promise<void> {
+export async function statBooks(
+  deps: PassDeps,
+  books: SnapshotBook[],
+  part?: string,
+): Promise<void> {
   const get = deps.cleanup.prepare(
     'SELECT file_path, size, mtime_ms, sha256 FROM file_facts WHERE library_id = ? AND calibre_id = ?',
   );
@@ -56,7 +65,9 @@ export async function statBooks(deps: PassDeps, books: SnapshotBook[]): Promise<
        calibre_last_modified = excluded.calibre_last_modified, sha256 = excluded.sha256,
        stat_at = excluded.stat_at, hashed_at = excluded.hashed_at, error = excluded.error`,
   );
+  let i = 0;
   for (const book of books) {
+    if (part) deps.progress?.(part, i++, books.length);
     const now = Date.now();
     let size: number | null = null;
     let mtime: number | null = null;
@@ -235,12 +246,14 @@ export async function stage1Pass(
 ): Promise<{ proposals: number; reviews: PassReview[] }> {
   const settings = getSettings(deps.cleanup);
   const pacer = new Pacer(settings.pacing.readMbPerSecond * 1024 * 1024);
-  await statBooks(deps, scope);
+  await statBooks(deps, scope, 'stat');
   const facts = deps.cleanup.prepare(
     'SELECT size, sha256, error FROM file_facts WHERE library_id = ? AND calibre_id = ?',
   );
   const sets = new Map<string, { size: number; copies: SnapshotBook[] }>();
+  let i = 0;
   for (const b of scope) {
+    deps.progress?.('match', i++, scope.length);
     const f = facts.get(deps.libraryId, b.calibreId) as
       | { size: number | null; sha256: string | null; error: string | null }
       | undefined;
@@ -469,8 +482,10 @@ export async function stage2Pass(
        AND decided_by IS NULL AND id NOT IN (SELECT change_id FROM batch_items)`,
   );
   let n = 0;
+  let i = 0;
   for (const uuid of uuids) {
     if (shouldStop()) break;
+    deps.progress?.('read', i++, uuids.length);
     const book = byUuid.get(uuid);
     if (!book?.filePath || leaving.has(uuid)) continue;
     const { ev } = await analysis.readBook(deps.libDir, deps.libraryId, book);
