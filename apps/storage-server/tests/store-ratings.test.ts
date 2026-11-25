@@ -468,6 +468,35 @@ describe('the refresher (the cleanup fetch queue)', () => {
     e.db.prepare('UPDATE store_ratings SET checked_at = ?').run(Date.now() - 91 * day);
     expect(s.dueIds('bookwalker', 10)).toEqual([BW_JAPAN_ONLY]);
   });
+
+  it('measures the time left from the answers of the last hour', async () => {
+    const { e, link } = await env();
+    let now = Date.now();
+    for (const [i, b] of BOOKS.entries()) link(b.title, 'amazon_jp', `B00000020${i}`);
+    const { q } = fetchQueue();
+    saveRatingSettings(e.db, { refresh: true, queuedPerSite: 2 });
+    const s = ratingsService(e.db, null, q, () => now);
+    s.start();
+    expect(s.progress().refresh.secondsLeft).toBeNull();
+    await s.tick();
+    // The queue hands out one request per site at its pace (0.25 s here).
+    for (let got = 0; got < 2; ) {
+      for (const c of q.claim().requests) {
+        q.report(c.id, c.leaseToken, answer(page('amazon-rated-1.html')));
+        got += 1;
+      }
+      if (got < 2) await new Promise((r) => setTimeout(r, 300));
+    }
+    now += 20 * 60_000;
+    await s.tick();
+    const p = s.progress().refresh;
+    // 2 answers in 20 minutes; the 2 still due take about 20 minutes more.
+    expect(p.read).toBe(2);
+    // The other 2 were asked as the first answers came back (the queue topped up).
+    expect(p.waiting).toBe(2);
+    expect(p.due).toEqual({ amazon_jp: 0, bookwalker: 0 });
+    expect(p.secondsLeft).toBe(1200);
+  });
 });
 
 describe('the routes', () => {

@@ -153,7 +153,16 @@ export interface RatingSettings {
 
 export interface RatingsProgressAnswer {
   fill: { running: boolean; total: number; done: number; found: number; secondsLeft: number };
-  refresh: { on: boolean; available: boolean; waiting: number; due: Record<string, number> };
+  refresh: {
+    on: boolean;
+    available: boolean;
+    waiting: number;
+    due: Record<string, number>;
+    /** Answers read since fetching was switched on (or the server started). */
+    read: number;
+    /** Time left for what is due now at the measured pace; null while it is being measured. */
+    secondsLeft: number | null;
+  };
   saved: Record<string, number>;
   lastError: string | null;
   settings: RatingSettings;
