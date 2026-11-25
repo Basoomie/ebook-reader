@@ -96,7 +96,12 @@
     SEARCH_HISTORY_LIMIT_MAX,
     SEARCH_HISTORY_LIMIT_MIN
   } from '$lib/search-history/settings';
-  import { searchReadsAsOn$, searchSuggestionsOn$ } from '$lib/library/search-settings';
+  import {
+    searchHeaderButton$,
+    searchPaletteCtrlK$,
+    searchReadsAsOn$,
+    searchSuggestionsOn$
+  } from '$lib/library/search-settings';
   import { recentlyViewedApi, searchHistoryApi } from '$lib/sync/sync-service';
   import {
     recentlyViewedDwellSeconds$,
@@ -1265,6 +1270,30 @@
           bind:checked={$searchReadsAsOn$}
           labelledby={labelId}
           testid="search-reads-as-on"
+        />
+      </SettingRow>
+      <SettingRow
+        id="search-header-button"
+        layout="inline"
+        settingKey="searchHeaderButton"
+        let:labelId
+      >
+        <SettingSwitch
+          bind:checked={$searchHeaderButton$}
+          labelledby={labelId}
+          testid="search-header-button"
+        />
+      </SettingRow>
+      <SettingRow
+        id="search-palette-ctrl-k"
+        layout="inline"
+        settingKey="searchPaletteCtrlK"
+        let:labelId
+      >
+        <SettingSwitch
+          bind:checked={$searchPaletteCtrlK$}
+          labelledby={labelId}
+          testid="search-palette-ctrl-k"
         />
       </SettingRow>
       <SettingRow id="search-history-on" layout="inline" settingKey="searchHistoryOn" let:labelId>

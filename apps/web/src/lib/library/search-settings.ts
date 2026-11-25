@@ -17,3 +17,15 @@ export const searchSuggestionsOn$ = writableBooleanLocalStorageSubject()(
 );
 
 export const searchReadsAsOn$ = writableBooleanLocalStorageSubject()('searchReadsAsOn', true);
+
+/** Search palette step 2: the search button in the catalogue pages' header (every device). */
+export const searchHeaderButton$ = writableBooleanLocalStorageSubject()('searchHeaderButton', true);
+
+/**
+ * Ctrl+K (⌘K) opens the search palette, on this device. Off by default: Chrome and Firefox
+ * use it for their own search.
+ */
+export const searchPaletteCtrlK$ = writableBooleanLocalStorageSubject()(
+  'searchPaletteCtrlK',
+  false
+);

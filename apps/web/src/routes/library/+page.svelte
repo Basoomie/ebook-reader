@@ -179,6 +179,7 @@
   import LibrarySearchHistory from '$lib/components/search-history/library-search-history.svelte';
   import { searchHistoryOn$ } from '$lib/search-history/settings';
   import SearchSuggestions from '$lib/components/library/search-suggestions.svelte';
+  import { openSearchPalette } from '$lib/search-palette/open';
   import { describeQuery } from '$lib/library/query/describe';
   import { searchReadsAsOn$, searchSuggestionsOn$ } from '$lib/library/search-settings';
   import type { NameListQuery } from '$lib/library/api';
@@ -2147,7 +2148,7 @@
   on:keydown={onWindowKeydown}
 />
 
-<AppHeader title="Library" />
+<AppHeader title="Library" search />
 
 <div class="{pxScreen} pb-24 pt-16 xl:pt-14" data-testid="library-page">
   {#if connection === undefined}
@@ -2433,6 +2434,7 @@
             bind:activeId={historyActiveId}
             query={queryInput}
             enabled={$searchHistoryOn$ && !suggestOpen}
+            more={(q) => openSearchPalette(q)}
             container={searchBox}
             on:pick={(event) => searchFromHistory(event.detail)}
             on:edit={(event) => editFromHistory(event.detail)}

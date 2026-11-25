@@ -29,6 +29,7 @@
   import { pxScreen } from '$lib/css-classes';
   import { dialogManager } from '$lib/data/dialog-manager';
   import { pagePath } from '$lib/data/env';
+  import { searchHeaderButton$ } from '$lib/library/search-settings';
   import { logger } from '$lib/data/logger';
   import { audioBookIdsOnDevice } from '$lib/audio/offline/audio-offline';
   import { formatPageTitle } from '$lib/functions/format-page-title';
@@ -680,20 +681,23 @@
   <title>{formatPageTitle('Home')}</title>
 </svelte:head>
 
-<AppHeader title="Home" />
+<AppHeader title="Home" search />
 
 <div class="{pxScreen} pb-24 pt-16 xl:pt-14" data-testid="home-page">
   <CataloguePageHeader jp="ホーム" title="Home">
     <div class="flex items-center gap-2">
-      <a
-        class="c-btn c-btn-ghost c-btn-icon"
-        href="{pagePath}/library?search=1"
-        title="Search the library"
-        data-testid="home-search"
-      >
-        <Fa icon={faMagnifyingGlass} />
-        <span class="sr-only">Search the library</span>
-      </a>
+      <!-- Search palette step 2: the header's search button replaces this one while it is on. -->
+      {#if !$searchHeaderButton$}
+        <a
+          class="c-btn c-btn-ghost c-btn-icon"
+          href="{pagePath}/library?search=1"
+          title="Search the library"
+          data-testid="home-search"
+        >
+          <Fa icon={faMagnifyingGlass} />
+          <span class="sr-only">Search the library</span>
+        </a>
+      {/if}
       <button
         class="c-btn {editing ? 'c-btn-primary' : 'c-btn-secondary'} px-3.5"
         data-testid="home-edit"
