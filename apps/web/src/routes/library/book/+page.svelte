@@ -39,6 +39,7 @@
   import BookLinks from '$lib/components/library/book-links.svelte';
   import NativelyLevelTag from '$lib/components/library/natively-level.svelte';
   import { hasDirectNatively, withNativelyLevel } from '$lib/library/natively-level';
+  import { sortTags } from '$lib/library/tag-kinds';
   import BookIllustrations from '$lib/components/library/book-illustrations.svelte';
   import BookStateDialog from '$lib/components/library/book-state-dialog.svelte';
   import CoverImage from '$lib/components/library/cover-image.svelte';
@@ -245,6 +246,8 @@
       ? $bookLinksPlacement$
       : 'section';
   $: illustrators = shown?.illustrators ?? [];
+  // The format above the title, the other tags by kind (2026-11-24).
+  $: sortedTags = sortTags((shown ?? book)?.tags ?? []);
   $: seriesLabel = shown?.series
     ? `${shown.series.name}${shown.series.index !== null ? ` · 第${formatSeriesIndex(shown.series.index)}巻` : ''}`
     : '';
@@ -685,9 +688,17 @@
       </div>
 
       <div class="c-dmain flex min-w-0 flex-col gap-3">
-        {#if seriesLabel || shown?.nativelyLevel}
-          <!-- The series line, and the Natively level's tag after it (placement C, 2026-11-24). -->
+        {#if sortedTags.formats.length || seriesLabel || shown?.nativelyLevel}
+          <!-- The format, the series line, and the Natively level's tag after it (placement C,
+               2026-11-24). The format opens the Library's tag of that name. -->
           <div class="flex min-h-[2.75rem] flex-wrap items-center gap-x-3 gap-y-1 self-start">
+            {#each sortedTags.formats as format (format)}
+              <a
+                class="c-jp-label c-link inline-flex min-h-[2.75rem] items-center tracking-[0.2em] !text-c-seal"
+                href={libraryHref('tags', format)}
+                data-testid="details-format">{format}</a
+              >
+            {/each}
             {#if seriesLabel}
               <a
                 class="c-jp-label c-link inline-flex min-h-[2.75rem] items-center tracking-[0.2em]"
@@ -930,13 +941,13 @@
               <dd class="c-drow break-words py-2.5 text-sm">{row.value}</dd>
             {/each}
           </dl>
-          {#if (shown ?? book).tags.length}
+          {#if sortedTags.others.length}
             <div class="mt-4 flex flex-col gap-2">
               <span class="text-xs text-c-muted">
                 <span class="font-mincho font-bold text-c-label">分類</span> Tags
               </span>
               <div class="flex flex-wrap gap-2">
-                {#each (shown ?? book).tags as tag (tag)}
+                {#each sortedTags.others as tag (tag)}
                   <a
                     class="c-chip c-chip-sm"
                     href={libraryHref('tags', tag)}
