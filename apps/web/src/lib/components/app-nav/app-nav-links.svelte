@@ -4,6 +4,9 @@
   import AppMenu from './app-menu.svelte';
   import { APP_NAV, isCurrentRoute } from './app-nav';
   import AppThemeToggle from './app-theme-toggle.svelte';
+  import SearchButton from './search-button.svelte';
+
+  export let search = false;
 
   /**
    * The app navigation inside a page's header, for wider screens (phones use the bottom
@@ -30,6 +33,7 @@
       <span class="hidden md:inline">{entry.label}</span>
     </a>
   {/each}
+  {#if search}<SearchButton />{/if}
   <AppThemeToggle />
   <AppMenu
     buttonClass="c-focus flex h-full min-w-[3rem] items-center justify-center gap-2 px-3 text-sm font-medium text-c-header-muted hover:text-c-header-ink"

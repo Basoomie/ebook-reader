@@ -681,7 +681,7 @@
   <title>{formatPageTitle('Home')}</title>
 </svelte:head>
 
-<AppHeader title="Home" search />
+<AppHeader title="Home" />
 
 <div class="{pxScreen} pb-24 pt-16 xl:pt-14" data-testid="home-page">
   <CataloguePageHeader jp="ホーム" title="Home">
