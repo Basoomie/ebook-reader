@@ -1129,7 +1129,30 @@ describe('static guards', () => {
         .filter((l) => !/^\s*(\*|\/\/|\/\*)/.test(l))
         .join('\n');
       if (path.basename(f) === 'batches.ts') continue;
+      // Book covers: the cover archive writes its own pictures, only under DB_DIR/covers (below).
+      if (path.basename(f) === 'cover-archive.ts') continue;
       expect(WRITE.test(code), f).toBe(false);
     }
+  });
+
+  it('the cover archive writes only inside its own folder (DB_DIR/covers), never deletes a picture', () => {
+    const f = files.find((x) => path.basename(x) === 'cover-archive.ts')!;
+    const lines = fs.readFileSync(f, 'utf8').split('\n');
+    const writes = lines.filter((l) =>
+      /\b(writeFile|appendFile|rename|unlink|rm|rmdir|mkdir|copyFile|truncate|utimes|createWriteStream)\s*\(/.test(
+        l,
+      ),
+    );
+    expect(writes.length).toBeGreaterThan(0);
+    for (const l of writes) {
+      // Every write is to this.dir, or to a file made by path.join(this.dir, …) (final, tmp).
+      expect(/\(\s*(this\.dir|tmp|final)\b/.test(l), l).toBe(true);
+    }
+    // The only removal is of its own temporary file.
+    for (const l of writes.filter((x) => /\b(rm|unlink|rmdir)\s*\(/.test(x)))
+      expect(/\(\s*tmp\b/.test(l), l).toBe(true);
+    const code = lines.join('\n');
+    expect(/const final = path\.join\(this\.dir,/.test(code)).toBe(true);
+    expect(/const tmp = path\.join\(this\.dir,/.test(code)).toBe(true);
   });
 });

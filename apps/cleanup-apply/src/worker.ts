@@ -59,6 +59,9 @@ import { columnShape, MOVE_STAGE, MoveWorker } from './move';
  * a moved book go to its new library), move batches (stage 11, move.ts) move books from one
  * library to another, `#characters` and `timestamp` join set_fields, and the move's target
  * library is checked (`move_target`: the same #illustrator and #characters as the old one).
+ * 1.6.4 (book covers): the one-shot `import-covers.js` sends the quarantine's earlier covers to
+ * the server's cover archive; the worker itself is unchanged (the server keeps Calibre's picture
+ * before an edit's cover write and answers saveOldCover false).
  * 1.7.0 (manga part B): an add batch of the new arrivals names its library (the folder's pair:
  * japanese-library or manga-library) and is added there; #illustrator is checked in every library
  * the cleanup works on, each result naming its library.

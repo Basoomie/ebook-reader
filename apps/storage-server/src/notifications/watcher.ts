@@ -413,7 +413,7 @@ export class NotificationWatcher {
   // ---- the cleanup ----
 
   /**
-   * Manga part B: the primary library (its stage rows came first: migration v37 gave it the
+   * Manga part B: the primary library (its stage rows came first: migration v38 gave it the
    * cleanup's rows), whose alerts keep their keys; null before any stage row exists.
    */
   private primaryLibrary(db: Database.Database): string | null {

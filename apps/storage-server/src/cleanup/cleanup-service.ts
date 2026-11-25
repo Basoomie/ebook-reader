@@ -16,6 +16,8 @@ import { COUNTER_BUNDLE, readCounterInfo } from '../counts/counter-bundle';
 import { BatchService, REMOVAL_STAGES } from './batches';
 import { EditService } from './edits/edits';
 import { ChangeAttribution } from './edits/attribution';
+import { CoverArchive, coverArchiveDir } from './edits/cover-archive';
+import { StoreCovers } from './edits/store-covers';
 import { readFileSync } from 'fs';
 import { resolveInside } from '../calibre/source-fs';
 import { DISK_OWNERS, DiskLock } from './disk-lock';
@@ -241,6 +243,10 @@ export class CleanupService {
   readonly edits: EditService;
   /** What the reader's index saw change in Calibre, sorted out (whose change it was). */
   readonly attribution: ChangeAttribution;
+  /** Book covers: every picture a cover had before it was replaced (edits/cover-archive.ts). */
+  readonly coverArchive: CoverArchive;
+  /** Book covers: the store pictures offered in the cover section (edits/store-covers.ts). */
+  readonly storeCovers: StoreCovers;
   private attributing: Promise<void> | null = null;
   private arriving: Promise<void> | null = null;
   /** Until when the arrivals asked the reader's index to copy a library's metadata.db at once. */
@@ -307,11 +313,24 @@ export class CleanupService {
       () => getSettings(this.db).fetch,
       this.log,
     );
+    // Book covers: every picture a cover had before it was replaced, in DB_DIR/covers.
+    this.coverArchive = new CoverArchive(
+      opts.cleanup,
+      coverArchiveDir(opts.dbDir ?? path.dirname(opts.main.name)),
+    );
+    for (const w of [
+      this.batches.stage2,
+      this.batches.stage4,
+      this.batches.stage5,
+      this.batches.edits,
+    ])
+      w.setCoverArchive(this.coverArchive);
     this.edits = new EditService({
       cleanup: opts.cleanup,
       main: opts.main,
       batches: this.batches,
       cacheDir: opts.cacheDir,
+      archive: this.coverArchive,
     });
     this.edits.readCover = (libraryId, bookPath) => {
       const lib = getLibrary(opts.main, libraryId);
@@ -324,6 +343,24 @@ export class CleanupService {
         return null;
       }
     };
+    this.storeCovers = new StoreCovers({
+      cleanup: opts.cleanup,
+      main: opts.main,
+      queue: this.fetchQueue,
+      currentCover: (bookId) => {
+        const src = opts.main
+          .prepare(
+            `SELECT library_id, calibre_path, has_cover FROM book_sources
+             WHERE book_id = ? AND kind = 'calibre' AND missing_at IS NULL LIMIT 1`,
+          )
+          .get(bookId) as
+          | { library_id: string; calibre_path: string | null; has_cover: number | null }
+          | undefined;
+        return src?.has_cover === 1
+          ? (this.edits.readCover?.(src.library_id, src.calibre_path) ?? null)
+          : null;
+      },
+    });
     this.attribution = new ChangeAttribution({ cleanup: opts.cleanup, main: opts.main });
     this.arrivals = new BookArrivals({
       cleanup: opts.cleanup,
@@ -1718,16 +1755,18 @@ export class CleanupService {
   sortChanges(): void {
     if (this.attributing || this.stopped) return;
     let pending = false;
+    let covers = false;
     try {
       pending = this.attribution.pending();
+      covers = this.db.prepare('SELECT 1 FROM cover_archive_wanted LIMIT 1').get() !== undefined;
     } catch (err) {
       this.logError('Cleanup: reading the changes the index saw failed:', err);
       return;
     }
-    if (!pending) return;
+    if (!pending && !covers) return;
     this.attributing = (async () => {
       try {
-        for (let i = 0; i < 200 && !this.stopped; i++) {
+        for (let i = 0; pending && i < 200 && !this.stopped; i++) {
           const r = this.attribution.drain(500);
           if (r.calibre > 0 || r.renames > 0)
             this.log(
@@ -1738,10 +1777,75 @@ export class CleanupService {
         }
       } catch (err) {
         this.logError('Cleanup: sorting out the changes the index saw failed:', err);
+      }
+      try {
+        await this.keepChangedCovers();
+      } catch (err) {
+        this.logError('Cleanup: keeping the changed covers failed:', err);
       } finally {
         this.attributing = null;
       }
     })();
+  }
+
+  /**
+   * Book covers: the picture each cover change the index saw left (the user's edit, or a change
+   * in Calibre's own program), read from the library (read only) into the cover archive, so a
+   * later change can always be taken back. A picture that can't be read is tried again on the
+   * next index, at most 5 times.
+   */
+  private async keepChangedCovers(limit = 200): Promise<number> {
+    const rows = this.db
+      .prepare('SELECT * FROM cover_archive_wanted ORDER BY seen_at LIMIT ?')
+      .all(limit) as {
+      library_id: string;
+      calibre_uuid: string;
+      calibre_id: number;
+      tries: number;
+    }[];
+    const done = this.db.prepare(
+      'DELETE FROM cover_archive_wanted WHERE library_id = ? AND calibre_uuid = ?',
+    );
+    const retry = this.db.prepare(
+      'UPDATE cover_archive_wanted SET tries = tries + 1 WHERE library_id = ? AND calibre_uuid = ?',
+    );
+    let kept = 0;
+    for (const r of rows) {
+      if (this.stopped) break;
+      const src = this.main
+        .prepare(
+          `SELECT calibre_path, has_cover FROM book_sources
+           WHERE library_id = ? AND calibre_uuid = ? AND kind = 'calibre' AND missing_at IS NULL`,
+        )
+        .get(r.library_id, r.calibre_uuid) as
+        | { calibre_path: string | null; has_cover: number | null }
+        | undefined;
+      if (!src || src.has_cover !== 1) {
+        done.run(r.library_id, r.calibre_uuid);
+        continue;
+      }
+      const bytes = this.edits.readCover?.(r.library_id, src.calibre_path) ?? null;
+      try {
+        if (!bytes) throw new Error("cover.jpg can't be read");
+        await this.coverArchive.keep(
+          { libraryId: r.library_id, uuid: r.calibre_uuid, calibreId: r.calibre_id },
+          bytes,
+          'seen',
+          null,
+        );
+        done.run(r.library_id, r.calibre_uuid);
+        kept++;
+      } catch (err) {
+        if (r.tries + 1 >= 5) {
+          done.run(r.library_id, r.calibre_uuid);
+          this.log(
+            `Cleanup: the cover of Calibre book ${r.calibre_id} couldn't be kept: ${(err as Error).message}`,
+          );
+        } else retry.run(r.library_id, r.calibre_uuid);
+      }
+      await new Promise((res) => setImmediate(res));
+    }
+    return kept;
   }
 
   /** WP20g: the new arrivals' run, stepped in its own loop (never blocks a round). */

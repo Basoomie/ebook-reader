@@ -23,7 +23,7 @@ export function cleanupDbPath(dbDir: string): string {
 }
 
 /** Manga part B: the migration that gives every stage, pass and import run its library. */
-export const LIBRARY_SCOPE_VERSION = 37;
+export const LIBRARY_SCOPE_VERSION = 38;
 
 export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[] = [
   {
@@ -2686,6 +2686,44 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
     `,
   },
   {
+    version: 37,
+    name: 'Book covers: the cover archive and the covers waiting to be kept',
+    // docs/design/book-covers.md: every picture a book's cover had before it was replaced, kept
+    // in DB_DIR/covers/<sha256>.<ext> (edits/cover-archive.ts). source: 'before' (Calibre's
+    // picture before a write; change_id = the write), 'seen' (the picture a cover change left,
+    // seen by the index), 'quarantine' (imported once from the sidecar's quarantine). change_id
+    // 0 = none. cover_archive_wanted: cover changes the index saw, whose new picture is read
+    // after the change attribution (one row per book).
+    sql: `
+      CREATE TABLE cover_archive (
+        id            INTEGER PRIMARY KEY,
+        library_id    TEXT NOT NULL,
+        calibre_uuid  TEXT NOT NULL,
+        calibre_id    INTEGER NOT NULL,
+        sha256        TEXT NOT NULL,
+        ext           TEXT NOT NULL,
+        width         INTEGER,
+        height        INTEGER,
+        bytes         INTEGER NOT NULL,
+        dhash         TEXT,
+        source        TEXT NOT NULL CHECK (source IN ('before', 'seen', 'quarantine')),
+        change_id     INTEGER NOT NULL DEFAULT 0,
+        kept_at       INTEGER NOT NULL,
+        UNIQUE (library_id, calibre_uuid, sha256, source, change_id)
+      );
+      CREATE INDEX cover_archive_change ON cover_archive (change_id);
+      CREATE TABLE cover_archive_wanted (
+        library_id    TEXT NOT NULL,
+        calibre_uuid  TEXT NOT NULL,
+        calibre_id    INTEGER NOT NULL,
+        book_id       TEXT NOT NULL,
+        tries         INTEGER NOT NULL DEFAULT 0,
+        seen_at       INTEGER NOT NULL,
+        PRIMARY KEY (library_id, calibre_uuid)
+      ) WITHOUT ROWID;
+    `,
+  },
+  {
     version: LIBRARY_SCOPE_VERSION,
     name: 'Manga part B: every stage, pass and import run belongs to one Calibre library',
     // manga-library.md part B (approved 2026-11-25). The state that was one row per stage (or
@@ -2696,7 +2734,7 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
     // rows are made per library when first needed.
     sql: `
       CREATE TEMP TABLE IF NOT EXISTS _cleanup_primary (library_id TEXT);
-      CREATE TEMP TABLE _v37_primary AS SELECT COALESCE(
+      CREATE TEMP TABLE _v38_primary AS SELECT COALESCE(
         (SELECT library_id FROM _cleanup_primary WHERE library_id IS NOT NULL LIMIT 1),
         (SELECT library_id FROM batches WHERE stage BETWEEN 1 AND 5
            ORDER BY created_at DESC LIMIT 1),
@@ -2704,7 +2742,7 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
         (SELECT library_id FROM proposed_changes WHERE stage BETWEEN 1 AND 5 LIMIT 1)
       ) AS id;
 
-      CREATE TABLE stages_v37 (
+      CREATE TABLE stages_v38 (
         stage          INTEGER NOT NULL CHECK (stage BETWEEN 0 AND 5),
         library_id     TEXT NOT NULL,
         mode           TEXT NOT NULL DEFAULT 'off' CHECK (mode IN ('off', 'analyse', 'on')),
@@ -2717,16 +2755,16 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
         updated_at     INTEGER NOT NULL,
         PRIMARY KEY (stage, library_id)
       );
-      INSERT INTO stages_v37 (stage, library_id, mode, state, pause_reason, pause_detail,
+      INSERT INTO stages_v38 (stage, library_id, mode, state, pause_reason, pause_detail,
           paused_at, progress_json, precision_json, updated_at)
         SELECT s.stage, COALESCE(p.id, ''), s.mode, s.state, s.pause_reason, s.pause_detail,
           s.paused_at, s.progress_json, s.precision_json, s.updated_at
-        FROM stages s, _v37_primary p;
+        FROM stages s, _v38_primary p;
       DROP TABLE stages;
-      ALTER TABLE stages_v37 RENAME TO stages;
+      ALTER TABLE stages_v38 RENAME TO stages;
 
       -- library_id '' = every library: a gate's pause (one gate per stage across the libraries).
-      CREATE TABLE stage_field_pauses_v37 (
+      CREATE TABLE stage_field_pauses_v38 (
         stage      INTEGER NOT NULL,
         library_id TEXT NOT NULL,
         field      TEXT NOT NULL,
@@ -2735,16 +2773,16 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
         paused_at  INTEGER NOT NULL,
         PRIMARY KEY (stage, library_id, field)
       );
-      INSERT INTO stage_field_pauses_v37 (stage, library_id, field, reason, detail, paused_at)
+      INSERT INTO stage_field_pauses_v38 (stage, library_id, field, reason, detail, paused_at)
         SELECT f.stage, CASE WHEN f.reason IN ('gate', 'no_labels') THEN '' ELSE p.id END,
           f.field, f.reason, f.detail, f.paused_at
-        FROM stage_field_pauses f, _v37_primary p
+        FROM stage_field_pauses f, _v38_primary p
         WHERE p.id IS NOT NULL OR f.reason IN ('gate', 'no_labels');
       DROP TABLE stage_field_pauses;
-      ALTER TABLE stage_field_pauses_v37 RENAME TO stage_field_pauses;
+      ALTER TABLE stage_field_pauses_v38 RENAME TO stage_field_pauses;
 
       -- '' = a check about the content server, the sidecar or the settings (all libraries).
-      CREATE TABLE preflight_v37 (
+      CREATE TABLE preflight_v38 (
         name        TEXT NOT NULL,
         library_id  TEXT NOT NULL DEFAULT '',
         ok          INTEGER NOT NULL CHECK (ok IN (0, 1)),
@@ -2753,12 +2791,12 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
         checked_at  INTEGER NOT NULL,
         PRIMARY KEY (name, library_id)
       );
-      INSERT INTO preflight_v37 (name, library_id, ok, detail, source, checked_at)
+      INSERT INTO preflight_v38 (name, library_id, ok, detail, source, checked_at)
         SELECT name, '', ok, detail, source, checked_at FROM preflight;
       DROP TABLE preflight;
-      ALTER TABLE preflight_v37 RENAME TO preflight;
+      ALTER TABLE preflight_v38 RENAME TO preflight;
 
-      CREATE TABLE bookmeter_more_state_v37 (
+      CREATE TABLE bookmeter_more_state_v38 (
         library_id    TEXT PRIMARY KEY,
         mode          TEXT NOT NULL DEFAULT 'off' CHECK (mode IN ('off', 'analyse', 'on')),
         progress_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(progress_json)),
@@ -2766,27 +2804,27 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
         paused_detail TEXT,
         updated_at    INTEGER NOT NULL
       );
-      INSERT INTO bookmeter_more_state_v37
+      INSERT INTO bookmeter_more_state_v38
         SELECT COALESCE(s.library_id, p.id), s.mode, s.progress_json, s.paused_reason,
           s.paused_detail, s.updated_at
-        FROM bookmeter_more_state s, _v37_primary p WHERE COALESCE(s.library_id, p.id) IS NOT NULL;
+        FROM bookmeter_more_state s, _v38_primary p WHERE COALESCE(s.library_id, p.id) IS NOT NULL;
       DROP TABLE bookmeter_more_state;
-      ALTER TABLE bookmeter_more_state_v37 RENAME TO bookmeter_more_state;
+      ALTER TABLE bookmeter_more_state_v38 RENAME TO bookmeter_more_state;
 
-      CREATE TABLE series_pairs_state_v37 (
+      CREATE TABLE series_pairs_state_v38 (
         library_id    TEXT PRIMARY KEY,
         mode          TEXT NOT NULL DEFAULT 'off' CHECK (mode IN ('off', 'analyse', 'on')),
         progress_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(progress_json)),
         paused_reason TEXT,
         updated_at    INTEGER NOT NULL
       );
-      INSERT INTO series_pairs_state_v37
+      INSERT INTO series_pairs_state_v38
         SELECT COALESCE(s.library_id, p.id), s.mode, s.progress_json, s.paused_reason, s.updated_at
-        FROM series_pairs_state s, _v37_primary p WHERE COALESCE(s.library_id, p.id) IS NOT NULL;
+        FROM series_pairs_state s, _v38_primary p WHERE COALESCE(s.library_id, p.id) IS NOT NULL;
       DROP TABLE series_pairs_state;
-      ALTER TABLE series_pairs_state_v37 RENAME TO series_pairs_state;
+      ALTER TABLE series_pairs_state_v38 RENAME TO series_pairs_state;
 
-      CREATE TABLE link_discovery_state_v37 (
+      CREATE TABLE link_discovery_state_v38 (
         library_id    TEXT PRIMARY KEY,
         mode          TEXT NOT NULL DEFAULT 'off' CHECK (mode IN ('off', 'analyse', 'on')),
         progress_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(progress_json)),
@@ -2794,14 +2832,14 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
         paused_detail TEXT,
         updated_at    INTEGER NOT NULL
       );
-      INSERT INTO link_discovery_state_v37
+      INSERT INTO link_discovery_state_v38
         SELECT COALESCE(s.library_id, p.id), s.mode, s.progress_json, s.paused_reason,
           s.paused_detail, s.updated_at
-        FROM link_discovery_state s, _v37_primary p WHERE COALESCE(s.library_id, p.id) IS NOT NULL;
+        FROM link_discovery_state s, _v38_primary p WHERE COALESCE(s.library_id, p.id) IS NOT NULL;
       DROP TABLE link_discovery_state;
-      ALTER TABLE link_discovery_state_v37 RENAME TO link_discovery_state;
+      ALTER TABLE link_discovery_state_v38 RENAME TO link_discovery_state;
 
-      CREATE TABLE bookmeter_listing_state_v37 (
+      CREATE TABLE bookmeter_listing_state_v38 (
         library_id    TEXT PRIMARY KEY,
         mode          TEXT NOT NULL DEFAULT 'off' CHECK (mode IN ('off', 'analyse', 'on')),
         progress_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(progress_json)),
@@ -2809,15 +2847,15 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
         paused_detail TEXT,
         updated_at    INTEGER NOT NULL
       );
-      INSERT INTO bookmeter_listing_state_v37
+      INSERT INTO bookmeter_listing_state_v38
         SELECT COALESCE(s.library_id, p.id), s.mode, s.progress_json, s.paused_reason,
           s.paused_detail, s.updated_at
-        FROM bookmeter_listing_state s, _v37_primary p
+        FROM bookmeter_listing_state s, _v38_primary p
         WHERE COALESCE(s.library_id, p.id) IS NOT NULL;
       DROP TABLE bookmeter_listing_state;
-      ALTER TABLE bookmeter_listing_state_v37 RENAME TO bookmeter_listing_state;
+      ALTER TABLE bookmeter_listing_state_v38 RENAME TO bookmeter_listing_state;
 
-      CREATE TABLE calibre_arrivals_state_v37 (
+      CREATE TABLE calibre_arrivals_state_v38 (
         library_id          TEXT PRIMARY KEY,
         mode                TEXT NOT NULL DEFAULT 'off' CHECK (mode IN ('off', 'analyse', 'on')),
         pause_reason        TEXT,
@@ -2831,17 +2869,17 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
         hand_checked_at     INTEGER,
         updated_at          INTEGER NOT NULL
       );
-      INSERT INTO calibre_arrivals_state_v37
+      INSERT INTO calibre_arrivals_state_v38
         SELECT COALESCE(p.id, ''), s.mode, s.pause_reason, s.pause_detail, s.paused_at,
           s.last_scheduled_day, s.run_now, s.current_run, s.baseline_at, s.snapshot_seen,
           s.hand_checked_at, s.updated_at
-        FROM calibre_arrivals_state s, _v37_primary p;
+        FROM calibre_arrivals_state s, _v38_primary p;
       DROP TABLE calibre_arrivals_state;
-      ALTER TABLE calibre_arrivals_state_v37 RENAME TO calibre_arrivals_state;
+      ALTER TABLE calibre_arrivals_state_v38 RENAME TO calibre_arrivals_state;
 
       ALTER TABLE calibre_arrival_runs ADD COLUMN library_id TEXT;
       UPDATE calibre_arrival_runs SET library_id = COALESCE(json_extract(progress_json, '$.libraryId'),
-        (SELECT id FROM _v37_primary));
+        (SELECT id FROM _v38_primary));
       CREATE INDEX calibre_arrival_runs_library ON calibre_arrival_runs (library_id, id);
 
       -- The library of the Calibre book a file names (added as, identical or duplicate of, better
@@ -2857,7 +2895,7 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
       ALTER TABLE calibre_arrival_reviews ADD COLUMN calibre_library_id TEXT;
       UPDATE calibre_arrival_reviews SET calibre_library_id = COALESCE(
           (SELECT f.calibre_library_id FROM calibre_arrival_files f WHERE f.id = calibre_arrival_reviews.file_id),
-          (SELECT id FROM _v37_primary))
+          (SELECT id FROM _v38_primary))
         WHERE calibre_id IS NOT NULL;
 
       -- A statement that names a Calibre book without its library means the file's own library
@@ -2885,7 +2923,7 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
         WHERE id = NEW.id;
       END;
 
-      CREATE TABLE calibre_arrival_books_v37 (
+      CREATE TABLE calibre_arrival_books_v38 (
         run_id        INTEGER NOT NULL REFERENCES calibre_arrival_runs(id),
         library_id    TEXT NOT NULL,
         calibre_id    INTEGER NOT NULL,
@@ -2896,14 +2934,14 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
         detail        TEXT,
         PRIMARY KEY (run_id, library_id, calibre_id)
       );
-      INSERT INTO calibre_arrival_books_v37 SELECT run_id, library_id, calibre_id, calibre_uuid,
+      INSERT INTO calibre_arrival_books_v38 SELECT run_id, library_id, calibre_id, calibre_uuid,
         origin, file_id, state, detail FROM calibre_arrival_books;
       DROP TABLE calibre_arrival_books;
-      ALTER TABLE calibre_arrival_books_v37 RENAME TO calibre_arrival_books;
+      ALTER TABLE calibre_arrival_books_v38 RENAME TO calibre_arrival_books;
       CREATE INDEX calibre_arrival_books_book ON calibre_arrival_books (library_id, calibre_uuid);
 
       -- origin 'move': a book a move brought into this library (never taken for one added by hand).
-      CREATE TABLE calibre_known_books_v37 (
+      CREATE TABLE calibre_known_books_v38 (
         library_id   TEXT NOT NULL,
         calibre_id   INTEGER NOT NULL,
         calibre_uuid TEXT NOT NULL,
@@ -2915,10 +2953,10 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
         gone_at      INTEGER,
         PRIMARY KEY (library_id, calibre_id)
       );
-      INSERT INTO calibre_known_books_v37 SELECT library_id, calibre_id, calibre_uuid, origin,
+      INSERT INTO calibre_known_books_v38 SELECT library_id, calibre_id, calibre_uuid, origin,
         file_id, added_at, settled_at, run_id, gone_at FROM calibre_known_books;
       DROP TABLE calibre_known_books;
-      ALTER TABLE calibre_known_books_v37 RENAME TO calibre_known_books;
+      ALTER TABLE calibre_known_books_v38 RENAME TO calibre_known_books;
       CREATE INDEX calibre_known_books_uuid ON calibre_known_books (calibre_uuid);
       CREATE INDEX calibre_known_books_waiting ON calibre_known_books (library_id, origin, run_id);
 
@@ -2933,7 +2971,7 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
         PRIMARY KEY (stage, part, library_id)
       );
 
-      DROP TABLE _v37_primary;
+      DROP TABLE _v38_primary;
     `,
   },
 ];

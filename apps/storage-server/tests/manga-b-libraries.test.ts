@@ -1,6 +1,6 @@
 /**
  * Manga part B (manga-library.md, approved 2026-11-25): the cleanup across the Calibre libraries.
- * The migration (cleanup.db v37) gives today's state to the primary library; stages, pauses,
+ * The migration (cleanup.db v38) gives today's state to the primary library; stages, pauses,
  * checks, passes and new-arrivals runs are per library; one gate across them; a new copy is
  * checked against the other library too (a copy there is recorded, never added); add batches
  * name their library.
@@ -55,7 +55,7 @@ function v36(): Database.Database {
   return db;
 }
 
-describe('cleanup.db v37: every stage, pass and import run belongs to a library', () => {
+describe('cleanup.db v38: every stage, pass and import run belongs to a library', () => {
   it('gives the primary library today’s rows, keeps run 7 its run, and the gate’s pauses to every library', () => {
     expect(CLEANUP_SCHEMA_VERSION).toBe(LIBRARY_SCOPE_VERSION);
     const db = v36();

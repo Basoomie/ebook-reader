@@ -374,7 +374,7 @@ interface StateRow {
 
 interface RunRow {
   id: number;
-  /** Manga part B (v37): the library the run works on. */
+  /** Manga part B (v38): the library the run works on. */
   library_id: string | null;
   trigger: 'schedule' | 'now' | 'hand';
   mode: 'analyse' | 'on';

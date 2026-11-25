@@ -3,7 +3,7 @@
  * 1-5 each have a mode: off (default for every stage), analyse (analysis only, nothing is
  * applied) or on (analysis and unattended apply behind the automatic gates).
  *
- * Manga part B (cleanup.db v37): every stage belongs to one Calibre library (its reader library
+ * Manga part B (cleanup.db v38): every stage belongs to one Calibre library (its reader library
  * id), with its own mode, state, pause and progress. Every function takes the library first, so
  * a call written for the one-library cleanup no longer compiles. A library's rows are made the
  * first time they are read.

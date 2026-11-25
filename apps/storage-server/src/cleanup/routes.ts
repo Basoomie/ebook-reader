@@ -28,6 +28,8 @@ import { isSecretName } from './secrets';
 import { ArrivalBatchError } from './arrivals/add-batches';
 import { streamSource } from './arrivals/sources-fs';
 import { arrivalsList, arrivalsStatus, notImportedCsv } from './arrivals/views';
+import { ImportError, importQuarantineCover, quarantineCovers } from './edits/cover-import';
+import { MAX_COVER_BYTES } from './edits/edits';
 import { getSettings, SettingsError, updateSettings } from './settings';
 import {
   CURRENT_PROPOSALS_SQL,
@@ -285,20 +287,33 @@ export function createCleanupApplyRouter(options: CleanupOptions): Router {
       : null;
 
   // Stage 2: what Calibre shows now → what to write for this book.
-  router.post('/cleanup-apply/batches/:id/books/:book/verify', (req, res) => {
-    const service = serviceOr503(options);
-    const { batchId, calibreId } = bookParams(req);
-    const body = (req.body ?? {}) as Record<string, unknown>;
-    try {
-      res.json(
-        service.batches
-          .writerOf(batchId)
-          .verify(batchId, calibreId, listed(body.current), quarantinePath(body.oldCoverPath)),
-      );
-    } catch (err) {
-      rethrow(err);
-    }
-  });
+  // Book covers: Calibre's current picture is kept in the server's cover archive before any
+  // cover write is answered (a cover is not written when it can't be kept).
+  router.post(
+    '/cleanup-apply/batches/:id/books/:book/verify',
+    asyncHandler(async (req, res) => {
+      const service = serviceOr503(options);
+      const { batchId, calibreId } = bookParams(req);
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      try {
+        const writer = service.batches.writerOf(batchId);
+        const current = listed(body.current);
+        const kept = await writer.keepCurrentCover(batchId, calibreId, current);
+        res.json(
+          writer.verify(
+            batchId,
+            calibreId,
+            current,
+            quarantinePath(body.oldCoverPath),
+            Date.now(),
+            kept,
+          ),
+        );
+      } catch (err) {
+        rethrow(err);
+      }
+    }),
+  );
 
   // Stage 2: what Calibre shows after the write.
   router.post('/cleanup-apply/batches/:id/books/:book/written', (req, res) => {
@@ -349,6 +364,34 @@ export function createCleanupApplyRouter(options: CleanupOptions): Router {
         res.end(bytes);
       } catch (err) {
         rethrow(err);
+      }
+    }),
+  );
+
+  // Book covers: the one-time import of the quarantine's earlier covers into the server's cover
+  // archive (the sidecar's `node /app/dist/import-covers.js`; edits/cover-import.ts).
+  router.get('/cleanup-apply/cover-archive/quarantine', (_req, res) => {
+    const service = serviceOr503(options);
+    res.json({ covers: quarantineCovers(service.db) });
+  });
+
+  router.post(
+    '/cleanup-apply/cover-archive/quarantine/:changeId',
+    express.raw({ type: () => true, limit: MAX_COVER_BYTES }),
+    asyncHandler(async (req, res) => {
+      const service = serviceOr503(options);
+      const changeId = Number(req.params.changeId);
+      if (!Number.isInteger(changeId) || changeId <= 0)
+        throw new ApiError(400, 'bad_request', 'A change id is needed');
+      const bytes = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+      const sha = req.header('x-sha256') ?? null;
+      try {
+        res.json(
+          await importQuarantineCover(service.db, service.coverArchive, changeId, bytes, sha),
+        );
+      } catch (err) {
+        if (err instanceof ImportError) throw new ApiError(err.status, err.code, err.message);
+        throw err;
       }
     }),
   );

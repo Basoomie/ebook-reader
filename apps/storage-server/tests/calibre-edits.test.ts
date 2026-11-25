@@ -7,14 +7,17 @@
  */
 import Database from 'better-sqlite3';
 import { createHash } from 'crypto';
+import fs from 'fs';
 import http from 'http';
 import type { AddressInfo } from 'net';
 import path from 'path';
+import sharp from 'sharp';
 import request from 'supertest';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { Calibredb } from '../../cleanup-apply/src/calibredb';
 import type { SidecarConfig } from '../../cleanup-apply/src/config';
 import { Worker } from '../../cleanup-apply/src/worker';
+import { importCovers } from '../../cleanup-apply/src/import-covers';
 import { diffBook, metaHash, type CalibreBook } from '../src/calibre/ingest';
 import { caseOnlyRenames } from '../src/cleanup/edits/attribution';
 import { checkNames, normalizeValue, userKeysOf } from '../src/cleanup/edits/fields';
@@ -42,6 +45,19 @@ const listen = (s: http.Server) =>
     s.listen(0, '127.0.0.1', () => resolve((s.address() as AddressInfo).port)),
   );
 const sha1 = (v: unknown) => createHash('sha1').update(JSON.stringify(v)).digest('hex');
+
+/** A cover with a dark band ending at column `k` of 8 (flat pictures share one difference hash). */
+async function patterned(k: number): Promise<Buffer> {
+  const band = await sharp({
+    create: { width: 75 * k, height: 900, channels: 3, background: '#000' },
+  })
+    .png()
+    .toBuffer();
+  return sharp({ create: { width: 600, height: 900, channels: 3, background: '#fff' } })
+    .composite([{ input: band, left: 0, top: 0 }])
+    .jpeg()
+    .toBuffer();
+}
 
 describe('pure parts', () => {
   it('keeps the library’s stage-5 question exactly as on main (hash from origin/main)', () => {
@@ -681,16 +697,234 @@ describe('the user’s edits through the apply sidecar', () => {
       .set(auth(user))
       .send({ coverToken: up.body.token })
       .expect(200);
+    const before = calibreCover(ids.A);
     await runAll(worker());
-    const r = calibreRecord(env.lib, ids.A)!;
-    const fs = await import('fs');
-    expect(
-      fs.readFileSync(path.join(env.lib.dir, ...r.path.split('/'), 'cover.jpg')).equals(pic),
-    ).toBe(true);
+    expect(calibreCover(ids.A).equals(pic)).toBe(true);
+    // Book covers: Calibre's picture is kept in the server's own archive, not the quarantine.
     const undo = env.cleanupDb
-      .prepare(`SELECT old_cover_path FROM field_undo WHERE field = 'cover'`)
-      .get() as { old_cover_path: string };
-    expect(fs.existsSync(undo.old_cover_path)).toBe(true);
+      .prepare(`SELECT change_id, old_cover_path FROM field_undo WHERE field = 'cover'`)
+      .get() as { change_id: number; old_cover_path: string | null };
+    expect(undo.old_cover_path).toBeNull();
+    expect(quarantinePictures()).toEqual([]);
+    const kept = env.service.coverArchive.keptBefore(undo.change_id)!;
+    expect(fs.readFileSync(env.service.coverArchive.file(kept)!).equals(before)).toBe(true);
+  });
+
+  /** Cover pictures the sidecar kept in its quarantine (batch.json records aside). */
+  const quarantinePictures = (): string[] =>
+    (fs.readdirSync(quarantine, { recursive: true }) as string[]).filter((f) =>
+      f.endsWith('old-cover.jpg'),
+    );
+
+  /** Calibre's cover.jpg of a book as it is now. */
+  const calibreCover = (calibreId: number) => {
+    const r = calibreRecord(env.lib, calibreId)!;
+    return fs.readFileSync(path.join(env.lib.dir, ...r.path.split('/'), 'cover.jpg'));
+  };
+
+  async function newCover(id: string, pic: Buffer, w: Worker) {
+    const up = await request(env.app)
+      .post(`/api/v1/books/${id}/calibre-edit/cover`)
+      .set(auth(user))
+      .set('Content-Type', 'image/jpeg')
+      .send(pic)
+      .expect(200);
+    await request(env.app)
+      .post(`/api/v1/books/${id}/calibre-edit`)
+      .set(auth(user))
+      .send({ coverToken: up.body.token })
+      .expect(200);
+    await runAll(w);
+    await env.index();
+  }
+
+  it('book covers: three changes, then the original and the second put back byte for byte', async () => {
+    const id = book(ids.A);
+    const w = worker();
+    const original = calibreCover(ids.A);
+    const second = await patterned(1);
+    const third = await patterned(5);
+    await newCover(id, second, w);
+    await newCover(id, third, w);
+    expect(calibreCover(ids.A).equals(third)).toBe(true);
+    const list = await request(env.app)
+      .get(`/api/v1/books/${id}/calibre-edit/covers`)
+      .set(auth(user))
+      .expect(200);
+    // The original, the second (kept before the third; also seen after its own write) and the
+    // third (seen after its write: the cover now).
+    expect(list.body.covers).toHaveLength(3);
+    expect(list.body.covers.map((c: { current: boolean }) => c.current)).toEqual([
+      false,
+      false,
+      true,
+    ]);
+    const shaOriginal = list.body.covers[0].sha256 as string;
+    const pic = await request(env.app)
+      .get(`/api/v1/books/${id}/calibre-edit/covers/${shaOriginal}`)
+      .set(auth(user))
+      .buffer(true)
+      .parse((res, cb) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (c: Buffer) => chunks.push(c));
+        res.on('end', () => cb(null, Buffer.concat(chunks)));
+      })
+      .expect(200);
+    expect((pic.body as Buffer).equals(original)).toBe(true);
+    // Another book can't read or use this book's pictures.
+    await request(env.app)
+      .get(`/api/v1/books/${book(ids.B)}/calibre-edit/covers/${shaOriginal}`)
+      .set(auth(user))
+      .expect(404);
+    // Pick the original: kept for the next save like an upload, then saved.
+    const use = await request(env.app)
+      .post(`/api/v1/books/${id}/calibre-edit/covers/${shaOriginal}/use`)
+      .set(auth(user))
+      .expect(200);
+    await request(env.app)
+      .post(`/api/v1/books/${id}/calibre-edit`)
+      .set(auth(user))
+      .send({ coverToken: use.body.token })
+      .expect(200);
+    await runAll(w);
+    await env.index();
+    expect(calibreCover(ids.A).equals(original)).toBe(true);
+    // The history's Undo of that change puts the third back (from the archive).
+    const h = await request(env.app).get(`/api/v1/books/${id}/history`).set(auth(user)).expect(200);
+    const latest = h.body.entries.find((e: { field: string }) => e.field === 'cover');
+    expect(latest).toMatchObject({ who: 'you', undo: { possible: true } });
+    await request(env.app)
+      .post(`/api/v1/books/${id}/history/${latest.id}/undo`)
+      .set(auth(user))
+      .expect(200);
+    await runAll(w);
+    expect(calibreCover(ids.A).equals(third)).toBe(true);
+    // The sidecar's quarantine was never used for any of it.
+    expect(quarantinePictures()).toEqual([]);
+  });
+
+  it('book covers: a cover changed in Calibre’s own program is kept too', async () => {
+    const id = book(ids.A);
+    await env.lib.setCover(ids.A, 150);
+    // (a flat picture: the archive keeps it whatever it looks like)
+    await env.index();
+    env.service.sortChanges();
+    for (let i = 0; i < 50; i++) {
+      await new Promise((res) => setTimeout(res, 20));
+      if (
+        env.service.coverArchive.list({
+          libraryId: env.readerBook(uuidOf(ids.A))!.libraryId,
+          uuid: uuidOf(ids.A),
+        }).length
+      )
+        break;
+    }
+    const list = await request(env.app)
+      .get(`/api/v1/books/${id}/calibre-edit/covers`)
+      .set(auth(user))
+      .expect(200);
+    expect(list.body.covers).toHaveLength(1);
+    expect(list.body.covers[0].current).toBe(true);
+    expect(env.cleanupDb.prepare('SELECT COUNT(*) AS n FROM cover_archive_wanted').get()).toEqual({
+      n: 0,
+    });
+  });
+
+  it('book covers: the cover is not replaced when Calibre’s picture can’t be kept', async () => {
+    const id = book(ids.A);
+    const dir = (env.service.coverArchive as unknown as { dir: string }).dir;
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.writeFileSync(dir, 'a file where the folder should be');
+    const before = calibreCover(ids.A);
+    const up = await request(env.app)
+      .post(`/api/v1/books/${id}/calibre-edit/cover`)
+      .set(auth(user))
+      .set('Content-Type', 'image/jpeg')
+      .send(await makeJpeg(90))
+      .expect(200);
+    await request(env.app)
+      .post(`/api/v1/books/${id}/calibre-edit`)
+      .set(auth(user))
+      .send({ coverToken: up.body.token })
+      .expect(200);
+    await runAll(worker());
+    expect(calibreCover(ids.A).equals(before)).toBe(true);
+    const st = await request(env.app)
+      .get(`/api/v1/books/${id}/calibre-edit/status`)
+      .set(auth(user))
+      .expect(200);
+    expect(st.body.status.find((s: { field: string }) => s.field === 'cover')).toMatchObject({
+      state: 'not_written',
+      reason: expect.stringMatching(
+        /^Calibre's current cover couldn't be kept, so it wasn't replaced/,
+      ),
+    });
+    fs.rmSync(dir, { force: true });
+  });
+
+  it('book covers: the quarantine’s earlier covers are imported once by the sidecar’s program', async () => {
+    const id = book(ids.A);
+    await newCover(id, await makeJpeg(60), worker());
+    // As a write made before the archive: its earlier picture only in the quarantine.
+    const row = env.cleanupDb
+      .prepare(`SELECT change_id FROM field_undo WHERE field = 'cover'`)
+      .get() as { change_id: number };
+    const kept = env.service.coverArchive.keptBefore(row.change_id)!;
+    const oldPic = fs.readFileSync(env.service.coverArchive.file(kept)!);
+    env.cleanupDb.prepare('DELETE FROM cover_archive').run();
+    const qFile = path.join(quarantine, 'batch-x', String(ids.A), 'old-cover.jpg');
+    fs.mkdirSync(path.dirname(qFile), { recursive: true });
+    fs.writeFileSync(qFile, oldPic);
+    env.cleanupDb
+      .prepare(`UPDATE field_undo SET old_cover_path = ? WHERE change_id = ?`)
+      .run(qFile, row.change_id);
+    // One more whose file is gone, and one outside the quarantine (never read).
+    const sidecarEnv = {
+      TTSU_URL: workerUrl,
+      CLEANUP_TOKEN: env.applyToken(),
+      QUARANTINE_DIR: quarantine,
+    };
+    const lines: string[] = [];
+    const r1 = await importCovers(sidecarEnv, fetch, (l) => lines.push(l));
+    expect(r1).toEqual({ kept: 1, missing: 0, failed: 0, total: 1 });
+    expect(env.service.coverArchive.keptBefore(row.change_id)).toBe(kept);
+    // The quarantine is untouched, and a second run finds nothing left to do.
+    expect(fs.readFileSync(qFile).equals(oldPic)).toBe(true);
+    expect(await importCovers(sidecarEnv, fetch, () => {})).toEqual({
+      kept: 0,
+      missing: 0,
+      failed: 0,
+      total: 0,
+    });
+    // The history's Undo now reads it from the archive.
+    const h = await request(env.app).get(`/api/v1/books/${id}/history`).set(auth(user)).expect(200);
+    const e = h.body.entries.find((x: { field: string }) => x.field === 'cover');
+    expect(e).toMatchObject({ undo: { possible: true, to: { archive: kept } } });
+  });
+
+  it('book covers: the import refuses a picture that arrived incomplete', async () => {
+    await newCover(book(ids.A), await makeJpeg(70), worker());
+    const row = env.cleanupDb
+      .prepare(`SELECT change_id FROM field_undo WHERE field = 'cover'`)
+      .get() as { change_id: number };
+    env.cleanupDb.prepare('DELETE FROM cover_archive').run();
+    env.cleanupDb
+      .prepare(
+        `UPDATE field_undo SET old_cover_path = '/quarantine/x/old-cover.jpg' WHERE change_id = ?`,
+      )
+      .run(row.change_id);
+    await request(env.app)
+      .post(`/api/v1/cleanup-apply/cover-archive/quarantine/${row.change_id}`)
+      .set(auth(env.applyToken()))
+      .set('Content-Type', 'application/octet-stream')
+      .set('x-sha256', '0'.repeat(64))
+      .send(await makeJpeg(70))
+      .expect(422);
+    // Only the sidecar's token reaches these routes.
+    await request(env.app)
+      .get('/api/v1/cleanup-apply/cover-archive/quarantine')
+      .set(auth(user))
+      .expect(401);
   });
 
   it('the series editor renames, renumbers and merges its pair in one batch', async () => {
