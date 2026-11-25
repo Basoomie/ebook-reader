@@ -395,6 +395,25 @@ const STREAM_MS = 5 * 60_000;
 const PROGRESS_SAVE_MS = 15_000;
 
 /**
+ * The same text as another copy with neither copy better on every measure (stage 3's trade-off):
+ * not added (user, 2026-11-24, after checking 5 of the Preview's 1,887: 99.7-100 % of the text in
+ * common both ways, only the pictures' size and compression and the cover's size differed). Of
+ * two new copies, the one with the lower catalog id stays (otherKey > -id: a library book's key
+ * is positive, and a lower id is a larger negative key).
+ */
+export function sameTextNoWinner(verdicts: MeasuredPair[], id: number): MeasuredPair | undefined {
+  return verdicts.find((v) => v.cls === 'duplicate' && v.keep === null && v.otherKey > -id);
+}
+
+/** The detail of a new book not added because of `sameTextNoWinner`. */
+export function sameTextDetail(v: MeasuredPair): string {
+  const why = v.best?.reason ? `; ${v.best.reason}` : '';
+  return v.otherKey > 0
+    ? `The same text as Calibre book ${v.otherKey}; neither copy is better on every measure${why}`
+    : `The same text as ${-v.otherKey} in this run; neither copy is better on every measure${why}`;
+}
+
+/**
  * Runs `fn` on the items with up to `limit` in flight, the next item as soon as one finishes
  * (stage 3's pipeline, not groups that wait for their slowest). False when stopped on the way;
  * a job that throws makes the whole call throw.
@@ -1895,7 +1914,7 @@ export class BookArrivals {
     p.waiting = `Deciding each new book (${c.done.toLocaleString('en-US')} of ${c.total.toLocaleString('en-US')})`;
     const set = this.db.prepare(
       `UPDATE calibre_arrival_files SET outcome = ?, detail = ?, calibre_id = ?, calibre_uuid = ?,
-         facts_json = ?, decided_at = ? WHERE id = ?`,
+         facts_json = ?, decided_at = ?, run_id = ${run.id} WHERE id = ?`,
     );
     for (const f of part) {
       const fx = facts(f);
@@ -1903,8 +1922,20 @@ export class BookArrivals {
       fx.compared = true;
       const factsPlus = JSON.stringify(fx);
       const lostTo = vs.find((v) => v.keep === 'other');
+      const tie = lostTo ? undefined : sameTextNoWinner(vs, f.id);
       const beat = vs.filter((v) => v.keep === 'new' && v.otherKey > 0);
-      if (lostTo) {
+      if (tie) {
+        const isLib = tie.otherKey > 0;
+        set.run(
+          'duplicate',
+          sameTextDetail(tie),
+          isLib ? tie.otherKey : null,
+          isLib ? (books.get(tie.otherKey)?.uuid ?? null) : null,
+          factsPlus,
+          Date.now(),
+          f.id,
+        );
+      } else if (lostTo) {
         const isLib = lostTo.otherKey > 0;
         const b = isLib ? books.get(lostTo.otherKey) : null;
         set.run(
@@ -2025,6 +2056,7 @@ export class BookArrivals {
 
   private planStep(run: RunRow & { p: RunProgress }, p: RunProgress): void {
     const now = Date.now();
+    this.reapplySameText(run.id);
     for (const pair of p.pairs) {
       // A folder's first run (its Preview) is done once every file in it was looked at; from
       // then on it stays done (files a later download leaves waiting don't undo it). Runs that
@@ -3033,22 +3065,76 @@ export class BookArrivals {
     );
   }
 
+  /**
+   * Books decided as new before `sameTextNoWinner` (the 2026-11-24 Preview) are decided again
+   * with it, before anything is planned or added: a new book with the same text as another copy
+   * and no clear winner is a duplicate. Only books still 'new'; once per plan step.
+   */
+  reapplySameText(runId: number): number {
+    const rows = this.db
+      .prepare(
+        `SELECT id, facts_json FROM calibre_arrival_files INDEXED BY calibre_arrival_files_outcome
+         WHERE outcome = 'new' AND gone_at IS NULL AND json_extract(facts_json, '$.compared') = 1`,
+      )
+      .all() as { id: number; facts_json: string }[];
+    const set = this.db.prepare(
+      `UPDATE calibre_arrival_files SET outcome = 'duplicate', detail = ?, calibre_id = ?,
+         calibre_uuid = ?, decided_at = ?, run_id = ? WHERE id = ? AND outcome = 'new'`,
+    );
+    let n = 0;
+    const lib = this.libraryOfRuns();
+    this.db.transaction(() => {
+      for (const r of rows) {
+        const tie = sameTextNoWinner(
+          (JSON.parse(r.facts_json) as CompareFacts).verdicts ?? [],
+          r.id,
+        );
+        if (!tie) continue;
+        const uuid = tie.otherKey > 0 ? (lib?.get(tie.otherKey)?.uuid ?? null) : null;
+        set.run(
+          sameTextDetail(tie),
+          tie.otherKey > 0 ? tie.otherKey : null,
+          uuid,
+          Date.now(),
+          runId,
+          r.id,
+        );
+        n++;
+      }
+    })();
+    if (n)
+      this.log(`New arrivals: ${n} books with the same text as another copy decided as duplicates`);
+    return n;
+  }
+
+  private libraryOfRuns(): Map<number, SnapshotBook> | null {
+    const libraryId = this.deps.targetLibrary();
+    return libraryId ? this.snapshotBooks(libraryId) : null;
+  }
+
   report(runId: number, p: RunProgress, mode: 'analyse' | 'on'): RunReport {
     const outcomes: Record<string, number> = {};
     const formats: Record<string, number> = {};
+    // The files this run looked at or decided (a folder's first look can span runs: files read
+    // by one run are decided by a later one; WP20g, 2026-11-24: run 6's report was empty).
+    const started = (
+      this.db.prepare('SELECT started_at FROM calibre_arrival_runs WHERE id = ?').get(runId) as {
+        started_at: number;
+      }
+    ).started_at;
     for (const r of this.db
       .prepare(
-        `SELECT outcome, COUNT(*) AS n FROM calibre_arrival_files INDEXED BY calibre_arrival_files_run
-         WHERE run_id = ? GROUP BY outcome`,
+        `SELECT outcome, COUNT(*) AS n FROM calibre_arrival_files
+         WHERE (run_id = ? OR decided_at >= ?) AND gone_at IS NULL GROUP BY outcome`,
       )
-      .all(runId) as { outcome: string; n: number }[])
+      .all(runId, started) as { outcome: string; n: number }[])
       outcomes[r.outcome] = r.n;
     for (const r of this.db
       .prepare(
-        `SELECT COALESCE(format, kind) AS f, COUNT(*) AS n FROM calibre_arrival_files INDEXED BY calibre_arrival_files_run
-         WHERE run_id = ? GROUP BY f`,
+        `SELECT COALESCE(format, kind) AS f, COUNT(*) AS n FROM calibre_arrival_files
+         WHERE (run_id = ? OR decided_at >= ?) AND gone_at IS NULL GROUP BY f`,
       )
-      .all(runId) as { f: string; n: number }[])
+      .all(runId, started) as { f: string; n: number }[])
       formats[r.f] = r.n;
     const newReview = (
       this.db

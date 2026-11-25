@@ -21,7 +21,7 @@ import { ArrivalBatches } from '../src/cleanup/arrivals/add-batches';
 import { entrySkip } from '../src/cleanup/arrivals/archives';
 import { classifyName, settled, sniffFormat, walkSource } from '../src/cleanup/arrivals/catalog';
 import { qualityOfFile } from '../src/cleanup/arrivals/compare';
-import { inPool, type CompareFacts } from '../src/cleanup/arrivals/run';
+import { inPool, sameTextNoWinner, type CompareFacts } from '../src/cleanup/arrivals/run';
 import type { SourcePacer } from '../src/cleanup/arrivals/sources-fs';
 import { stage2Pass } from '../src/cleanup/arrivals/stage-passes';
 import { ArrivalStage5, emptyStage5Pass } from '../src/cleanup/arrivals/stage5-pass';
@@ -797,6 +797,59 @@ describe('wp20g: a run end to end', () => {
     ).toEqual({ new_json: JSON.stringify('新しい本') });
     env.cleanupDb.prepare(`DELETE FROM proposed_changes WHERE analysis_id = 'arrivals:9999'`).run();
   }, 120_000);
+
+  it('a book with the same text as another copy and no clear winner is a duplicate, also when decided before', async () => {
+    const v = (otherKey: number, keep: 'new' | 'other' | null, cls = 'duplicate') =>
+      ({
+        newKey: 0,
+        otherKey,
+        aInB: 1,
+        bInA: 1,
+        cls,
+        rule: 'both_ways',
+        reason: 'Same text',
+        keep,
+        best: {
+          keep: null,
+          by: 'tradeoff',
+          measures: [],
+          reason: 'Each copy is better somewhere (images, cover)',
+        },
+      }) as never;
+    // Against a library book; of two new copies the lower catalog id stays; other classes not.
+    expect(sameTextNoWinner([v(42, null)], 10)).toBeDefined();
+    expect(sameTextNoWinner([v(-5, null)], 10)).toBeDefined();
+    expect(sameTextNoWinner([v(-15, null)], 10)).toBeUndefined();
+    expect(sameTextNoWinner([v(42, null, 'keep_both')], 10)).toBeUndefined();
+    expect(sameTextNoWinner([v(42, 'new')], 10)).toBeUndefined();
+    // A book decided as new before the rule is decided again before anything is planned.
+    const id = Number(
+      env.cleanupDb
+        .prepare(
+          `INSERT INTO calibre_arrival_files (pair_key, rel_path, size, mtime_ms, first_seen_at, seen_at, kind, outcome, facts_json)
+           VALUES (?, 'Discord/A trade-off.epub', 1, 1, 1, 1, 'epub', 'new', ?)`,
+        )
+        .run(
+          (
+            env.cleanupDb.prepare('SELECT pair_key FROM calibre_arrival_files LIMIT 1').get() as {
+              pair_key: string;
+            }
+          ).pair_key,
+          JSON.stringify({ compared: true, verdicts: [v(L.A, null)] }),
+        ).lastInsertRowid,
+    );
+    expect(env.service.arrivals.reapplySameText(1)).toBe(1);
+    expect(
+      env.cleanupDb
+        .prepare('SELECT outcome, calibre_id, detail FROM calibre_arrival_files WHERE id = ?')
+        .get(id),
+    ).toMatchObject({
+      outcome: 'duplicate',
+      calibre_id: L.A,
+      detail: expect.stringContaining('neither copy is better'),
+    });
+    env.cleanupDb.prepare('DELETE FROM calibre_arrival_files WHERE id = ?').run(id);
+  });
 
   it('a book you removed from Calibre is never added again', async () => {
     const added = env.cleanupDb
