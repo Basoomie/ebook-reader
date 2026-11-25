@@ -244,6 +244,7 @@ export function arrivalsList(
     const items = db
       .prepare(
         `SELECT id, pair_key, rel_path, size, mtime_ms, format, kind, outcome, detail, calibre_id, calibre_uuid,
+           calibre_library_id,
            run_id, decided_at, archive_id, json_extract(facts_json, '$.title') AS title,
            json_extract(facts_json, '$.addedAs.calibreId') AS added_as
          FROM calibre_arrival_files INDEXED BY calibre_arrival_files_outcome
@@ -280,7 +281,8 @@ export function arrivalsList(
     ).n;
     const items = db
       .prepare(
-        `SELECT r.id, r.kind, r.file_id, r.calibre_id, r.calibre_uuid, r.detail_json, r.run_id, r.created_at,
+        `SELECT r.id, r.kind, r.file_id, r.calibre_id, r.calibre_uuid, r.calibre_library_id, r.detail_json,
+           r.run_id, r.created_at,
            f.rel_path, f.pair_key
          FROM calibre_arrival_reviews r INDEXED BY calibre_arrival_reviews_open
          LEFT JOIN calibre_arrival_files f ON f.id = r.file_id

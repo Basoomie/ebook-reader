@@ -417,7 +417,9 @@
                       {OUTCOME_LABELS[str(item.outcome)] ?? str(item.outcome)}{item.title
                         ? ` · ${str(item.title)}`
                         : ''}{item.calibre_id
-                        ? ` · Calibre book ${str(item.calibre_id)}`
+                        ? item.calibre_library_id && item.calibre_library_id !== api.libraryId
+                          ? ` · ${str(item.calibre_library_name)} book ${str(item.calibre_id)}`
+                          : ` · Calibre book ${str(item.calibre_id)}`
                         : ''}{item.added_as ? ` · added as ${str(item.added_as)}` : ''}</span
                     >
                     {#if item.detail}<span class="text-c-muted">{str(item.detail)}</span>{/if}

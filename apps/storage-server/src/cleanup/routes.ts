@@ -1636,15 +1636,28 @@ export function createCleanupRouter(options: CleanupOptions): Router {
     const service = serviceOr503(options);
     const q = req.query as Record<string, string | undefined>;
     try {
-      res.json(
-        arrivalsList(
-          service.db,
-          req.params.list,
-          Number(q.offset ?? 0) || 0,
-          Number(q.limit ?? 50) || 50,
-          libOf(service, req),
-        ),
+      const page = arrivalsList(
+        service.db,
+        req.params.list,
+        Number(q.offset ?? 0) || 0,
+        Number(q.limit ?? 50) || 50,
+        libOf(service, req),
       );
+      // Manga part B: a matched book's library by name (the other library's copies).
+      const names = new Map<string, string>();
+      const nameOf = (id: string) => {
+        if (!names.has(id)) names.set(id, service.libraryName(id));
+        return names.get(id)!;
+      };
+      res.json({
+        ...page,
+        items: page.items.map((it) => {
+          const lib = (it as { calibre_library_id?: unknown }).calibre_library_id;
+          return typeof lib === 'string' && lib
+            ? { ...(it as object), calibre_library_name: nameOf(lib) }
+            : it;
+        }),
+      });
     } catch (err) {
       throw new ApiError(404, 'no_list', (err as Error).message);
     }
