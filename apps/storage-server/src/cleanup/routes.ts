@@ -1077,16 +1077,18 @@ export function createCleanupRouter(options: CleanupOptions): Router {
       .prepare(
         `SELECT id, stage, calibre_id, calibre_uuid, field, class, state, review_reason, source, evidence_json,
                 old_json, new_json
-         FROM proposed_changes WHERE class = 'review' AND state = 'proposed' AND decided_by IS NULL
-           AND library_id = ?
+         FROM proposed_changes INDEXED BY proposed_changes_stage
+         WHERE class = 'review' AND state = 'proposed' AND decided_by IS NULL AND library_id = ?
          ORDER BY stage, review_reason, id LIMIT 50 OFFSET ?`,
       )
       .all(lib, offset) as Record<string, unknown>[];
     const total = (
       service.db
         .prepare(
-          `SELECT COUNT(*) AS n FROM proposed_changes WHERE class = 'review' AND state = 'proposed'
-             AND decided_by IS NULL AND library_id = ?`,
+          // Manga part B: named, or SQLite walks the library's every proposal (3 s on the live
+          // copy; this covering index: about 80 ms, as before the library was named).
+          `SELECT COUNT(*) AS n FROM proposed_changes INDEXED BY proposed_changes_counts
+           WHERE class = 'review' AND state = 'proposed' AND decided_by IS NULL AND library_id = ?`,
         )
         .get(lib) as { n: number }
     ).n;
