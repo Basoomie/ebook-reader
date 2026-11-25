@@ -253,7 +253,7 @@ export class MoveBatches {
         this.db,
         'library_changed',
         `${skipped.length} of the next ${candidates.length} books to move changed in Calibre since the selection (${summarizeReasons(skipped)}). ` +
-          'Nothing was moved or skipped. Select again (the card), then resume.',
+          'Nothing was moved or skipped. Select again: the books are read again and a new spot check is drawn.',
       );
       return { batch: null, reason: 'Calibre changed since the selection' };
     }
