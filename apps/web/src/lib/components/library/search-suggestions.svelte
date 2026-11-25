@@ -52,6 +52,8 @@
   let asked = 0;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const cache = new Map<string, NameCount[]>();
+  /** The name field the shown list belongs to ('' = fixed values or field names). */
+  let shownField = '';
 
   $: context = enabled ? contextAt(query, cursor) : { kind: 'none' };
   $: contextKey = JSON.stringify(context);
@@ -81,6 +83,8 @@
     }
     clearTimeout(timer);
     const ctx = context;
+    const prevField = shownField;
+    shownField = '';
     if (ctx.kind === 'none') {
       shown = [];
       return;
@@ -101,12 +105,16 @@
     const field = ctx.field as NameField;
     const cacheKey = JSON.stringify([field, ctx.partial.trim(), lib ?? '']);
     const hit = cache.get(cacheKey);
+    shownField = field;
     if (hit) {
       shown = fromNames(hit, ctx.taken);
       return;
     }
     const ask = ++asked;
     const get = names;
+    // While another field's names are asked, its old list must not stay (author: showing
+    // tags); the same field keeps its list until the answer, so typing doesn't flicker.
+    if (prevField !== field) shown = [];
     // A short pause while typing; only the newest answer is shown.
     timer = setTimeout(async () => {
       try {
