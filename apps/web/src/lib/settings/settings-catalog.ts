@@ -136,6 +136,15 @@ export const SETTINGS_SECTIONS: CatalogSection[] = [
   },
   // Recently viewed (2026-11-24): after Search.
   {
+    id: 'library-next-in-series',
+    tab: 'Library',
+    jp: '続巻',
+    title: 'Next in your series',
+    description:
+      'When you finish a volume, the next one in its series on Home and in the search status:next. The same on every device.',
+    keywords: 'next volume series continue up next sequel status:next'
+  },
+  {
     id: 'library-recently-viewed',
     tab: 'Library',
     jp: '閲覧',
@@ -572,6 +581,30 @@ export const SETTINGS_CATALOG: CatalogSetting[] = [
     keywords: 'search history recent searches delete forget clear'
   },
   // Library › Recently viewed (2026-11-24)
+  {
+    id: 'next-in-series-on',
+    section: 'library-next-in-series',
+    title: 'Show the next volume of your series',
+    description:
+      'For each series you have finished a volume of, the first later volume you haven’t started. Off: the Home row is empty and status:next finds nothing.',
+    keywords: 'next volume series continue up next'
+  },
+  {
+    id: 'next-in-series-bonus',
+    section: 'library-next-in-series',
+    title: 'Count bonus books as next volumes',
+    description:
+      'Bonus books (numbered 3.1 and so on) can be the next volume. Off: they are passed over. Omnibus volumes (3.9) never are.',
+    keywords: 'bonus extra omnibus side story numbering'
+  },
+  {
+    id: 'next-in-series-hidden',
+    section: 'library-next-in-series',
+    title: 'Hidden series',
+    description:
+      'Series you hid from Next in your series (a book’s ⋮ menu on Home). Show again to bring one back.',
+    keywords: 'hidden series hide show again next'
+  },
   {
     id: 'recently-viewed-on',
     section: 'library-recently-viewed',

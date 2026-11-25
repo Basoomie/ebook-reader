@@ -65,7 +65,7 @@ const FIELD_HELP: Record<(typeof QUERY_FIELDS)[number], string> = {
   ratings: 'How many people rated it: >=100',
   readers: 'People who logged it on 読書メーター: >=1000',
   myrating: 'Your own rating: >=4, 5',
-  status: 'Unread, reading, completed or dropped',
+  status: 'Unread, reading, completed, dropped, or next (the next volume of your series)',
   favorite: 'Your favorites: yes or no',
   on: 'On this device: device or audio'
 };
@@ -159,7 +159,11 @@ export function fieldSuggestions(partial: string): Suggestion[] {
 }
 
 const STATIC_VALUES: Record<string, { value: string; detail?: string }[]> = {
-  status: QUERY_STATUSES.map((value) => ({ value })),
+  status: QUERY_STATUSES.map((value) =>
+    value === 'next'
+      ? { value, detail: 'The next volume of each series you are reading' }
+      : { value }
+  ),
   favorite: [
     { value: 'yes', detail: 'Your favorites' },
     { value: 'no', detail: 'Books not marked favorite' }

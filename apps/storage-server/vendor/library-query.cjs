@@ -2,7 +2,7 @@
  * GENERATED FILE, DO NOT EDIT. The storage server library search parser, bundled from
  * the web app (apps/web/src/lib/library/query/server-entry.ts).
  * Rebuild with `pnpm build:server-query` in apps/web after changing that code.
- * build: c9b2c45cbb813d0f
+ * build: fc219bd99a3060db
  */
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
@@ -45,7 +45,7 @@ var QUERY_LIMITS = {
   /** Characters in one regular expression body. */
   maxRegexLength: 200
 };
-var QUERY_STATUSES = ["unread", "reading", "completed", "dropped"];
+var QUERY_STATUSES = ["unread", "reading", "completed", "dropped", "next"];
 var QueryError = class extends Error {
   constructor(message, start, end) {
     super(message);

@@ -142,7 +142,6 @@ export interface BookRatingsAnswer {
 
 export interface RatingSettings {
   refresh: boolean;
-  bookmeter: boolean;
   newDays: number;
   recentDays: number;
   oldDays: number;
@@ -707,6 +706,17 @@ export class LibraryApi {
         names: NameCount[];
       }>
     ).then((r) => r.names);
+  }
+
+  /**
+   * Next in your series (docs/design/next-in-series.md): the next volume of each series you
+   * are reading, the series whose volume you finished last first. Ids only; the cards come
+   * from `lookup`.
+   */
+  async nextInSeries(options?: RequestOptions): Promise<string[]> {
+    return ((await this.get('/next-in-series', options)).json() as Promise<{ ids: string[] }>).then(
+      (r) => r.ids
+    );
   }
 
   /**

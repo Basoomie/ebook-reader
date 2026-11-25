@@ -29,6 +29,8 @@
   export let onDevice = false;
   /** Recently viewed (2026-11-24): offers Remove from Recently viewed. */
   export let forgettable = false;
+  /** Next in your series (2026-11-25): offers Hide this series from Next in your series. */
+  export let seriesHideable = false;
 
   const dispatch = createEventDispatcher<{
     read: void;
@@ -36,6 +38,7 @@
     collect: void;
     remove: void;
     forget: void;
+    hideSeries: void;
   }>();
 
   const item = 'c-btn c-btn-ghost w-full justify-start px-3 text-left';
@@ -123,6 +126,23 @@
         }}
       >
         Remove from Recently viewed…
+      </button>
+    {/if}
+    {#if seriesHideable}
+      {#if !onDevice && !forgettable}<div
+          class="my-1 border-t"
+          style="border-color: var(--c-line)"
+        />{/if}
+      <button
+        type="button"
+        class={item}
+        data-testid="book-menu-hide-series-next"
+        on:click={() => {
+          close();
+          dispatch('hideSeries');
+        }}
+      >
+        Hide this series from Next in your series
       </button>
     {/if}
   </div>

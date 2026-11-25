@@ -254,6 +254,10 @@ export const SETTINGS_REGISTRY: Record<string, SettingSpec> = {
   recentlyViewedKeepBooks: g('Number'),
   recentlyViewedKeepDays: g('Number'),
 
+  // --- lib/library/next-in-series-settings.ts (every device; the server reads both) ---
+  nextInSeriesOn: g('Boolean'),
+  nextInSeriesBonus: g('Boolean'),
+
   // --- lib/calibre-edit/settings.ts (per device: Calibre metadata editing, Settings > Library) ---
   bookEditAs: d('String'),
   seriesEditAs: d('String'),
