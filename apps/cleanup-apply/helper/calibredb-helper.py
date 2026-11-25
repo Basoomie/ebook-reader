@@ -146,8 +146,10 @@ def answer(req):
     out = io.TextIOWrapper(out_bytes, encoding='utf-8', errors='replace', write_through=True)
     err = io.StringIO()
     code = 0
-    old_out, old_err = sys.stdout, sys.stderr
-    sys.stdout, sys.stderr = out, err
+    # calibredb add prints "Added book ids: N" to sys.__stdout__ (calibre 9.18, db/cli/cmd_add.py),
+    # not sys.stdout: both are this call's output, or the sidecar never sees the new book's id.
+    old_out, old_err, old_real = sys.stdout, sys.stderr, sys.__stdout__
+    sys.stdout, sys.stderr, sys.__stdout__ = out, err, out
     try:
         ret = run(req.get('args') or [], req.get('password') or '')
         code = ret if isinstance(ret, int) else 0
@@ -163,7 +165,7 @@ def answer(req):
         err.write(traceback.format_exc())
     finally:
         out.flush()
-        sys.stdout, sys.stderr = old_out, old_err
+        sys.stdout, sys.stderr, sys.__stdout__ = old_out, old_err, old_real
     return {
         'id': req.get('id'),
         'code': code,
