@@ -287,6 +287,19 @@
           on:change={(e) => change({ scoreRatings: num(e, 0, 1000, draft?.scoreRatings ?? 20) })}
         />
       </label>
+      <label>
+        <span>New books wait for the cleanup's lookup (hours)</span>
+        <input
+          class="c-input"
+          type="number"
+          min="0"
+          max="720"
+          value={draft.newBookWaitHours}
+          data-testid="ratings-new-wait"
+          on:change={(e) =>
+            change({ newBookWaitHours: num(e, 0, 720, draft?.newBookWaitHours ?? 48) })}
+        />
+      </label>
     </div>
     <p class="text-sm text-c-muted">
       The Rating sort pulls books with few ratings toward the middle ({progress.score.m.toFixed(

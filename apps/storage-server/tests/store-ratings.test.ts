@@ -376,7 +376,7 @@ describe('the refresher (the cleanup fetch queue)', () => {
     await s.tick();
     expect(cdb.prepare('SELECT COUNT(*) AS n FROM fetch_requests').get()).toEqual({ n: 0 });
 
-    saveRatingSettings(e.db, { refresh: true });
+    saveRatingSettings(e.db, { refresh: true, newBookWaitHours: 0 });
     await s.tick();
     const reqs = cdb.prepare('SELECT * FROM fetch_requests').all() as {
       id: number;
@@ -429,7 +429,7 @@ describe('the refresher (the cleanup fetch queue)', () => {
     link('Alpha', 'amazon_jp', 'B000000009');
     link('Beta', 'bookwalker', BW_RATED);
     const { q } = fetchQueue();
-    saveRatingSettings(e.db, { refresh: true });
+    saveRatingSettings(e.db, { refresh: true, newBookWaitHours: 0 });
     const s = ratingsService(e.db, null, q);
     s.start();
     await s.tick();
@@ -449,7 +449,7 @@ describe('the refresher (the cleanup fetch queue)', () => {
     const { e, link } = await env();
     link('Alpha', 'bookwalker', BW_JAPAN_ONLY);
     const { q } = fetchQueue();
-    saveRatingSettings(e.db, { refresh: true });
+    saveRatingSettings(e.db, { refresh: true, newBookWaitHours: 0 });
     const s = ratingsService(e.db, null, q);
     s.start();
     await s.tick();
@@ -469,12 +469,37 @@ describe('the refresher (the cleanup fetch queue)', () => {
     expect(s.dueIds('bookwalker', 10)).toEqual([BW_JAPAN_ONLY]);
   });
 
+  it("leaves a new book's first rating to stage 4's page (no second request)", async () => {
+    const { e, link } = await env();
+    link('Alpha', 'amazon_jp', 'B07DXV5BP2');
+    link('Beta', 'amazon_jp', 'B009NNZQVS');
+    const { q } = fetchQueue();
+    saveRatingSettings(e.db, { refresh: true });
+    let now = Date.now();
+    const s = ratingsService(e.db, null, q, () => now);
+    // Books new to the reader wait (48 h by default) for the new arrivals' stage 4.
+    expect(s.dueIds('amazon_jp', 10)).toEqual([]);
+    // Stage 4's own request for Beta's page is still open: Beta waits on, Alpha is asked.
+    q.enqueue(
+      {
+        site: 'amazon-dp',
+        key: 'B009NNZQVS',
+        url: 'https://www.amazon.co.jp/dp/B009NNZQVS',
+        priority: 0,
+      },
+      null,
+      now,
+    );
+    now += 49 * 3_600_000;
+    expect(s.dueIds('amazon_jp', 10)).toEqual(['B07DXV5BP2']);
+  });
+
   it('measures the time left from the answers of the last hour', async () => {
     const { e, link } = await env();
     let now = Date.now();
     for (const [i, b] of BOOKS.entries()) link(b.title, 'amazon_jp', `B00000020${i}`);
     const { q } = fetchQueue();
-    saveRatingSettings(e.db, { refresh: true, queuedPerSite: 2 });
+    saveRatingSettings(e.db, { refresh: true, queuedPerSite: 2, newBookWaitHours: 0 });
     const s = ratingsService(e.db, null, q, () => now);
     s.start();
     expect(s.progress().refresh.secondsLeft).toBeNull();

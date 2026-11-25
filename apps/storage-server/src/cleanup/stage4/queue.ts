@@ -190,6 +190,15 @@ export class FetchQueue {
 
   // -------------------------------------------- requests asked again (store ratings)
 
+  /** True while a request for this site and key waits or is being fetched (uses the due index). */
+  isOpen(site: string, key: string): boolean {
+    return !!this.db
+      .prepare(
+        "SELECT 1 FROM fetch_requests WHERE site = ? AND state IN ('queued', 'leased') AND key = ?",
+      )
+      .get(site, key);
+  }
+
   /** A request's state ('queued', 'leased', 'done', 'gone', 'failed'), or null when unknown. */
   requestState(id: number): string | null {
     const r = this.db.prepare('SELECT state FROM fetch_requests WHERE id = ?').get(id) as

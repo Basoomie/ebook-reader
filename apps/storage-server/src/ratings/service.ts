@@ -229,7 +229,7 @@ export class StoreRatings {
       return;
     }
     this.fill = { running: true, total: ids.length, done: 0, found: 0, startedAt: this.now() };
-    this.log(`Store ratings: reading ${ids.length} cached store pages`);
+    // Runs again every 10 minutes for new books' pages: logged only when it found some.
     try {
       for (let i = 0; i < ids.length && !this.halted; i += 50) {
         this.db.transaction(() => {
@@ -265,9 +265,11 @@ export class StoreRatings {
         })();
         await new Promise<void>((r) => setImmediate(r));
       }
-      this.log(
-        `Store ratings: read ${this.fill.found} of ${this.fill.total} ids from cached pages`,
-      );
+      if (this.fill.found > 0) {
+        this.log(
+          `Store ratings: read ${this.fill.found} of ${this.fill.total} ids from cached pages`,
+        );
+      }
     } catch (err) {
       this.lastError = `first fill: ${(err as Error).message}`;
       console.error('Store ratings: the first fill stopped:', err);
@@ -297,6 +299,8 @@ export class StoreRatings {
       const s = this.settings();
       const q = this.queue();
       if (!q) return;
+      // Pages stage 4 saved since (new arrivals) are read from its cache, not asked again.
+      this.wake();
       this.collectWith(q);
       if (!s.refresh) return;
       for (const site of FETCHED_SITES) {
@@ -371,7 +375,7 @@ export class StoreRatings {
     const rows = this.db
       .prepare(
         `SELECT bi.value AS id, MIN(b.published_at) AS pub, r.checked_at AS checked, r.state AS state,
-                r.fails AS fails
+                r.fails AS fails, MIN(b.created_at) AS created
          FROM book_identifiers bi
          JOIN books b ON b.id = bi.book_id
          JOIN book_sources src ON src.book_id = bi.book_id AND src.missing_at IS NULL
@@ -388,11 +392,19 @@ export class StoreRatings {
       checked: number | null;
       state: RatingRow['state'] | null;
       fails: number | null;
+      created: number;
     }[];
+    const q = this.queue();
     const out: string[] = [];
     for (const r of rows) {
       const id = r.id.trim();
       if (!SITE_ID_RE[site].test(id)) continue;
+      if (r.checked === null && site !== 'bookmeter') {
+        // Never read: a new book's page is fetched by the cleanup's stage 4 (new arrivals) and
+        // read from its saved copy by the first fill, so it isn't asked twice.
+        if (now - r.created < s.newBookWaitHours * 3_600_000) continue;
+        if (q?.isOpen(QUEUE_SITE[site], site === 'amazon_jp' ? id : pageUrl(site, id))) continue;
+      }
       if (r.checked !== null) {
         // A failed read is tried again after a day (three times), then at the old-book pace.
         const wait =

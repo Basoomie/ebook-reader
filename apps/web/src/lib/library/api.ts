@@ -149,6 +149,8 @@ export interface RatingSettings {
   openMaxAgeDays: number;
   scoreRatings: number;
   queuedPerSite: number;
+  /** Hours a book new to the reader waits for the cleanup's stage 4 before its first fetch. */
+  newBookWaitHours: number;
 }
 
 export interface RatingsProgressAnswer {
