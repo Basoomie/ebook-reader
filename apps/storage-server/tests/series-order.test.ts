@@ -18,6 +18,8 @@ import {
   arcOf,
   copyBooks,
   printedNumber,
+  RDB_PLACE_SURE,
+  SIDE_COUNTED,
   type SeriesBook,
 } from '../src/cleanup/stage4/series-order';
 import { firstColophonDate, storeListPlaces } from '../src/cleanup/stage4/analysis';
@@ -907,5 +909,52 @@ describe('another edition in parts is not the series split (rehearsal of rules 1
     expect(n(3309)).toBe(11); // 転スラ 11 (was 31)
     expect(n(13660)).toBe(22); // 転スラ 22 (was 51)
     expect(n(9600)).toBe(8.5); // 8.5 公式設定資料集 (was 22.5)
+  });
+});
+
+describe("RanobeDB's places and side books counted among its volumes (rules 11, the census of 214)", () => {
+  const fx = JSON.parse(
+    readFileSync(join(__dirname, 'fixtures', 'series-held-reviews.json'), 'utf8'),
+  ) as Record<string, SeriesBook[]>;
+  const choose = (series: string) => {
+    const books = fx[series];
+    const byUuid = new Map(orderSeries(books).map((x) => [x.uuid, x]));
+    return (id: number) => {
+      const b = books.find((x) => x.calibreId === id)!;
+      const c = byUuid.get(b.uuid);
+      return { index: c ? c.index : b.index, from: c?.from ?? null, review: !!c?.review };
+    };
+  };
+  it('a place beside two volumes of the same list on theirs is sure', () => {
+    const c = choose('〈小市民〉シリーズ');
+    expect(c(11361)).toMatchObject({ index: 4, from: RDB_PLACE_SURE }); // 秋期限定 下 (was 3)
+    expect(c(11362).index).toBe(3); // 秋期限定 上
+    expect(c(10782).index).toBe(6); // 冬期限定
+    // Volumes the models numbered on their list places count: 化物語（中） 1 → 2.
+    const m = choose('〈物語〉シリーズ');
+    expect(m(6342)).toMatchObject({ index: 2, from: RDB_PLACE_SURE });
+    expect(m(6345).index).toBe(1); // 化物語（上）
+    expect(m(6344).index).toBe(3); // 化物語（下）
+  });
+  it('a list of the book alone, or one volume on its place, is not sure', () => {
+    // ダイブ!: RanobeDB lists only the book itself at 1; the store list has it 2nd.
+    const c = choose('ダイブ');
+    expect(c(62153).from).not.toBe(RDB_PLACE_SURE);
+  });
+  it('a side book after the count of the main volumes before it on the list', () => {
+    const t = choose('とらドラ!');
+    expect(t(4985)).toMatchObject({ index: 9.5 }); // スピンオフ2 (2009-01, after 9; was 2)
+    expect(t(4985).from).toContain(SIDE_COUNTED);
+    expect(t(53276).index).toBe(10.5); // スピンオフ3 (2010-04, after 10; was 3)
+    expect(t(4986).index).toBe(4.5); // スピンオフ！ stays
+    expect(t(4998).index).toBe(5); // とらドラ5！ stays on its printed number
+    expect(choose('覇剣の皇姫アルティーナ')(21282).index).toBe(7.5); // 小綺譚 stays (was 6.5)
+    const b = choose('青春ブタ野郎');
+    expect(b(70080).index).toBe(15.6); // ドクターピッグ＋ (was 13.6)
+    expect(b(70353).index).toBe(15.5); // ビーチクイーン＋ stays (was 13.5)
+  });
+  it('a book whose own title numbers it is no side book', () => {
+    expect(choose('ハード・デイズ・ナイツ')(27413).index).toBe(6); // ハード・デイズ・ナイツ6 アンコール… (was 7.5)
+    expect(choose('キネマ探偵カレイドミステリー')(49609).index).toBe(2); // ～再演奇縁のアンコール～ (was 1.5)
   });
 });

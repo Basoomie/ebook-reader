@@ -6,7 +6,12 @@
 import { describe, expect, it } from 'vitest';
 import { ndlNameReading, ndlReading, type NdlRow } from '../src/cleanup/stage4/store-links';
 import { proposeStage4, type AuthorReading } from '../src/cleanup/stage4/proposals';
-import { plainVolume, type SeriesChoice } from '../src/cleanup/stage4/series-order';
+import {
+  plainVolume,
+  RDB_PLACE_SURE,
+  SIDE_COUNTED,
+  type SeriesChoice,
+} from '../src/cleanup/stage4/series-order';
 import type { RefRecord } from '../src/cleanup/stage4/rules-v3';
 import type { Stage4Decision } from '../src/cleanup/stage4/stage4-rules';
 import type { Stage2Book } from '../src/cleanup/stage2-snapshot';
@@ -276,6 +281,31 @@ describe("the series step's number over a number Calibre has (rules 9)", () => {
       { series: 'エグゼクティブ男子シリーズ', seriesIndex: 3 },
       { se: 'エグゼクティブ男子シリーズ', ix: 3 },
       { index: 1, from: "its place in RanobeDB's series list" },
+    );
+    expect(p).toMatchObject({ class: 'review' });
+  });
+  it("RanobeDB's place beside two volumes of its list on theirs: automatic (rules 11, census 18 right of 18)", () => {
+    // 「秋期限定栗きんとん事件 下」 held at 3 beside 上 on 3; RanobeDB lists 上 3rd, 下 4th, 冬期 6th.
+    const p = seriesOf(
+      { series: '〈小市民〉シリーズ', seriesIndex: 3 },
+      { se: '〈小市民〉シリーズ', ix: 3 },
+      { index: 4, from: RDB_PLACE_SURE },
+    );
+    expect(p).toMatchObject({ class: 'auto', new: { index: 4 } });
+  });
+  it("a side book after the count of RanobeDB's main volumes before it: automatic (rules 11, 8 right of 8)", () => {
+    const p = seriesOf(
+      { series: 'とらドラ!', seriesIndex: 2 },
+      { se: 'とらドラ!', ix: 2 },
+      { index: 9.5, from: `a side book ${SIDE_COUNTED} after volume 9` },
+    );
+    expect(p).toMatchObject({ class: 'auto', new: { index: 9.5 } });
+  });
+  it('a side book placed after the volume before it in a list stays for review', () => {
+    const p = seriesOf(
+      { series: '青春ブタ野郎', seriesIndex: 16.5 },
+      { se: '青春ブタ野郎', ix: 16.5 },
+      { index: 13.6, from: 'a side book listed after volume 13' },
     );
     expect(p).toMatchObject({ class: 'review' });
   });

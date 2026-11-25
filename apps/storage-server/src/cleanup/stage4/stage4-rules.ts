@@ -57,6 +57,9 @@ import {
  * 11 (2026-11-25, the held series reviews measured): 「Ep.N」/「level.N」 are volume numbers, 「N+」
  * is no number and 「N+M」 an omnibus; a book whose own title, part mark or list place backs its
  * number is not moved by date or by another list; a side book nothing places keeps its number.
+ * Also: RanobeDB's places beside two volumes on theirs, and side books after the count of the
+ * list's main volumes, are automatic; parts in another store list are another edition; deciding
+ * again deletes only stage 4's own open proposals.
  */
 export const STAGE4_RULES_VERSION = 11;
 

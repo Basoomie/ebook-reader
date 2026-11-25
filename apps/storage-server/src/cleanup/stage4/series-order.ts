@@ -35,6 +35,11 @@ import { nfkc } from './ref-text';
 import { titleKey } from './pick';
 import { seriesKey } from './series-spelling';
 
+/** A RanobeDB place where the list's places are the series' numbers (proposals.ts: automatic). */
+/** A side book placed after the count of RanobeDB's main volumes before it (proposals.ts: automatic). */
+export const SIDE_COUNTED = "counted among the volumes of RanobeDB's list";
+export const RDB_PLACE_SURE = "its place in RanobeDB's series list, beside volumes on their places";
+
 export type ValueFrom = 'store' | 'models' | 'guess' | 'calibre' | 'user';
 
 export interface PoolEntry {
@@ -482,7 +487,10 @@ export function isSideTitle(title: string, name: string): boolean {
   const rest = afterName(title, name);
   // A title printing its volume number first is that volume, whatever it comes with (「英雄教室 6
   // 画集＋キャラクター事典収録…特装版」: stop 1's test half).
-  return rest !== null && SIDE.test(nfkc(rest)) && leadingNumber(rest) === null;
+  // A side word inside a 〜subtitle〜 is part of the subtitle's phrase (「キネマ探偵カレイドミステリー
+  // ～再演奇縁のアンコール～」 is volume 2: held reviews 2026-11-25).
+  const words = rest === null ? '' : nfkc(rest).replace(/[~～〜][^~～〜]*[~～〜]/gu, ' ');
+  return rest !== null && SIDE.test(words) && leadingNumber(rest) === null;
 }
 
 /** The subtitle words after the series name with numbers set aside (for matching volumes). */
@@ -699,7 +707,14 @@ export function orderSeries(books: SeriesBook[]): SeriesChoice[] {
       (b.kind === 'full' || b.kind === 'special edition') &&
       // Only the titles that are this book's: a colophon also lists the series' other books
       // (「僕は友達が少ない⑦」's names CONNECT, a side book: ⑦ was placed as one, 6.5).
-      (own.some((t) => isSideTitle(t, name)) || (key !== '' && !!rdbByKey.get(key)?.side));
+      // A book one of whose own titles prints its volume number first is that volume (「ハード・
+      // デイズ・ナイツ6 アンコールは誓いの」: Calibre's old title left the 6 out).
+      ((key !== '' && !!rdbByKey.get(key)?.side) ||
+        (!own.some((t) => {
+          const r = afterName(t, name);
+          return r !== null && leadingNumber(r) !== null;
+        }) &&
+          own.some((t) => isSideTitle(t, name))));
     const rdbEntry = key ? rdbByKey.get(key) : undefined;
     const rdbOrder: number | null = rdbEntry && !rdbEntry.mixed ? rdbEntry.order : null;
     return {
@@ -898,7 +913,32 @@ export function orderSeries(books: SeriesBook[]): SeriesChoice[] {
     const listed = open.filter((w) => place(w) !== null);
     const listedAll = mains.filter((w) => place(w) !== null);
     if (listedAll.length && listedAll.length * 2 >= mains.length) {
-      for (const w of listed) set(w, place(w), "its place in RanobeDB's series list", false, null);
+      // Where two other volumes with sure numbers already sit on their places in the list, the
+      // list's places are the series' numbers (the census of 2026-11-25: 57 right, none wrong;
+      // a list of the book alone, or of 2-3 books in another order than Amazon's, was wrong on
+      // 6 of 17: ダイブ！, 俺様弁護士の耽溺ロマンス, NARUTO 秘伝…). Those places are automatic.
+      // A number the models gave counts where it is the list's place too (two sources agree):
+      // the 40 held books this adds moved (化物語（中）, 無責任シリーズ, 飛空士シリーズ…) were 39 right,
+      // 1 right before and after, none wrong.
+      const onPlace = mains.filter(
+        (o) =>
+          place(o) !== null &&
+          o.index !== null &&
+          o.index === place(o) &&
+          (!o.ours || !o.guess || o.b.indexFrom === 'models'),
+      );
+      const sameList = (o: Work, w: Work) =>
+        (o.b.lists?.ranobedbList ?? null) === (w.b.lists?.ranobedbList ?? null);
+      for (const w of listed)
+        set(
+          w,
+          place(w),
+          w.b.lists?.ranobedbList && onPlace.filter((o) => o !== w && sameList(o, w)).length >= 2
+            ? RDB_PLACE_SURE
+            : "its place in RanobeDB's series list",
+          false,
+          null,
+        );
       for (const w of open)
         if (place(w) === null)
           w.reason = 'Not in the series list: placed by first publication date';
@@ -1239,6 +1279,29 @@ export function orderSeries(books: SeriesBook[]): SeriesChoice[] {
 
   // 5. Side books: N.5 after the main volume published (or listed) just before them.
   const sides = works.filter((w) => w.side && w.ours);
+  // The number of main volumes before a side book's own entry in its RanobeDB list (the entries
+  // its own lookups saw), when the list's main volumes are the series' numbers: two library
+  // volumes on that list sit on their counts and none elsewhere. Null otherwise.
+  const mainsBeforeInRdb = (w: Work): number | null => {
+    const L = w.b.lists?.ranobedbList ?? null;
+    const P = w.b.lists?.ranobedb ?? null;
+    if (!L || P === null || w.b.lists?.ranobedbType === 'main') return null;
+    const entries = new Map<number, string>();
+    for (const e of w.b.pool)
+      if (e.from === 'ranobedb' && e.order != null && e.type) entries.set(e.order, e.type);
+    if (!entries.has(P)) return null;
+    for (let o = 1; o < P; o++) if (!entries.has(o)) return null; // the list is not whole
+    const rank = (o: number) => [...entries].filter(([k, t]) => k <= o && t === 'main').length;
+    let on = 0;
+    for (const m of mains) {
+      const mp = m.b.lists?.ranobedb ?? null;
+      if (m.b.lists?.ranobedbList !== L || mp === null || m.index === null) continue;
+      if (entries.get(mp) !== 'main') continue;
+      if (m.index === rank(mp)) on++;
+      else return null;
+    }
+    return on >= 2 ? rank(P - 1) : null;
+  };
   if (sides.length) {
     const numbered = mains.filter((w) => w.index !== null);
     const used = new Set(works.filter((w) => !sides.includes(w)).map((w) => w.index));
@@ -1264,7 +1327,17 @@ export function orderSeries(books: SeriesBook[]): SeriesChoice[] {
       placed.push(w);
       let before: Work | null = null;
       let how = '';
-      if (w.listOrder !== null) {
+      // A side entry of RanobeDB's list goes after the list's main volumes before it, counted in
+      // the list, where the library's volumes on that list sit on those counts (held reviews
+      // 2026-11-25: 青ブタ ビーチクイーン＋ after volume 15 when 14 is not in the library, 冴えカノ
+      // Girls Side 3 after 12, アルティーナ 小綺譚 after VII; they went after 13, 11 and 6).
+      const mainsBefore = mainsBeforeInRdb(w);
+      if (mainsBefore !== null && mainsBefore >= 1) {
+        // (The volume itself may not be in the library: the side book goes after its number.)
+        before = { ...w, index: mainsBefore };
+        how = SIDE_COUNTED;
+      }
+      if (!before && w.listOrder !== null) {
         for (const m of numbered)
           if (
             m.listOrder !== null &&
