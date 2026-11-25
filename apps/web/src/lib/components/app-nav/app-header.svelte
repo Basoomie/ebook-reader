@@ -3,8 +3,7 @@
   import { pagePath } from '$lib/data/env';
   import { onDestroy, onMount } from 'svelte';
   import AppNavLinks from './app-nav-links.svelte';
-  import Fa from 'svelte-fa';
-  import { faMagnifyingGlass } from '@fortawesome/free-solid-svg-icons';
+  import SearchButton from './search-button.svelte';
   import { searchHeaderButton$, searchPaletteCtrlK$ } from '$lib/library/search-settings';
   import { openSearchPalette, opensPalette } from '$lib/search-palette/open';
   /**
@@ -21,10 +20,10 @@
    */
   export let title: string;
   /**
-   * Search palette step 2: the search button and its keys ("/", Ctrl+K when on). Only the
-   * catalogue pages pass it (Home, Library, Collections, Notes, Recently viewed, Stats).
+   * The search palette's button and its keys ("/", Ctrl+K when on), on every page with this
+   * header (user, 2026-11-24: a header that loses one icon looks inconsistent).
    */
-  export let search = false;
+  export let search = true;
 
   function onKeydown(event: KeyboardEvent) {
     if (!search || !opensPalette(event, $searchPaletteCtrlK$)) return;
@@ -65,26 +64,9 @@
       <div class="flex h-full items-center">
         <slot />
         {#if search && $searchHeaderButton$}
-          <button
-            type="button"
-            class="c-focus mr-1 flex h-9 items-center gap-2 rounded-[10px] px-3 text-sm text-c-header-muted hover:text-c-header-ink sm:mr-2 sm:border"
-            style="border-color: color-mix(in srgb, var(--c-header-muted) 40%, transparent)"
-            title="Search the library (/)"
-            aria-label="Search the library"
-            aria-keyshortcuts="/"
-            data-testid="header-search"
-            on:click={() => openSearchPalette()}
-          >
-            <Fa icon={faMagnifyingGlass} />
-            <span class="hidden lg:inline">Search</span>
-            <kbd
-              class="hidden rounded border px-1 font-mono text-xs lg:inline"
-              style="border-color: color-mix(in srgb, var(--c-header-muted) 40%, transparent)"
-              >/</kbd
-            >
-          </button>
+          <SearchButton phone />
         {/if}
-        <AppNavLinks />
+        <AppNavLinks search={search && $searchHeaderButton$} />
       </div>
     </div>
   </div>

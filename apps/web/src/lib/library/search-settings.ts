@@ -18,7 +18,7 @@ export const searchSuggestionsOn$ = writableBooleanLocalStorageSubject()(
 
 export const searchReadsAsOn$ = writableBooleanLocalStorageSubject()('searchReadsAsOn', true);
 
-/** Search palette step 2: the search button in the catalogue pages' header (every device). */
+/** The search palette's button in the header (every page with the header, every device). */
 export const searchHeaderButton$ = writableBooleanLocalStorageSubject()('searchHeaderButton', true);
 
 /**

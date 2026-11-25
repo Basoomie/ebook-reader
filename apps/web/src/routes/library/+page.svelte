@@ -2148,7 +2148,7 @@
   on:keydown={onWindowKeydown}
 />
 
-<AppHeader title="Library" search />
+<AppHeader title="Library" />
 
 <div class="{pxScreen} pb-24 pt-16 xl:pt-14" data-testid="library-page">
   {#if connection === undefined}

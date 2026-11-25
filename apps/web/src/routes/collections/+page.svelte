@@ -300,7 +300,7 @@
   <title>{formatPageTitle('Collections')}</title>
 </svelte:head>
 
-<AppHeader title="Collections" search />
+<AppHeader title="Collections" />
 
 <div class="{pxScreen} pb-24 pt-16 xl:pt-14" data-testid="collections-page">
   <CataloguePageHeader jp="書架" title="Collections">
