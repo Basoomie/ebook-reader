@@ -4,6 +4,13 @@
  * All rights reserved.
  */
 
+import { etaText } from './cleanup-text';
+/**
+ * @license BSD-3-Clause
+ * Copyright (c) 2026, ッツ Reader Authors
+ * All rights reserved.
+ */
+
 /**
  * Manga part A on /cleanup: the card "Move manga to the manga library" (its words, lines and
  * bar). Pure: the server's answers in, text out.
@@ -145,11 +152,11 @@ export function moveBar(
 ): { label: string; fraction: number; eta: string | null } | null {
   const b = s?.bar;
   if (!b || b.total <= 0) return null;
-  const mins = b.leftMs === null ? null : Math.ceil(b.leftMs / 60000);
   return {
     label: `Moving the books: ${n(b.done)} of ${n(b.total)}`,
     fraction: Math.min(1, b.done / b.total),
-    eta: mins === null ? null : mins <= 1 ? 'about a minute left' : `about ${n(mins)} minutes left`
+    // The same words as every other bar ("about 2 h 10 min left").
+    eta: b.leftMs === null ? null : etaText(b.leftMs)
   };
 }
 
