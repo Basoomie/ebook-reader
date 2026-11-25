@@ -19,9 +19,22 @@ import { getMoveState } from '../src/cleanup/move/state';
 import { updateSettings } from '../src/cleanup/settings';
 import type { LibraryFixture } from './helpers/calibre-fixture';
 import { type CleanupEnv, healthyHeartbeat, makeCleanupEnv } from './helpers/cleanup-env';
+import { makeZip } from './helpers/epub-fixture';
 
 const sha = (b: Buffer) => createHash('sha256').update(b).digest('hex');
 const bytes = (fill: string, n = 4096) => Buffer.alloc(n, fill);
+
+/**
+ * A small EPUB: its files deflated, or (`repack`) the same files stored, as Calibre's DeDRM packs a
+ * book again on add (other bytes, the same files inside); `page` changes one page's picture.
+ */
+const mangaEpub = (opts: { repack?: boolean; page?: string } = {}) =>
+  makeZip([
+    { name: 'mimetype', data: 'application/epub+zip' },
+    { name: 'OEBPS/content.opf', data: '<package><metadata/></package>', deflate: !opts.repack },
+    { name: 'OEBPS/p1.jpg', data: bytes('1', 3000), deflate: !opts.repack },
+    { name: 'OEBPS/p2.jpg', data: bytes(opts.page ?? '2', 3000), deflate: !opts.repack },
+  ]);
 
 function candidate(over: Partial<MoveCandidate> = {}): MoveCandidate {
   return {
@@ -153,7 +166,7 @@ describe('moving books to the manga library', () => {
   });
 
   async function addBooks() {
-    const epubA = bytes('a');
+    const epubA = mangaEpub();
     const epubB = bytes('b');
     const epubT = bytes('t');
     const a = await env.lib.addBook({
@@ -373,7 +386,19 @@ describe('moving books to the manga library', () => {
     expect(bad.body.ok).toBe(false);
     expect(bad.body.problems.join(' ')).toMatch(/title sort/);
     manga.removeBook(wrong.id);
-    const copy = await addToManga(A.id, epubA);
+    // A copy with one page changed inside fails; one packed again with the same files passes.
+    const changed = await addToManga(A.id, mangaEpub({ repack: true, page: '3' }));
+    const differs = await request(env.app)
+      .post(`/api/v1/cleanup-apply/batches/${batch.id}/items/${item.itemId}/move-check`)
+      .set('Authorization', apply)
+      .send({ calibreId: changed.id, uuid: changed.uuid })
+      .expect(200);
+    expect(differs.body.ok).toBe(false);
+    expect(differs.body.problems.join(' ')).toMatch(/OEBPS\/p2\.jpg differs/);
+    manga.removeBook(changed.id);
+    const repacked = mangaEpub({ repack: true });
+    expect(sha(repacked)).not.toBe(sha(epubA));
+    const copy = await addToManga(A.id, repacked);
     const good = await request(env.app)
       .post(`/api/v1/cleanup-apply/batches/${batch.id}/items/${item.itemId}/move-check`)
       .set('Authorization', apply)

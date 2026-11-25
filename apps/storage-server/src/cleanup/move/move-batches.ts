@@ -8,7 +8,8 @@
  *                          and what is added to the new library
  *   exported -> tagged    added to the new library with every field and checked there: the
  *                          sidecar compared every field it can list; the server compared the
- *                          stored EPUB, the cover and the title sort (checkArrived). Reported with
+ *                          stored EPUB (byte for byte, else every file inside: Calibre's DeDRM
+ *                          packs it again), the cover and the title sort (checkArrived). Reported with
  *                          the new copy's Calibre id and UUID.
  *   tagged   -> removed   removed from the old library the usual way (Calibre's trash); the reader
  *                          keeps the same book (move-handoff.ts) and the cleanup's state follows
@@ -27,7 +28,13 @@ import fs from 'fs/promises';
 import path from 'path';
 import { snapshotFile } from '../../calibre/indexer';
 import { getIndexState, getLibrary } from '../../calibre/libraries';
-import { METADATA_DB, openSourceDatabase, resolveInside, statFile } from '../../calibre/source-fs';
+import {
+  METADATA_DB,
+  openSourceDatabase,
+  openSourceFile,
+  resolveInside,
+  statFile,
+} from '../../calibre/source-fs';
 import type {
   BatchDeps,
   BatchRow,
@@ -42,6 +49,7 @@ import { MOVE_STAGE } from '../field-stages';
 import { findCalibreSource, presentBookCount } from '../handoff';
 import { getSettings } from '../settings';
 import { moveReaderSource, moveReaderSourceBack, type MoveHandoff } from './move-handoff';
+import { sameEpubContents } from './epub-same';
 import { rekeyCleanupState, type BookIdentity } from './rekey';
 import { pauseMove } from './state';
 
@@ -253,7 +261,7 @@ export class MoveBatches {
         this.db,
         'library_changed',
         `${skipped.length} of the next ${candidates.length} books to move changed in Calibre since the selection (${summarizeReasons(skipped)}). ` +
-          'Nothing was moved or skipped. Select again (the card), then resume.',
+          'Nothing was moved or skipped. Select again: the books are read again and a new spot check is drawn.',
       );
       return { batch: null, reason: 'Calibre changed since the selection' };
     }
@@ -396,9 +404,29 @@ export class MoveBatches {
     if (!to.epub) problems.push('The added copy has no EPUB');
     else if (item.export_sha256) {
       try {
-        const sha = await sha256File(resolveInside(toDir, to.epub));
-        if (sha !== item.export_sha256)
-          problems.push('The EPUB stored in the new library differs from the exported one');
+        const stored = resolveInside(toDir, to.epub);
+        const sha = await sha256File(stored);
+        if (sha !== item.export_sha256) {
+          // Calibre's file-type plugins (DeDRM) pack the EPUB again as it is added: the copy is
+          // the same EPUB when every file inside is (epub-same.ts; decided 2026-11-25). Compared
+          // with the book's own EPUB in the old library, whose bytes the export step matched.
+          if (!from?.epub)
+            problems.push(
+              'The EPUB stored in the new library differs from the exported one, and the book’s own EPUB is gone',
+            );
+          else {
+            const own = resolveInside(fromDir, from.epub);
+            if ((await sha256File(own)) !== item.export_sha256)
+              problems.push('The book’s EPUB changed in the old library since it was exported');
+            else {
+              const c = await sameEpubContents(own, stored, openSourceFile);
+              if (!c.same)
+                problems.push(
+                  `The EPUB stored in the new library differs from the book’s: ${c.problem}`,
+                );
+            }
+          }
+        }
       } catch (err) {
         problems.push(`The added copy's EPUB can't be read: ${(err as Error).message}`);
       }

@@ -68,7 +68,10 @@ describe('the move card', () => {
       status({ bar: { label: 'books', done: 500, total: 1700, leftMs: 30 * 60000 } })
     );
     expect(b?.label).toBe('Moving the books: 500 of 1,700');
-    expect(b?.eta).toBe('about 30 minutes left');
+    expect(b?.eta).toBe('about 30 min left');
+    expect(
+      moveBar(status({ bar: { label: 'books', done: 5, total: 1700, leftMs: 130 * 60000 } }))?.eta
+    ).toBe('about 2 h 10 min left');
     const book = {
       changeId: 1,
       calibreId: 2,
