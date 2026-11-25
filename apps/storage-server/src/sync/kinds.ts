@@ -1363,6 +1363,47 @@ const recentlyViewedKind: KindSpec = {
   },
 };
 
+// ---------------------------------------------------------------------------
+// Next in your series (2026-11-25, docs/design/next-in-series.md)
+// ---------------------------------------------------------------------------
+
+/** The same name as catalog/next-in-series.ts SERIES_NEXT_HIDE_KIND. */
+export const SERIES_NEXT_HIDE_KIND = 'series-next-hide';
+const SERIES_NEXT_HIDE_ID_RE = /^[0-9a-f]{16}$/;
+const MAX_HIDE_NAME = 1000;
+
+/**
+ * kind "series-next-hide": a series hidden from Next in your series, lww, deletable (Show
+ * again is a deletion marker stored as {}). id = FNV-1a 64 of "<library id>\0<series name>",
+ * made by the device, so the same series is the same record on every device. data
+ * { library, name, hiddenAt }: the series is matched by library and name (series ids are
+ * not stable across devices), and Settings lists it by name. Neither is checked against the
+ * catalog: a hidden series that is renamed or removed simply matches nothing.
+ */
+const seriesNextHideKind: KindSpec = {
+  policy: () => 'lww',
+  deletable: true,
+  validate(id, data, deleted) {
+    if (!SERIES_NEXT_HIDE_ID_RE.test(id)) throw new RecordError('invalid_id', 'ids are 16 hex');
+    if (deleted) return { bookId: null, data: {} };
+    const obj = requireObject(data);
+    if (Object.keys(obj).some((k) => k !== 'library' && k !== 'name' && k !== 'hiddenAt')) {
+      throw new RecordError('invalid_data', 'only library, name and hiddenAt are stored');
+    }
+    const { library, name, hiddenAt } = obj;
+    if (typeof library !== 'string' || library === '' || library.length > MAX_HIDE_NAME) {
+      throw new RecordError('invalid_data', 'library must be a library id');
+    }
+    if (typeof name !== 'string' || name === '' || name.length > MAX_HIDE_NAME) {
+      throw new RecordError('invalid_data', `name must be 1-${MAX_HIDE_NAME} characters`);
+    }
+    if (typeof hiddenAt !== 'number' || !Number.isFinite(hiddenAt) || hiddenAt < 0) {
+      throw new RecordError('invalid_data', 'hiddenAt must be a time');
+    }
+    return { bookId: null, data: { library, name, hiddenAt } };
+  },
+};
+
 export const DEVICE_BOOKS_KIND = 'device-books';
 
 /**
@@ -1432,4 +1473,5 @@ export const DEFAULT_KINDS: KindRegistry = {
   'series-recap': seriesRecapKind,
   [SEARCH_HISTORY_KIND]: searchHistoryKind,
   [RECENTLY_VIEWED_KIND]: recentlyViewedKind,
+  [SERIES_NEXT_HIDE_KIND]: seriesNextHideKind,
 };

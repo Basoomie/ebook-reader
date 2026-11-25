@@ -159,7 +159,9 @@ export function collectionMembership(input: {
   const ctx = {
     states: input.states,
     onDevice: input.onDevice ?? (() => false),
-    audioOnDevice: input.audioOnDevice ?? (() => false)
+    audioOnDevice: input.audioOnDevice ?? (() => false),
+    // status:next needs the whole series (the server's answer); a blur rule never uses it.
+    isNext: () => false
   };
   return (book, id) => {
     const list = lists.get(id);

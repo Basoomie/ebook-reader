@@ -46,6 +46,8 @@
   export let hero = false;
   /** Recently viewed: each card's ⋮ menu offers Remove from Recently viewed. */
   export let forgettable = false;
+  /** Next in your series: each card's ⋮ menu offers Hide this series. */
+  export let seriesHideable = false;
   /** The hero's progress (100% included) and time left, or null when nothing is known. */
   export let heroProgressOf: (book: CatalogBook) => {
     fraction: number;
@@ -61,6 +63,7 @@
     collect: CatalogBook;
     remove: CatalogBook;
     forget: CatalogBook;
+    hideSeries: CatalogBook;
     retry: void;
   }>();
 
@@ -198,6 +201,8 @@
             on:remove={(ev) => dispatch('remove', ev.detail)}
             {forgettable}
             on:forget={(ev) => dispatch('forget', ev.detail)}
+            {seriesHideable}
+            on:hideSeries={(ev) => dispatch('hideSeries', ev.detail)}
           />
         {/each}
       </ul>
