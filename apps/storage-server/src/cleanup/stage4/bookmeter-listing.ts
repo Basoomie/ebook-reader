@@ -225,7 +225,14 @@ export interface BlProgress {
     removed?: number;
   };
   spot: { drawnAt: number | null; size: number };
-  write: { rebuilt: boolean; batches: string[]; waiting: string | null; finishedAt: number | null };
+  write: {
+    rebuilt: boolean;
+    batches: string[];
+    waiting: string | null;
+    finishedAt: number | null;
+    /** The card's counts of unwritten books were taken from the database (see recountUnwritten). */
+    recounted?: boolean;
+  };
   labeled: {
     changes: number;
     flagged: { calibreId: number; why: string[] }[];
@@ -875,14 +882,50 @@ export class BookmeterListings {
       if (this.deps.analysis.snapshotBook(lib, r.calibre_uuid)) continue;
       if (this.dropOpen(lib, aid, r.calibre_uuid) > 0) dropped++;
     }
-    if (dropped) {
-      p.propose.removed = (p.propose.removed ?? 0) + dropped;
-      p.propose.proposed = Math.max(0, p.propose.proposed - dropped);
+    if (dropped)
       this.deps.log?.(
         `Bookmeter links: ${dropped} books no longer in Calibre, their changes dropped`,
       );
-    }
     return dropped;
+  }
+
+  /**
+   * The card's counts of the books to change, from the database as it is now: proposed, the
+   * user's, no longer in Calibre, saved link changed since the search, held by another open
+   * change. Counting each drop on top of the counts the rebuild made would count a book twice
+   * (the rebuild may already have set it aside).
+   */
+  recountUnwritten(p: BlProgress, lib: string): void {
+    const rows = this.db
+      .prepare(
+        `SELECT calibre_uuid, saved_id, decision_json, proposed FROM bookmeter_listing_books
+         WHERE library_id = ? AND state = 'change'`,
+      )
+      .all(lib) as {
+      calibre_uuid: string;
+      saved_id: string;
+      decision_json: string;
+      proposed: number;
+    }[];
+    this.deps.analysis.loadSnapshot(lib);
+    const c = { proposed: 0, held: 0, yours: 0, gone: 0, removed: 0 };
+    for (const r of rows) {
+      if (r.proposed) {
+        c.proposed++;
+        continue;
+      }
+      if (this.isYours(lib, r.calibre_uuid)) {
+        c.yours++;
+        continue;
+      }
+      const book = this.deps.analysis.snapshotBook(lib, r.calibre_uuid);
+      const d = JSON.parse(r.decision_json) as BlDecision;
+      if (!book) c.removed++;
+      else if (!d.pick || book.identifiers.bookmeter !== r.saved_id) c.gone++;
+      else c.held++;
+    }
+    p.propose = { ...p.propose, ...c };
+    p.write.recounted = true;
   }
 
   private proposeChunk(p: BlProgress, lib: string): boolean {
@@ -1024,10 +1067,11 @@ export class BookmeterListings {
       if (this.proposeChunk(p, lib)) return 'more';
       p.write.rebuilt = true;
       p.cursor = '';
+      this.recountUnwritten(p, lib);
       return 'more';
     }
     // Also while stage 4 is paused: a pause these books caused clears with Resume once they're gone.
-    this.dropRemoved(p, lib);
+    if (this.dropRemoved(p, lib) > 0 || !p.write.recounted) this.recountUnwritten(p, lib);
     const wait = this.deps.writeWait(lib);
     if (wait) {
       p.write.waiting = wait;

@@ -641,7 +641,28 @@ describe('Bookmeter links: the pass', () => {
     for (let i = 0; i < 50 && p.state().progress.phase !== 'done'; i++) await p.step();
     expect(planned).toEqual([listingAnalysisId(1)]);
     expect(proposals().map((x) => [x.u, x.state])).toEqual([['c', 'applied']]);
-    expect(p.state().progress.propose.removed).toBe(2);
+    // Counted from the database as it is now, each book once ('c' is back in Calibre).
+    expect(p.state().progress.propose).toMatchObject({ proposed: 1, removed: 1, gone: 0, held: 0 });
+  });
+
+  it('takes the card counts from the database once for a run rebuilt before (never twice)', async () => {
+    const p = pass();
+    p.setMode('analyse');
+    await runUntil(p, () => false);
+    fetchAll(byUrl);
+    await runUntil(p, (ph) => ph === 'spot');
+    await p.step();
+    for (const s of p.listSpot(LIB, 1)) p.setVerdict(s.uuid, 'right');
+    p.setMode('on');
+    for (let i = 0; i < 50 && !p.state().progress.write.rebuilt; i++) await p.step();
+    // As the old code left it: a book gone from Calibre counted as "saved link changed", its
+    // Preview proposal still open, the counts never taken from the database.
+    db.prepare(
+      `UPDATE bookmeter_listing_state SET progress_json = json_set(json_remove(progress_json, '$.write.recounted'), '$.propose.gone', 1, '$.propose.proposed', 1)`,
+    ).run();
+    books.delete('c');
+    for (let i = 0; i < 50 && p.state().progress.phase !== 'done'; i++) await p.step();
+    expect(p.state().progress.propose).toMatchObject({ proposed: 1, removed: 1, gone: 0 });
   });
 
   it('never decides a book from a refused search: asks it again until it is answered', async () => {
