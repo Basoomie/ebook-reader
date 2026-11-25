@@ -103,7 +103,9 @@
     searchReadsAsOn$,
     searchSuggestionsOn$
   } from '$lib/library/search-settings';
-  import { recentlyViewedApi, searchHistoryApi } from '$lib/sync/sync-service';
+  import { nextInSeriesApi, recentlyViewedApi, searchHistoryApi } from '$lib/sync/sync-service';
+  import { nextInSeriesBonus$, nextInSeriesOn$ } from '$lib/library/next-in-series-settings';
+  import { logger } from '$lib/data/logger';
   import {
     recentlyViewedDwellSeconds$,
     recentlyViewedKeep$,
@@ -362,6 +364,17 @@
 
   // Recently viewed (2026-11-24): Keep, the numbers and Clear.
   const recentlyViewed = recentlyViewedApi();
+  // Next in your series (2026-11-25): the hidden series, with Show again.
+  const nextInSeries = nextInSeriesApi();
+  const nextHiddenSeries = nextInSeries.hidden;
+
+  async function showHiddenSeries(libraryId: string, name: string) {
+    try {
+      await nextInSeries.show(libraryId, name);
+    } catch (error) {
+      logger.warn(`Next in your series: ${(error as Error)?.message ?? error}`);
+    }
+  }
   const recentlyViewedEntries = recentlyViewed.entries;
   $: recentlyViewedCount = $recentlyViewedEntries?.length ?? 0;
   const optionsForRecentlyViewedKeep: ToggleOption<string>[] = [
@@ -1328,6 +1341,51 @@
         >
           {libraryHistoryCount ? `Clear ${libraryHistoryCount}` : 'Nothing to clear'}
         </button>
+      </SettingRow>
+    </SettingsGroup>
+    <!-- Next in your series (2026-11-25): before Recently viewed. -->
+    <SettingsGroup id="library-next-in-series">
+      <SettingRow id="next-in-series-on" layout="inline" settingKey="nextInSeriesOn" let:labelId>
+        <SettingSwitch
+          bind:checked={$nextInSeriesOn$}
+          labelledby={labelId}
+          testid="next-in-series-on"
+        />
+      </SettingRow>
+      <SettingRow
+        id="next-in-series-bonus"
+        layout="inline"
+        settingKey="nextInSeriesBonus"
+        let:labelId
+      >
+        <SettingSwitch
+          bind:checked={$nextInSeriesBonus$}
+          labelledby={labelId}
+          testid="next-in-series-bonus"
+        />
+      </SettingRow>
+      <SettingRow id="next-in-series-hidden">
+        {#if !$nextHiddenSeries?.length}
+          <p class="text-sm text-c-muted" data-testid="next-in-series-hidden-none">
+            No series hidden.
+          </p>
+        {:else}
+          <ul class="flex flex-col gap-1" data-testid="next-in-series-hidden-list">
+            {#each $nextHiddenSeries as series (series.id)}
+              <li class="flex items-center gap-2" data-testid="next-in-series-hidden-item">
+                <span class="grow">{series.name}</span>
+                <button
+                  type="button"
+                  class="c-btn c-btn-secondary c-btn-sm"
+                  data-testid="next-in-series-show"
+                  on:click={() => showHiddenSeries(series.libraryId, series.name)}
+                >
+                  Show again
+                </button>
+              </li>
+            {/each}
+          </ul>
+        {/if}
       </SettingRow>
     </SettingsGroup>
     <!-- Recently viewed (2026-11-24): after Search. -->

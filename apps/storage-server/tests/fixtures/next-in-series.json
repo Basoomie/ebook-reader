@@ -1,0 +1,257 @@
+{
+  "about": "Next in your series (docs/design/next-in-series.md): the rule's cases, run by the server's SQL (tests/next-in-series.test.ts) and the web app's offline rule (apps/web/src/lib/library/next-in-series.test.ts). Libraries: L and M enabled, D disabled. A book: id, library, series (null = none), index (null = none), added (order), missing. status: a book's status record; finished: a finished read-through (its finishedOn). next: the expected books, any order.",
+  "cases": [
+    {
+      "name": "the volume after the one you finished",
+      "books": [
+        { "id": "s1", "library": "L", "series": "S", "index": 1 },
+        { "id": "s2", "library": "L", "series": "S", "index": 2 },
+        { "id": "s3", "library": "L", "series": "S", "index": 3 }
+      ],
+      "status": { "s1": "completed" },
+      "next": ["s2"]
+    },
+    {
+      "name": "nothing finished: nothing",
+      "books": [
+        { "id": "s1", "library": "L", "series": "S", "index": 1 },
+        { "id": "s2", "library": "L", "series": "S", "index": 2 }
+      ],
+      "status": { "s1": "reading" },
+      "next": []
+    },
+    {
+      "name": "a reread: still finished by its read-through",
+      "books": [
+        { "id": "s1", "library": "L", "series": "S", "index": 1 },
+        { "id": "s2", "library": "L", "series": "S", "index": 2 }
+      ],
+      "status": { "s1": "reading" },
+      "finished": { "s1": "2026-11-01" },
+      "next": ["s2"]
+    },
+    {
+      "name": "the next volume already started: left out",
+      "books": [
+        { "id": "s1", "library": "L", "series": "S", "index": 1 },
+        { "id": "s2", "library": "L", "series": "S", "index": 2 },
+        { "id": "s3", "library": "L", "series": "S", "index": 3 }
+      ],
+      "status": { "s1": "completed", "s2": "reading" },
+      "next": []
+    },
+    {
+      "name": "the next volume dropped: left out",
+      "books": [
+        { "id": "s1", "library": "L", "series": "S", "index": 1 },
+        { "id": "s2", "library": "L", "series": "S", "index": 2 },
+        { "id": "s3", "library": "L", "series": "S", "index": 3 }
+      ],
+      "status": { "s1": "completed", "s2": "dropped" },
+      "next": []
+    },
+    {
+      "name": "a status record saying Unread is not started",
+      "books": [
+        { "id": "s1", "library": "L", "series": "S", "index": 1 },
+        { "id": "s2", "library": "L", "series": "S", "index": 2 }
+      ],
+      "status": { "s1": "completed", "s2": "unread" },
+      "next": ["s2"]
+    },
+    {
+      "name": "read out of order: after the furthest finished",
+      "books": [
+        { "id": "s1", "library": "L", "series": "S", "index": 1 },
+        { "id": "s2", "library": "L", "series": "S", "index": 2 },
+        { "id": "s3", "library": "L", "series": "S", "index": 3 }
+      ],
+      "status": { "s2": "completed" },
+      "next": ["s3"]
+    },
+    {
+      "name": "a skipped gap stays skipped",
+      "books": [
+        { "id": "s1", "library": "L", "series": "S", "index": 1 },
+        { "id": "s2", "library": "L", "series": "S", "index": 2 },
+        { "id": "s3", "library": "L", "series": "S", "index": 3 },
+        { "id": "s4", "library": "L", "series": "S", "index": 4 }
+      ],
+      "status": { "s1": "completed", "s3": "completed" },
+      "next": ["s4"]
+    },
+    {
+      "name": "the last volume you own finished: nothing (until the next arrives)",
+      "books": [
+        { "id": "s1", "library": "L", "series": "S", "index": 1 },
+        { "id": "s2", "library": "L", "series": "S", "index": 2 }
+      ],
+      "status": { "s2": "completed" },
+      "next": []
+    },
+    {
+      "name": "an omnibus is never offered",
+      "books": [
+        { "id": "s3", "library": "L", "series": "S", "index": 3 },
+        { "id": "s39", "library": "L", "series": "S", "index": 3.9 },
+        { "id": "s4", "library": "L", "series": "S", "index": 4 }
+      ],
+      "status": { "s3": "completed" },
+      "next": ["s4"]
+    },
+    {
+      "name": "a finished omnibus counts as finished",
+      "books": [
+        { "id": "s39", "library": "L", "series": "S", "index": 3.9 },
+        { "id": "s4", "library": "L", "series": "S", "index": 4 }
+      ],
+      "status": { "s39": "completed" },
+      "next": ["s4"]
+    },
+    {
+      "name": "a bonus book is passed over by default",
+      "books": [
+        { "id": "s3", "library": "L", "series": "S", "index": 3 },
+        { "id": "s31", "library": "L", "series": "S", "index": 3.1 },
+        { "id": "s4", "library": "L", "series": "S", "index": 4 }
+      ],
+      "status": { "s3": "completed" },
+      "next": ["s4"]
+    },
+    {
+      "name": "a bonus book with the setting on",
+      "books": [
+        { "id": "s3", "library": "L", "series": "S", "index": 3 },
+        { "id": "s31", "library": "L", "series": "S", "index": 3.1 },
+        { "id": "s4", "library": "L", "series": "S", "index": 4 }
+      ],
+      "status": { "s3": "completed" },
+      "settings": { "bonus": true },
+      "next": ["s31"]
+    },
+    {
+      "name": "a side book is offered",
+      "books": [
+        { "id": "s3", "library": "L", "series": "S", "index": 3 },
+        { "id": "s35", "library": "L", "series": "S", "index": 3.5 },
+        { "id": "s4", "library": "L", "series": "S", "index": 4 }
+      ],
+      "status": { "s3": "completed" },
+      "next": ["s35"]
+    },
+    {
+      "name": "two books on one number: the one added first",
+      "books": [
+        { "id": "s1", "library": "L", "series": "S", "index": 1, "added": 1 },
+        { "id": "s2late", "library": "L", "series": "S", "index": 2, "added": 5 },
+        { "id": "s2early", "library": "L", "series": "S", "index": 2, "added": 3 }
+      ],
+      "status": { "s1": "completed" },
+      "next": ["s2early"]
+    },
+    {
+      "name": "two books on one number, one started: left out",
+      "books": [
+        { "id": "s1", "library": "L", "series": "S", "index": 1, "added": 1 },
+        { "id": "s2late", "library": "L", "series": "S", "index": 2, "added": 5 },
+        { "id": "s2early", "library": "L", "series": "S", "index": 2, "added": 3 }
+      ],
+      "status": { "s1": "completed", "s2late": "reading" },
+      "next": []
+    },
+    {
+      "name": "one series name in two libraries: each on its own",
+      "books": [
+        { "id": "l1", "library": "L", "series": "S", "index": 1 },
+        { "id": "l2", "library": "L", "series": "S", "index": 2 },
+        { "id": "m3", "library": "M", "series": "S", "index": 3 },
+        { "id": "m4", "library": "M", "series": "S", "index": 4 }
+      ],
+      "status": { "l1": "completed" },
+      "next": ["l2"]
+    },
+    {
+      "name": "the novel's last volume never offers the manga's next",
+      "books": [
+        { "id": "l3", "library": "L", "series": "S", "index": 3 },
+        { "id": "m4", "library": "M", "series": "S", "index": 4 }
+      ],
+      "status": { "l3": "completed" },
+      "next": []
+    },
+    {
+      "name": "a volume missing from Calibre is passed over",
+      "books": [
+        { "id": "s1", "library": "L", "series": "S", "index": 1 },
+        { "id": "s2", "library": "L", "series": "S", "index": 2, "missing": true },
+        { "id": "s3", "library": "L", "series": "S", "index": 3 }
+      ],
+      "status": { "s1": "completed" },
+      "next": ["s3"]
+    },
+    {
+      "name": "a finished volume missing from Calibre still counts",
+      "books": [
+        { "id": "s1", "library": "L", "series": "S", "index": 1, "missing": true },
+        { "id": "s2", "library": "L", "series": "S", "index": 2 }
+      ],
+      "status": { "s1": "completed" },
+      "next": ["s2"]
+    },
+    {
+      "name": "a disabled library offers nothing",
+      "books": [
+        { "id": "d1", "library": "D", "series": "S", "index": 1 },
+        { "id": "d2", "library": "D", "series": "S", "index": 2 }
+      ],
+      "status": { "d1": "completed" },
+      "next": []
+    },
+    {
+      "name": "a hidden series is left out; the same name in another library is not",
+      "books": [
+        { "id": "l1", "library": "L", "series": "S", "index": 1 },
+        { "id": "l2", "library": "L", "series": "S", "index": 2 },
+        { "id": "m1", "library": "M", "series": "S", "index": 1 },
+        { "id": "m2", "library": "M", "series": "S", "index": 2 }
+      ],
+      "status": { "l1": "completed", "m1": "completed" },
+      "hidden": [["L", "S"]],
+      "next": ["m2"]
+    },
+    {
+      "name": "switched off: nothing",
+      "books": [
+        { "id": "s1", "library": "L", "series": "S", "index": 1 },
+        { "id": "s2", "library": "L", "series": "S", "index": 2 }
+      ],
+      "status": { "s1": "completed" },
+      "settings": { "on": false },
+      "next": []
+    },
+    {
+      "name": "books without a number or a series don't count",
+      "books": [
+        { "id": "n1", "library": "L", "series": "S", "index": null },
+        { "id": "n2", "library": "L", "series": "S", "index": 2 },
+        { "id": "x1", "library": "L", "series": null, "index": null }
+      ],
+      "status": { "n1": "completed", "x1": "completed" },
+      "next": []
+    },
+    {
+      "name": "several series at once",
+      "books": [
+        { "id": "a1", "library": "L", "series": "A", "index": 1 },
+        { "id": "a2", "library": "L", "series": "A", "index": 2 },
+        { "id": "b1", "library": "L", "series": "B", "index": 1 },
+        { "id": "b2", "library": "L", "series": "B", "index": 2 },
+        { "id": "b3", "library": "L", "series": "B", "index": 3 },
+        { "id": "c1", "library": "L", "series": "C", "index": 1 }
+      ],
+      "status": { "a1": "completed", "b2": "completed" },
+      "finished": { "b1": "2026-10-01" },
+      "next": ["a2", "b3"]
+    }
+  ]
+}

@@ -178,7 +178,9 @@ function describeTerm(term: QueryTerm, text: string): string {
       return term.negated ? `not ${d}` : d;
     }
     case 'status': {
-      const d = orList(term.values);
+      const d = orList(
+        term.values.map((v) => (v === 'next' ? 'the next volume of a series you are reading' : v))
+      );
       return term.negated ? `not ${d}` : d;
     }
     case 'favorite':

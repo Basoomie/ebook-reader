@@ -18,7 +18,8 @@ import type { BookState } from '$lib/sync/book-state';
  * - plain text: the title, the series name or any author or illustrator name (not tags);
  * - chars: books without a count never match, negated or not;
  * - level: the Natively level; books without one never match, negated or not;
- * - status: no record = unread; favorite: no record = not a favorite;
+ * - status: no record = unread; `next` is the next volume of a series (next-in-series.ts);
+ *   favorite: no record = not a favorite;
  * - on:device: the books this device stores (offline, every listed book);
  * - "-" negates a term: NOT IFNULL(cond, 0), so `-series:x` keeps books without a series.
  */
@@ -33,6 +34,8 @@ export interface MatchContext {
   onDevice(bookId: string): boolean;
   /** Season 2 Phase 9: on:audio, the book's audio is downloaded on this device. */
   audioOnDevice(bookId: string): boolean;
+  /** status:next: the next volume of a series you are reading (next-in-series.ts). */
+  isNext?(bookId: string): boolean;
 }
 
 const regexCache = new Map<string, RegExp>();
@@ -110,7 +113,10 @@ function termMatches(book: CatalogBook, term: QueryTerm, ctx: MatchContext): boo
       return (term.min === null || n >= term.min) && (term.max === null || n <= term.max);
     }
     case 'status':
-      return term.values.includes(ctx.states.get(book.id)?.status ?? 'unread');
+      return (
+        term.values.includes(ctx.states.get(book.id)?.status ?? 'unread') ||
+        (term.values.includes('next') && (ctx.isNext?.(book.id) ?? false))
+      );
     case 'favorite':
       return (ctx.states.get(book.id)?.favorite ?? false) === term.value;
     case 'device':

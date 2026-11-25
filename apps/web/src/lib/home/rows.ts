@@ -26,10 +26,13 @@ export type HomeRow =
   | { type: 'continue'; hidden: boolean }
   | { type: 'recent'; hidden: boolean }
   | { type: 'viewed'; hidden: boolean }
+  /** Next in your series (2026-11-25): shown by default, right after Continue reading. */
+  | { type: 'next'; hidden: boolean }
   | (PinTarget & { hidden: boolean });
 
 export const DEFAULT_HOME_ROWS: readonly HomeRow[] = [
   { type: 'continue', hidden: false },
+  { type: 'next', hidden: false },
   { type: 'recent', hidden: true },
   { type: 'viewed', hidden: true }
 ];
@@ -40,7 +43,7 @@ export function rowKey(row: { type: string; ref?: string }): string {
   return row.ref === undefined ? row.type : `${row.type}:${row.ref}`;
 }
 
-/** A pinned row (as opposed to Continue Reading, Recently added and Recently viewed, which can only be hidden). */
+/** A pinned row (as opposed to Continue Reading, Next in your series, Recently added and Recently viewed, which can only be hidden). */
 export function isPinnedRow(row: HomeRow): row is PinTarget & { hidden: boolean } {
   return PINNABLE.has(row.type);
 }
@@ -49,7 +52,7 @@ function parseRow(raw: unknown): HomeRow | null {
   if (!raw || typeof raw !== 'object') return null;
   const r = raw as { type?: unknown; ref?: unknown; hidden?: unknown };
   const hidden = r.hidden === true;
-  if (r.type === 'continue' || r.type === 'recent' || r.type === 'viewed') {
+  if (r.type === 'continue' || r.type === 'recent' || r.type === 'viewed' || r.type === 'next') {
     return { type: r.type, hidden };
   }
   if (typeof r.type !== 'string' || !PINNABLE.has(r.type)) return null;
@@ -60,8 +63,8 @@ function parseRow(raw: unknown): HomeRow | null {
 
 /**
  * The stored rows, cleaned up: unreadable and repeated entries are dropped, and
- * Continue Reading, Recently added and Recently viewed are always there (added with their
- * defaults).
+ * Continue Reading, Next in your series, Recently added and Recently viewed are always there
+ * (added with their defaults).
  */
 export function normalizeRows(raw: unknown): HomeRow[] {
   const out: HomeRow[] = [];
@@ -73,6 +76,11 @@ export function normalizeRows(raw: unknown): HomeRow[] {
     out.push(row);
   }
   if (!seen.has('continue')) out.unshift({ type: 'continue', hidden: false });
+  if (!seen.has('next')) {
+    // Added after Continue reading for Home pages saved before it existed.
+    const at = out.findIndex((r) => r.type === 'continue');
+    out.splice(at + 1, 0, { type: 'next', hidden: false });
+  }
   if (!seen.has('recent')) out.push({ type: 'recent', hidden: true });
   if (!seen.has('viewed')) out.push({ type: 'viewed', hidden: true });
   return out;
@@ -128,6 +136,8 @@ export function rowTitle(row: HomeRow, collectionName?: (id: string) => string |
       return 'Recently added';
     case 'viewed':
       return 'Recently viewed';
+    case 'next':
+      return 'Next in your series';
     case 'builtin':
       return builtinCollection(row.ref)?.name ?? row.ref;
     case 'collection':
@@ -152,6 +162,8 @@ export function rowHref(row: HomeRow, base: string): string | null {
       return `${base}/library`;
     case 'viewed':
       return `${base}/recently-viewed`;
+    case 'next':
+      return q({ q: 'status:next' });
     case 'builtin':
     case 'collection':
       return q({ collection: row.ref });
@@ -178,6 +190,7 @@ export function rowCountQuery(
   switch (row.type) {
     case 'continue':
     case 'viewed':
+    case 'next':
       return null;
     case 'recent':
       return {};
