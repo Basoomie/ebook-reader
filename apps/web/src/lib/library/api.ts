@@ -16,6 +16,7 @@ import type {
   UploadInfo
 } from '$lib/library/types';
 import type { ServerSort } from '$lib/library/sort';
+import type { NameCount, NameField } from '$lib/library/query/suggest';
 import type { DownloadKind, DownloadPlan, ZipStatus } from '$lib/library/bulk-download';
 import type {
   QuoteFilter,
@@ -285,6 +286,14 @@ export interface GroupListQuery {
   limit?: number;
   /** WP19a; absent = recently added first. */
   sort?: ServerSort<string>;
+}
+
+/** The search box's name suggestions (names()). */
+export interface NameListQuery {
+  field: NameField;
+  text: string;
+  library?: string;
+  limit?: number;
 }
 
 function listParams(query: BookListQuery): URLSearchParams {
@@ -633,6 +642,18 @@ export class LibraryApi {
     if (query.cursor) params.set('cursor', query.cursor);
     if (query.limit) params.set('limit', String(query.limit));
     return (await this.get(`/groups?${params.toString()}`, options)).json();
+  }
+
+  /** Search suggestions (search palette step 1): names containing `text`, with book counts. */
+  async names(query: NameListQuery, options?: RequestOptions): Promise<NameCount[]> {
+    const params = new URLSearchParams({ field: query.field, text: query.text });
+    if (query.library) params.set('library', query.library);
+    if (query.limit) params.set('limit', String(query.limit));
+    return (
+      (await this.get(`/names?${params.toString()}`, options)).json() as Promise<{
+        names: NameCount[];
+      }>
+    ).then((r) => r.names);
   }
 
   /**

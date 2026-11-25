@@ -41,6 +41,7 @@ import {
   searchHistoryLimit$,
   searchHistoryOn$
 } from '$lib/search-history/settings';
+import { searchReadsAsOn$, searchSuggestionsOn$ } from '$lib/library/search-settings';
 import {
   recentlyViewedDwellSeconds$,
   recentlyViewedKeep$,
@@ -85,6 +86,8 @@ export const GLOBAL_SETTING_SUBJECTS: Record<string, { next(value: never): void 
   searchHistoryLimit: searchHistoryLimit$,
   bookSearchHistoryOn: bookSearchHistoryOn$,
   bookSearchHistoryLimit: bookSearchHistoryLimit$,
+  searchSuggestionsOn: searchSuggestionsOn$,
+  searchReadsAsOn: searchReadsAsOn$,
   recentlyViewedOn: recentlyViewedOn$,
   recentlyViewedDwellSeconds: recentlyViewedDwellSeconds$,
   recentlyViewedKeep: recentlyViewedKeep$,
