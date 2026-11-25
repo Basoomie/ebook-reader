@@ -316,7 +316,6 @@ export class StoreRatings {
       this.collectWith(q);
       if (!s.refresh) return;
       for (const site of FETCHED_SITES) {
-        if (site === 'bookmeter' && !s.bookmeter) continue;
         this.enqueueDue(q, s, site);
       }
     } catch (err) {
@@ -338,7 +337,6 @@ export class StoreRatings {
       const s = this.settings();
       if (!s.refresh) return;
       for (const site of FETCHED_SITES) {
-        if (site === 'bookmeter' && !s.bookmeter) continue;
         if (this.waitingFor(site) <= s.queuedPerSite / 2) this.enqueueDue(q, s, site);
       }
     } catch (err) {
@@ -475,7 +473,7 @@ export class StoreRatings {
     const q = s.refresh ? this.queue() : null;
     for (const site of FETCHED_SITES) {
       const id = ids.get(site);
-      if (!id || (site === 'bookmeter' && !s.bookmeter)) continue;
+      if (!id) continue;
       const pending = this.db
         .prepare('SELECT 1 FROM store_rating_requests WHERE site = ? AND site_id = ?')
         .get(site, id);
@@ -490,7 +488,7 @@ export class StoreRatings {
       this.ask(q, site, id, OPEN_PRIORITY);
       refreshing = true;
     }
-    const rows = [...saved.values()].filter((r) => r.site !== 'bookmeter' || s.bookmeter);
+    const rows = [...saved.values()];
     return { rows, refreshing };
   }
 
@@ -510,7 +508,7 @@ export class StoreRatings {
       this.readTimes = [];
     }
     if (before.scoreRatings !== after.scoreRatings) this.updateParams();
-    if (after.refresh && (!before.refresh || after.bookmeter !== before.bookmeter)) {
+    if (after.refresh && !before.refresh) {
       void this.tick();
     }
   }
@@ -536,7 +534,6 @@ export class StoreRatings {
       const due: Record<string, number> = {};
       if (s.refresh) {
         for (const site of FETCHED_SITES) {
-          if (site === 'bookmeter' && !s.bookmeter) continue;
           due[site] = this.dueIds(site, 1_000_000).length;
         }
       }

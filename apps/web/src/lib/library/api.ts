@@ -142,7 +142,6 @@ export interface BookRatingsAnswer {
 
 export interface RatingSettings {
   refresh: boolean;
-  bookmeter: boolean;
   newDays: number;
   recentDays: number;
   oldDays: number;

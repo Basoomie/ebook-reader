@@ -10,11 +10,6 @@ export interface RatingSettings {
    * the cleanup's cached pages; requests start on the user's word.
    */
   refresh: boolean;
-  /**
-   * 読書メーター: fetched and shown only when on (its saved links point at Kindle listings until
-   * the link fix; user 2026-11-25).
-   */
-  bookmeter: boolean;
   /** Read again after this many days: books published in the last 6 months. */
   newDays: number;
   /** … published in the last 2 years. */
@@ -37,7 +32,6 @@ export interface RatingSettings {
 
 export const DEFAULT_RATING_SETTINGS: RatingSettings = {
   refresh: false,
-  bookmeter: false,
   newDays: 7,
   recentDays: 30,
   oldDays: 90,
@@ -58,7 +52,12 @@ const NUMBERS: Partial<Record<keyof RatingSettings, [number, number]>> = {
   queuedPerSite: [1, 500],
   newBookWaitHours: [0, 720],
 };
-const FLAGS: (keyof RatingSettings)[] = ['refresh', 'bookmeter'];
+const FLAGS: (keyof RatingSettings)[] = ['refresh'];
+/**
+ * Settings that no longer exist, accepted and dropped: `bookmeter` (読書メーター had its own switch
+ * until its link fix was deployed; since 2026-11-25 it is fetched with the other stores).
+ */
+const RETIRED = new Set(['bookmeter']);
 
 export function readRatingSettings(db: Database.Database): RatingSettings {
   const row = db.prepare('SELECT json FROM store_rating_settings WHERE id = 1').get() as
@@ -94,6 +93,7 @@ export function saveRatingSettings(
 ): RatingSettings {
   const next = readRatingSettings(db) as unknown as Record<string, unknown>;
   for (const [key, v] of Object.entries(patch)) {
+    if (RETIRED.has(key)) continue;
     if (FLAGS.includes(key as keyof RatingSettings)) {
       if (typeof v !== 'boolean') throw new RatingSettingsError(`${key} must be true or false`);
       next[key] = v;

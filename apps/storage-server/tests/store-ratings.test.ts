@@ -385,13 +385,25 @@ describe('the refresher (the cleanup fetch queue)', () => {
       key: string;
       priority: number;
     }[];
-    // 読書メーター waits for its own setting.
+    // 読書メーター with the other stores (its own switch is gone since its link fix).
     expect(reqs.map((r) => [r.site, r.key, r.priority])).toEqual([
       ['amazon-dp', 'ratings:B07DXV5BP2', ROUTINE_PRIORITY],
+      ['bookmeter', 'ratings:6826860', ROUTINE_PRIORITY],
     ]);
 
-    const [c] = q.claim().requests;
-    q.report(c.id, c.leaseToken, answer(page('amazon-rated-1.html')));
+    const pages: Record<string, string> = {
+      'amazon-dp': 'amazon-rated-1.html',
+      bookmeter: 'bookmeter-6826860.html',
+    };
+    let c = { id: 0 };
+    for (let got = 0; got < 2; ) {
+      for (const r of q.claim().requests) {
+        q.report(r.id, r.leaseToken, answer(page(pages[r.site])));
+        if (r.site === 'amazon-dp') c = r;
+        got += 1;
+      }
+      if (got < 2) await new Promise((res) => setTimeout(res, 300));
+    }
     const cacheFile = (
       cdb.prepare('SELECT cache_file FROM fetch_requests WHERE id = ?').get(c.id) as {
         cache_file: string;
@@ -399,6 +411,7 @@ describe('the refresher (the cleanup fetch queue)', () => {
     ).cache_file;
     await s.tick();
     expect(savedRating(e.db, 'amazon_jp', 'B07DXV5BP2')).toMatchObject({ avg: 4.6, count: 180 });
+    expect(savedRating(e.db, 'bookmeter', '6826860')).toMatchObject({ count: 444, reviews: 98 });
     expect(
       cdb.prepare('SELECT state, cache_file FROM fetch_requests WHERE id = ?').get(c.id),
     ).toEqual({
@@ -415,8 +428,7 @@ describe('the refresher (the cleanup fetch queue)', () => {
     await s.tick();
     expect(q.requestState(c.id)).toBe('queued');
 
-    // 読書メーター once its setting is on; a book page asks old figures ahead of the routine.
-    saveRatingSettings(e.db, { bookmeter: true });
+    // A book page asks old figures ahead of the routine.
     const r = s.forBook(id('Beta'), true);
     expect(r.refreshing).toBe(true);
     const bm = cdb
@@ -520,7 +532,7 @@ describe('the refresher (the cleanup fetch queue)', () => {
     expect(p.read).toBe(2);
     // The other 2 were asked as the first answers came back (the queue topped up).
     expect(p.waiting).toBe(2);
-    expect(p.due).toEqual({ amazon_jp: 0, bookwalker: 0 });
+    expect(p.due).toEqual({ amazon_jp: 0, bookwalker: 0, bookmeter: 0 });
     expect(p.secondsLeft).toBe(1200);
 
     // A quick later check of stage 4's saved pages runs without a bar.
@@ -545,16 +557,16 @@ describe('the routes', () => {
 
     const a = (await request(app).get(`/api/v1/ratings/book/${id('Alpha')}`)).body;
     expect(a.pooled).toEqual({ avg: 4.3, count: 40 });
-    expect(Object.keys(a.sites).sort()).toEqual(['amazon_jp', 'bookwalker']);
-    expect(a.readers).toBeNull();
-    expect((await request(app).get('/api/v1/ratings/features')).body).toEqual({ bookmeter: false });
-
+    // 読書メーター is shown with the other stores (its own switch is gone since its link fix).
+    expect(Object.keys(a.sites).sort()).toEqual(['amazon_jp', 'bookmeter', 'bookwalker']);
+    expect(a.sites.bookmeter).toMatchObject({ count: 700, reviews: 20 });
+    expect(a.readers).toBe(700);
+    expect((await request(app).get('/api/v1/ratings/features')).body).toEqual({ bookmeter: true });
+    // An older page that still sends the retired switch saves fine; the switch is dropped.
     expect(
-      (await request(app).put('/api/v1/ratings/settings').send({ bookmeter: true })).status,
+      (await request(app).put('/api/v1/ratings/settings').send({ bookmeter: false })).status,
     ).toBe(200);
-    const b = (await request(app).get(`/api/v1/ratings/book/${id('Alpha')}`)).body;
-    expect(b.sites.bookmeter).toMatchObject({ count: 700, reviews: 20 });
-    expect(b.readers).toBe(700);
+    expect(readRatingSettings(e.db)).not.toHaveProperty('bookmeter');
 
     expect((await request(app).put('/api/v1/ratings/settings').send({ newDays: 0 })).status).toBe(
       400,
@@ -563,7 +575,6 @@ describe('the routes', () => {
     await request(app).put('/api/v1/ratings/settings').send({ scoreRatings: 5 });
     expect(readScoreParams(e.db).c).toBe(5);
     expect(readRatingSettings(e.db)).toMatchObject({
-      bookmeter: true,
       scoreRatings: 5,
       refresh: false,
     });
