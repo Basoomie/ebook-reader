@@ -98,6 +98,50 @@ describe('the new arrivals card', () => {
     expect(reading.eta).toBe('about 3 h left in this part');
   });
 
+  it('names the parts of stage 1 and the AI check, with the time left', () => {
+    const run = (phase: string, index: number, stage: string, part = true) =>
+      arrivalsBar({
+        ...base,
+        run: {
+          id: 1,
+          trigger: 'now',
+          mode: 'on',
+          phase,
+          startedAt: 0,
+          waiting: null,
+          scope: { import: 0, hand: 0 },
+          cost: 0,
+          jGate: null,
+          times: {},
+          bar: {
+            phase,
+            index,
+            phases: 20,
+            done: 2833,
+            total: 11690,
+            bytesDone: null,
+            bytesTotal: null,
+            secondsLeft: 540,
+            part: part
+              ? { index: stage === 'stat' || stage === 'cheap' ? 0 : 1, count: 2, stage }
+              : null
+          }
+        }
+      })!;
+    const stat = run('stage1', 7, 'stat');
+    expect(stat.label).toBe(
+      'Step 8 of 20: Stage 1: identical files, part 1 of 2: reading the new books’ file sizes (2,833 of 11,690)'
+    );
+    expect(stat.eta).toBe('about 9 min left in this part');
+    expect(stat.fraction).toBeCloseTo(2833 / 11690);
+    expect(run('stage1', 7, 'match').eta).toBe('about 9 min left');
+    expect(run('ai', 13, 'strong').label).toContain('part 2 of 2: the stronger pair answering');
+    // A step with a count and no parts: its count and the whole step's time left.
+    const write = run('write2', 11, '', false);
+    expect(write.label).toBe('Step 12 of 20: Writing stage 2’s changes (2,833 of 11,690)');
+    expect(write.eta).toBe('about 9 min left');
+  });
+
   it('says what the last run did, Preview and On', () => {
     expect(arrivalsSummary(base)).toBe('No run yet.');
     const report = {

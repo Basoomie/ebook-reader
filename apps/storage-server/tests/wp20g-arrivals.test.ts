@@ -743,6 +743,14 @@ describe('wp20g: a run end to end', () => {
           .get(id),
       ).toEqual({ sha256: f.sha256, mtime_ms: f.m, error: null });
     }
+    // Every step after the add has a count for the card's bar and time left (WP20g run 7: stage 1,
+    // stage 2 and the writes had none, so the bar jumped from step to step with no time left).
+    const n = run.p.scope.import.length;
+    expect(run.p.counts.stage1).toEqual({ done: n, total: n });
+    expect(run.p.counts.stage2?.total).toBe(n);
+    expect(run.p.counts.write2?.total).toBeGreaterThan(0);
+    expect(run.p.counts.write2!.done).toBeLessThanOrEqual(run.p.counts.write2!.total);
+    expect(run.p.part).toBeUndefined();
     await request(env.app)
       .post('/api/v1/cleanup/arrivals/stop')
       .set(auth(env.userToken()))
