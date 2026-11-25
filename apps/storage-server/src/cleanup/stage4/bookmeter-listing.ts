@@ -221,6 +221,8 @@ export interface BlProgress {
     held: number;
     yours: number;
     gone: number;
+    /** Books no longer in Calibre (removed since the search, e.g. a better copy arrived). */
+    removed?: number;
   };
   spot: { drawnAt: number | null; size: number };
   write: { rebuilt: boolean; batches: string[]; waiting: string | null; finishedAt: number | null };
@@ -759,7 +761,7 @@ export class BookmeterListings {
     lib: string,
     run: number,
     uuid: string,
-  ): 'proposed' | 'held' | 'yours' | 'gone' | 'written' {
+  ): 'proposed' | 'held' | 'yours' | 'gone' | 'removed' | 'written' {
     const db = this.db;
     const row = db
       .prepare(
@@ -768,7 +770,12 @@ export class BookmeterListings {
       )
       .get(lib, uuid) as { saved_id: string; decision_json: string } | undefined;
     const book = this.deps.analysis.snapshotBook(lib, uuid);
-    if (!row || !book) return 'gone';
+    if (!row || !book) {
+      // Nothing to write: an open proposal made before (the Preview's) goes too, or the planner
+      // would count the book as changed in Calibre and pause stage 4.
+      this.dropOpen(lib, listingAnalysisId(run), uuid);
+      return book ? 'gone' : 'removed';
+    }
     const d = JSON.parse(row.decision_json) as BlDecision;
     const aid = listingAnalysisId(run);
     const rows = db
@@ -829,6 +836,55 @@ export class BookmeterListings {
     return out;
   }
 
+  /** Deletes this run's open (unbatched) proposal of one book and marks the book unproposed. */
+  private dropOpen(lib: string, aid: string, uuid: string): number {
+    const db = this.db;
+    return db.transaction(() => {
+      const n = db
+        .prepare(
+          `DELETE FROM proposed_changes WHERE library_id = ? AND calibre_uuid = ? AND field = 'identifiers'
+             AND analysis_id = ? AND state = 'proposed' AND batch_id IS NULL`,
+        )
+        .run(lib, uuid, aid).changes;
+      db.prepare(
+        'UPDATE bookmeter_listing_books SET proposed = 0 WHERE library_id = ? AND calibre_uuid = ?',
+      ).run(lib, uuid);
+      return n;
+    })();
+  }
+
+  /**
+   * Before each batch: this run's open proposals of books no longer in Calibre (removed while
+   * the pass waited or wrote, e.g. by a new-arrivals run's better copy) are dropped. Stage 4's
+   * planner counts a book that is gone as changed in Calibre and pauses the stage when enough of
+   * the next books are; these have nothing to write, so they never reach it.
+   */
+  dropRemoved(p: BlProgress, lib: string): number {
+    const aid = listingAnalysisId(p.run);
+    const rows = this.db
+      .prepare(
+        `SELECT calibre_uuid FROM proposed_changes
+         WHERE library_id = ? AND field = 'identifiers' AND analysis_id = ? AND state = 'proposed'
+           AND batch_id IS NULL`,
+      )
+      .all(lib, aid) as { calibre_uuid: string }[];
+    if (!rows.length) return 0;
+    this.deps.analysis.loadSnapshot(lib);
+    let dropped = 0;
+    for (const r of rows) {
+      if (this.deps.analysis.snapshotBook(lib, r.calibre_uuid)) continue;
+      if (this.dropOpen(lib, aid, r.calibre_uuid) > 0) dropped++;
+    }
+    if (dropped) {
+      p.propose.removed = (p.propose.removed ?? 0) + dropped;
+      p.propose.proposed = Math.max(0, p.propose.proposed - dropped);
+      this.deps.log?.(
+        `Bookmeter links: ${dropped} books no longer in Calibre, their changes dropped`,
+      );
+    }
+    return dropped;
+  }
+
   private proposeChunk(p: BlProgress, lib: string): boolean {
     const rows = this.db
       .prepare(
@@ -837,7 +893,7 @@ export class BookmeterListings {
       )
       .all(lib, p.cursor) as { calibre_uuid: string }[];
     if (p.cursor === '')
-      p.propose = { ...p.propose, done: 0, proposed: 0, held: 0, yours: 0, gone: 0 };
+      p.propose = { ...p.propose, done: 0, proposed: 0, held: 0, yours: 0, gone: 0, removed: 0 };
     if (!rows.length) return false;
     this.deps.analysis.loadSnapshot(lib);
     const t0 = performance.now();
@@ -846,7 +902,7 @@ export class BookmeterListings {
       p.cursor = r.calibre_uuid;
       p.propose.done++;
       const o = this.proposeOne(lib, p.run, r.calibre_uuid);
-      if (o !== 'written') p.propose[o]++;
+      if (o !== 'written') p.propose[o] = (p.propose[o] ?? 0) + 1;
     }
     return true;
   }
@@ -970,6 +1026,8 @@ export class BookmeterListings {
       p.cursor = '';
       return 'more';
     }
+    // Also while stage 4 is paused: a pause these books caused clears with Resume once they're gone.
+    this.dropRemoved(p, lib);
     const wait = this.deps.writeWait(lib);
     if (wait) {
       p.write.waiting = wait;
