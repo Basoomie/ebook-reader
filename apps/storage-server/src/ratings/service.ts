@@ -230,7 +230,10 @@ export class StoreRatings {
             }
             const parsed = parsePage(site, id, html);
             // A cached page that can't be read is left to the refresher (no row).
-            if (parsed.kind !== 'unreadable') {
+            if (parsed.kind === 'blocked') {
+              // Never readable through the VPN: recorded, so the refresher waits the long pace.
+              saveRating(this.db, site, id, parsed, mtime);
+            } else if (parsed.kind !== 'unreadable') {
               saveRating(this.db, site, id, parsed, mtime);
               this.fill.found += 1;
             } else if (

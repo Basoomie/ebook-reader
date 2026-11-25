@@ -44,6 +44,7 @@ const natively = (name: string) =>
 
 const BW_RATED = '5b1a695e-9481-4a89-8bc2-c924090c6114';
 const BW_NONE = 'c9ff099a-bd34-4a00-b4e9-4c549d557fb0';
+const BW_JAPAN_ONLY = '00032b54-6ea6-4f3a-856b-2d153df41f55';
 
 describe('the store pages (real pages)', () => {
   it("reads Amazon's own figures, not another product's stars on the page", () => {
@@ -75,6 +76,10 @@ describe('the store pages (real pages)', () => {
     // Another book's page is not this book's figure.
     expect(parseBookwalkerRating(page('bookwalker-rated.html'), BW_NONE)).toEqual({
       kind: 'unreadable',
+    });
+    // A Japan-only title seen through the VPN (United States): the store's error page.
+    expect(parseBookwalkerRating(page('bookwalker-japan-only.html'), BW_JAPAN_ONLY)).toEqual({
+      kind: 'blocked',
     });
   });
 
@@ -438,6 +443,30 @@ describe('the refresher (the cleanup fetch queue)', () => {
     await s.tick();
     expect(savedRating(e.db, 'amazon_jp', 'B000000009')).toMatchObject({ state: 'gone' });
     expect(savedRating(e.db, 'bookwalker', BW_RATED)).toMatchObject({ state: 'error', fails: 1 });
+  });
+
+  it('asks a Japan-only page again only at the old-book pace', async () => {
+    const { e, link } = await env();
+    link('Alpha', 'bookwalker', BW_JAPAN_ONLY);
+    const { q } = fetchQueue();
+    saveRatingSettings(e.db, { refresh: true });
+    const s = ratingsService(e.db, null, q);
+    s.start();
+    await s.tick();
+    for (const c of q.claim().requests) {
+      q.report(c.id, c.leaseToken, answer(page('bookwalker-japan-only.html')));
+    }
+    await s.tick();
+    expect(savedRating(e.db, 'bookwalker', BW_JAPAN_ONLY)).toMatchObject({
+      state: 'error',
+      fails: 3,
+      avg: null,
+    });
+    const day = 86_400_000;
+    e.db.prepare('UPDATE store_ratings SET checked_at = ?').run(Date.now() - 2 * day);
+    expect(s.dueIds('bookwalker', 10)).toEqual([]);
+    e.db.prepare('UPDATE store_ratings SET checked_at = ?').run(Date.now() - 91 * day);
+    expect(s.dueIds('bookwalker', 10)).toEqual([BW_JAPAN_ONLY]);
   });
 });
 
