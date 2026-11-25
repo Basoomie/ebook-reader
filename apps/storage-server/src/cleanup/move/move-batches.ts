@@ -744,6 +744,22 @@ export class MoveBatches {
       const batch = this.awaitingIngest();
       if (!batch) return;
       const finishedAt = batch.finishedAt ?? now;
+      const rows = this.db
+        .prepare(
+          batch.kind === 'apply'
+            ? `SELECT to_library_id AS lib, to_uuid AS uuid FROM calibre_moves WHERE batch_id = ? AND state = 'moved'`
+            : `SELECT from_library_id AS lib, back_uuid AS uuid FROM calibre_moves WHERE undo_batch_id = ? AND state = 'undone'`,
+        )
+        .all(batch.id) as { lib: string; uuid: string }[];
+      // A batch that moved nothing (every book failed or skipped) changed neither library, so no
+      // index runs after it: waiting for one held the move for good (2026-11-25, a one-book batch
+      // skipped because the book changed in Calibre since the selection).
+      if (rows.length === 0) {
+        this.db
+          .prepare('UPDATE batches SET ingested_at = ?, updated_at = ? WHERE id = ?')
+          .run(now, now, batch.id);
+        continue;
+      }
       const libs = [batch.libraryId, batch.targetLibraryId].filter((l): l is string => !!l);
       let ran = true;
       for (const lib of libs) {
@@ -756,13 +772,6 @@ export class MoveBatches {
         }
       }
       if (!ran) return;
-      const rows = this.db
-        .prepare(
-          batch.kind === 'apply'
-            ? `SELECT to_library_id AS lib, to_uuid AS uuid FROM calibre_moves WHERE batch_id = ? AND state = 'moved'`
-            : `SELECT from_library_id AS lib, back_uuid AS uuid FROM calibre_moves WHERE undo_batch_id = ? AND state = 'undone'`,
-        )
-        .all(batch.id) as { lib: string; uuid: string }[];
       const missing = rows.filter((r) => {
         const src = findCalibreSource(this.deps.main, r.lib, r.uuid);
         return !src || src.missingAt !== null;

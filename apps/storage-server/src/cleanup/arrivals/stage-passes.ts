@@ -94,6 +94,12 @@ export async function statBooks(deps: PassDeps, books: SnapshotBook[]): Promise<
 /**
  * The SHA-256 of the library's EPUBs of this size (hashed now when unknown, as stage 1's hash
  * step does: stat before and after, a file that changed meanwhile left out). Read only.
+ *
+ * Each book is read at its folder in the current snapshot, never at the path file_facts kept:
+ * Calibre renames a book's folder on every metadata write, so after stages 2-5 most kept paths
+ * were gone (WP20g run 7: 49,336 of 65,925, and 45,853 rows marked changed), and the books
+ * behind them were left out of the identical-copy check. A file Calibre only moved (same size
+ * and mtime) keeps its SHA-256; any other is hashed again.
  */
 export async function libraryHashesOfSize(
   deps: PassDeps,
@@ -104,8 +110,8 @@ export async function libraryHashesOfSize(
 ): Promise<{ calibreId: number; sha256: string }[]> {
   const rows = deps.cleanup
     .prepare(
-      `SELECT calibre_id, file_path, size, mtime_ms, sha256 FROM file_facts
-       WHERE library_id = ? AND size = ? AND error IS NULL`,
+      `SELECT calibre_id, file_path, size, mtime_ms, sha256, error FROM file_facts
+       WHERE library_id = ? AND size = ?`,
     )
     .all(deps.libraryId, size) as {
     calibre_id: number;
@@ -113,32 +119,93 @@ export async function libraryHashesOfSize(
     size: number;
     mtime_ms: number;
     sha256: string | null;
+    error: string | null;
   }[];
-  const setHash = deps.cleanup.prepare(
-    'UPDATE file_facts SET sha256 = ?, hashed_at = ?, error = ? WHERE library_id = ? AND calibre_id = ?',
+  const setFacts = deps.cleanup.prepare(
+    `UPDATE file_facts SET file_path = ?, size = ?, mtime_ms = ?, sha256 = ?, hashed_at = ?,
+       stat_at = ?, error = ? WHERE library_id = ? AND calibre_id = ?`,
   );
   const out: { calibreId: number; sha256: string }[] = [];
   for (const r of rows) {
-    if (!books.has(r.calibre_id)) continue;
-    if (r.sha256) {
-      out.push({ calibreId: r.calibre_id, sha256: r.sha256 });
+    const book = books.get(r.calibre_id);
+    if (!book) continue;
+    if (shouldStop()) break;
+    const file = resolveInside(deps.libDir, book.filePath);
+    const before = await statFile(file);
+    const now = Date.now();
+    if (!before) {
+      setFacts.run(
+        book.filePath,
+        null,
+        null,
+        null,
+        null,
+        now,
+        'file_missing',
+        deps.libraryId,
+        r.calibre_id,
+      );
       continue;
     }
-    if (shouldStop()) break;
-    const file = resolveInside(deps.libDir, r.file_path);
-    const before = await statFile(file);
-    if (!before || before.size !== r.size || before.mtimeMs !== r.mtime_ms) {
-      setHash.run(null, null, 'changed', deps.libraryId, r.calibre_id);
+    if (before.size !== size) {
+      // Not this size any more (the file was replaced): kept as it is now, not a copy here.
+      setFacts.run(
+        book.filePath,
+        before.size,
+        before.mtimeMs,
+        null,
+        null,
+        now,
+        null,
+        deps.libraryId,
+        r.calibre_id,
+      );
+      continue;
+    }
+    if (r.sha256 && !r.error && before.mtimeMs === r.mtime_ms) {
+      if (r.file_path !== book.filePath)
+        setFacts.run(
+          book.filePath,
+          size,
+          before.mtimeMs,
+          r.sha256,
+          now,
+          now,
+          null,
+          deps.libraryId,
+          r.calibre_id,
+        );
+      out.push({ calibreId: r.calibre_id, sha256: r.sha256 });
       continue;
     }
     const h = await hashSourceFile(file, pacer, shouldStop);
     if (!h) break;
     const after = await statFile(file);
     if (!after || after.size !== before.size || after.mtimeMs !== before.mtimeMs) {
-      setHash.run(null, null, 'changed', deps.libraryId, r.calibre_id);
+      setFacts.run(
+        book.filePath,
+        before.size,
+        before.mtimeMs,
+        null,
+        null,
+        now,
+        'changed',
+        deps.libraryId,
+        r.calibre_id,
+      );
       continue;
     }
-    setHash.run(h.sha256, Date.now(), null, deps.libraryId, r.calibre_id);
+    setFacts.run(
+      book.filePath,
+      size,
+      before.mtimeMs,
+      h.sha256,
+      Date.now(),
+      now,
+      null,
+      deps.libraryId,
+      r.calibre_id,
+    );
     out.push({ calibreId: r.calibre_id, sha256: h.sha256 });
   }
   return out;
