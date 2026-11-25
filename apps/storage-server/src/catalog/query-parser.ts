@@ -7,7 +7,8 @@
  */
 import path from 'path';
 
-export type QueryStatus = 'unread' | 'reading' | 'completed' | 'dropped';
+/** `next`: the next volume of a series you are reading (next-in-series.ts), not a book's status. */
+export type QueryStatus = 'unread' | 'reading' | 'completed' | 'dropped' | 'next';
 export type TextField = 'author' | 'illustrator' | 'series' | 'tag';
 
 export type Matcher =

@@ -727,6 +727,30 @@ describe('wp20g: a run end to end', () => {
       .all(`arrivals:${run.id}`) as { calibre_id: number }[];
     expect(s2.length).toBeGreaterThan(0);
     for (const r of s2) expect(added.has(r.calibre_id)).toBe(true);
+    // The index step's hash of each added EPUB is stage 1's (file_facts, same mtime): stage 1
+    // reused it instead of reading the file again (WP20g run 7).
+    for (const id of run.p.scope.import) {
+      const f = env.cleanupDb
+        .prepare(
+          `SELECT sha256, json_extract(facts_json, '$.inCalibre.mtimeMs') AS m FROM calibre_arrival_files
+           WHERE json_extract(facts_json, '$.addedAs.calibreId') = ?`,
+        )
+        .get(id) as { sha256: string; m: number | null };
+      expect(f.m).toEqual(expect.any(Number));
+      expect(
+        env.cleanupDb
+          .prepare('SELECT sha256, mtime_ms, error FROM file_facts WHERE calibre_id = ?')
+          .get(id),
+      ).toEqual({ sha256: f.sha256, mtime_ms: f.m, error: null });
+    }
+    // Every step after the add has a count for the card's bar and time left (WP20g run 7: stage 1,
+    // stage 2 and the writes had none, so the bar jumped from step to step with no time left).
+    const n = run.p.scope.import.length;
+    expect(run.p.counts.stage1).toEqual({ done: n, total: n });
+    expect(run.p.counts.stage2?.total).toBe(n);
+    expect(run.p.counts.write2?.total).toBeGreaterThan(0);
+    expect(run.p.counts.write2!.done).toBeLessThanOrEqual(run.p.counts.write2!.total);
+    expect(run.p.part).toBeUndefined();
     await request(env.app)
       .post('/api/v1/cleanup/arrivals/stop')
       .set(auth(env.userToken()))

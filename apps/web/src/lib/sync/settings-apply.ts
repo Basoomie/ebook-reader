@@ -54,6 +54,7 @@ import {
   recentlyViewedOn$
 } from '$lib/recently-viewed/settings';
 import { libraryThemes$ } from '$lib/library/settings';
+import { nextInSeriesBonus$, nextInSeriesOn$ } from '$lib/library/next-in-series-settings';
 import { parseStoredValue, SETTINGS_REGISTRY } from '$lib/sync/settings-registry';
 
 /**
@@ -97,7 +98,9 @@ export const GLOBAL_SETTING_SUBJECTS: Record<string, { next(value: never): void 
   recentlyViewedDwellSeconds: recentlyViewedDwellSeconds$,
   recentlyViewedKeep: recentlyViewedKeep$,
   recentlyViewedKeepBooks: recentlyViewedKeepBooks$,
-  recentlyViewedKeepDays: recentlyViewedKeepDays$
+  recentlyViewedKeepDays: recentlyViewedKeepDays$,
+  nextInSeriesOn: nextInSeriesOn$,
+  nextInSeriesBonus: nextInSeriesBonus$
 };
 
 /** Applies one global setting. null (never set on the source device) leaves this device's value. */

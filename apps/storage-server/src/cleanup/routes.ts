@@ -28,6 +28,8 @@ import { isSecretName } from './secrets';
 import { ArrivalBatchError } from './arrivals/add-batches';
 import { streamSource } from './arrivals/sources-fs';
 import { arrivalsList, arrivalsStatus, notImportedCsv } from './arrivals/views';
+import { ImportError, importQuarantineCover, quarantineCovers } from './edits/cover-import';
+import { MAX_COVER_BYTES } from './edits/edits';
 import { getSettings, SettingsError, updateSettings } from './settings';
 import {
   CURRENT_PROPOSALS_SQL,
@@ -266,20 +268,33 @@ export function createCleanupApplyRouter(options: CleanupOptions): Router {
       : null;
 
   // Stage 2: what Calibre shows now → what to write for this book.
-  router.post('/cleanup-apply/batches/:id/books/:book/verify', (req, res) => {
-    const service = serviceOr503(options);
-    const { batchId, calibreId } = bookParams(req);
-    const body = (req.body ?? {}) as Record<string, unknown>;
-    try {
-      res.json(
-        service.batches
-          .writerOf(batchId)
-          .verify(batchId, calibreId, listed(body.current), quarantinePath(body.oldCoverPath)),
-      );
-    } catch (err) {
-      rethrow(err);
-    }
-  });
+  // Book covers: Calibre's current picture is kept in the server's cover archive before any
+  // cover write is answered (a cover is not written when it can't be kept).
+  router.post(
+    '/cleanup-apply/batches/:id/books/:book/verify',
+    asyncHandler(async (req, res) => {
+      const service = serviceOr503(options);
+      const { batchId, calibreId } = bookParams(req);
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      try {
+        const writer = service.batches.writerOf(batchId);
+        const current = listed(body.current);
+        const kept = await writer.keepCurrentCover(batchId, calibreId, current);
+        res.json(
+          writer.verify(
+            batchId,
+            calibreId,
+            current,
+            quarantinePath(body.oldCoverPath),
+            Date.now(),
+            kept,
+          ),
+        );
+      } catch (err) {
+        rethrow(err);
+      }
+    }),
+  );
 
   // Stage 2: what Calibre shows after the write.
   router.post('/cleanup-apply/batches/:id/books/:book/written', (req, res) => {
@@ -330,6 +345,34 @@ export function createCleanupApplyRouter(options: CleanupOptions): Router {
         res.end(bytes);
       } catch (err) {
         rethrow(err);
+      }
+    }),
+  );
+
+  // Book covers: the one-time import of the quarantine's earlier covers into the server's cover
+  // archive (the sidecar's `node /app/dist/import-covers.js`; edits/cover-import.ts).
+  router.get('/cleanup-apply/cover-archive/quarantine', (_req, res) => {
+    const service = serviceOr503(options);
+    res.json({ covers: quarantineCovers(service.db) });
+  });
+
+  router.post(
+    '/cleanup-apply/cover-archive/quarantine/:changeId',
+    express.raw({ type: () => true, limit: MAX_COVER_BYTES }),
+    asyncHandler(async (req, res) => {
+      const service = serviceOr503(options);
+      const changeId = Number(req.params.changeId);
+      if (!Number.isInteger(changeId) || changeId <= 0)
+        throw new ApiError(400, 'bad_request', 'A change id is needed');
+      const bytes = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+      const sha = req.header('x-sha256') ?? null;
+      try {
+        res.json(
+          await importQuarantineCover(service.db, service.coverArchive, changeId, bytes, sha),
+        );
+      } catch (err) {
+        if (err instanceof ImportError) throw new ApiError(err.status, err.code, err.message);
+        throw err;
       }
     }),
   );
@@ -1257,6 +1300,94 @@ export function createCleanupRouter(options: CleanupOptions): Router {
       throw new ApiError(409, 'not_now', (err as Error).message);
     }
     service.linksChanged();
+    res.json({ counts: pass.spotCounts(), passed: pass.spotPassed() });
+  });
+
+  // ---- Bookmeter links: the listing readers log (bookmeter-listings.md) ----
+
+  const listingsOr503 = () => {
+    const service = serviceOr503(options);
+    if (!service.listings) throw new ApiError(503, 'no_calibre', 'No Calibre library is set up');
+    return { service, pass: service.listings };
+  };
+  const LISTING_STATES = [
+    'change',
+    'keep',
+    'adaptation',
+    'unseen',
+    'unsearched',
+    'ai',
+    'nofacts',
+    'yours',
+  ] as const;
+
+  router.get('/cleanup/bookmeter-links', (_req, res) => {
+    const { service } = listingsOr503();
+    res.json(service.listingsStatus(service.targetLibrary()));
+  });
+
+  router.put('/cleanup/bookmeter-links/mode', (req, res) => {
+    const { service, pass } = listingsOr503();
+    const mode = (req.body as { mode?: unknown } | undefined)?.mode;
+    if (mode !== 'off' && mode !== 'analyse' && mode !== 'on')
+      throw new ApiError(400, 'bad_mode', 'mode must be off, analyse or on');
+    try {
+      pass.setMode(mode);
+    } catch (err) {
+      throw new ApiError(409, 'not_now', (err as Error).message);
+    }
+    service.listingsChanged();
+    res.json(service.listingsStatus(service.targetLibrary()));
+  });
+
+  router.post('/cleanup/bookmeter-links/again', (_req, res) => {
+    const { service, pass } = listingsOr503();
+    try {
+      pass.again();
+    } catch (err) {
+      throw new ApiError(409, 'not_now', (err as Error).message);
+    }
+    service.listingsChanged();
+    res.json(service.listingsStatus(service.targetLibrary()));
+  });
+
+  router.get('/cleanup/bookmeter-links/list', (req, res) => {
+    const { service, pass } = listingsOr503();
+    const lib = service.targetLibrary();
+    const q = req.query as Record<string, string | undefined>;
+    const offset = Math.max(0, Number(q.offset ?? 0) || 0);
+    const limit = Math.min(100, Math.max(1, Number(q.limit ?? 20) || 20));
+    const state = (LISTING_STATES as readonly string[]).includes(q.state ?? '')
+      ? (q.state as (typeof LISTING_STATES)[number])
+      : 'change';
+    if (!lib) {
+      res.json({ total: 0, items: [] });
+      return;
+    }
+    res.json(pass.listBooks(lib, pass.state().progress.run, state, offset, limit));
+  });
+
+  router.get('/cleanup/bookmeter-links/spot', (_req, res) => {
+    const { service, pass } = listingsOr503();
+    const lib = service.targetLibrary();
+    res.json({
+      items: lib ? pass.listSpot(lib, pass.state().progress.run) : [],
+      counts: pass.spotCounts(),
+      passed: pass.spotPassed(),
+    });
+  });
+
+  router.put('/cleanup/bookmeter-links/spot/:uuid', (req, res) => {
+    const { service, pass } = listingsOr503();
+    const v = (req.body as { verdict?: unknown } | undefined)?.verdict;
+    if (v !== 'right' && v !== 'wrong' && v !== null)
+      throw new ApiError(400, 'bad_verdict', 'verdict must be right, wrong or null');
+    try {
+      pass.setVerdict(String(req.params.uuid), v);
+    } catch (err) {
+      throw new ApiError(409, 'not_now', (err as Error).message);
+    }
+    service.listingsChanged();
     res.json({ counts: pass.spotCounts(), passed: pass.spotPassed() });
   });
 

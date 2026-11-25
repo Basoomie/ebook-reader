@@ -19,6 +19,7 @@ import type Database from 'better-sqlite3';
 import { parseCalibreDate } from '../../calibre/ingest';
 import { markYours } from './yours';
 import type { UserFieldKey } from './fields';
+import { EDIT_STAGE } from '../field-stages';
 
 /** The proposal fields whose write also changes an index field. */
 const WRITTEN_BY: Record<string, string[]> = {
@@ -62,6 +63,8 @@ export interface DrainResult {
   waiting: number;
   calibre: number;
   renames: number;
+  /** Book covers: cover changes whose new picture is to be kept. */
+  coversWanted: number;
 }
 
 const asList = (v: unknown): string[] =>
@@ -127,25 +130,32 @@ export class ChangeAttribution {
     );
   }
 
-  /** A write of the field (or one that changes it with it) in the index's window. */
-  private byWrite(c: QueuedChange): boolean {
+  /**
+   * A write of the field (or one that changes it with it) in the index's window. With
+   * `cleanupOnly`, only a write of the cleanup's own stages counts (not the user's edits).
+   */
+  private byWrite(c: QueuedChange, cleanupOnly = false): boolean {
     const fields = WRITTEN_BY[c.field] ?? [c.field];
     const lo = c.before_modified === null ? Number.NEGATIVE_INFINITY : c.before_modified - 1000;
     const hi = (c.last_modified ?? Number.POSITIVE_INFINITY) + 1000;
     const rows = this.db
       .prepare(
-        `SELECT last_modified_after, restored_last_modified FROM field_undo
-         WHERE library_id = ? AND calibre_uuid = ? AND field IN (${fields.map(() => '?').join(', ')})`,
+        `SELECT f.last_modified_after, f.restored_last_modified, b.stage FROM field_undo f
+         LEFT JOIN batches b ON b.id = f.batch_id
+         WHERE f.library_id = ? AND f.calibre_uuid = ? AND f.field IN (${fields.map(() => '?').join(', ')})`,
       )
       .all(c.library_id, c.calibre_uuid, ...fields) as {
       last_modified_after: string | null;
       restored_last_modified: string | null;
+      stage: number | null;
     }[];
     const inWindow = (t: number | null) => t !== null && t > lo && t <= hi;
     for (const r of rows) {
+      if (cleanupOnly && r.stage === EDIT_STAGE) continue;
       if (inWindow(parseCalibreDate(r.last_modified_after))) return true;
       if (inWindow(parseCalibreDate(r.restored_last_modified))) return true;
     }
+    if (cleanupOnly) return false;
     if (c.field === 'tags') {
       // Stage 1/3 copy the user's own tags of a removed copy onto the kept one (and Undo takes
       // them off again): no Calibre time is kept for those, so the server's time is used.
@@ -216,7 +226,13 @@ export class ChangeAttribution {
    * yields between calls). Waiting rows stay queued.
    */
   drain(limit = 500, now = Date.now()): DrainResult {
-    const result: DrainResult = { processed: 0, waiting: 0, calibre: 0, renames: 0 };
+    const result: DrainResult = {
+      processed: 0,
+      waiting: 0,
+      calibre: 0,
+      renames: 0,
+      coversWanted: 0,
+    };
     const rows = this.deps.main
       .prepare('SELECT * FROM calibre_field_changes ORDER BY id LIMIT ?')
       .all(limit * 4) as QueuedChange[];
@@ -225,6 +241,12 @@ export class ChangeAttribution {
       `INSERT INTO calibre_seen_changes (library_id, calibre_uuid, calibre_id, field, old_json,
          new_json, kind, cause_change_id, cause_title, seen_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    const wanted = this.db.prepare(
+      `INSERT INTO cover_archive_wanted (library_id, calibre_uuid, calibre_id, book_id, seen_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT (library_id, calibre_uuid) DO UPDATE SET calibre_id = excluded.calibre_id,
+         book_id = excluded.book_id, seen_at = excluded.seen_at, tries = 0`,
     );
     const waits = new Map<string, boolean>();
     this.db.transaction(() => {
@@ -242,6 +264,12 @@ export class ChangeAttribution {
         }
         done.push(c.id);
         result.processed++;
+        // Book covers: the picture a cover change left is kept (read after this transaction),
+        // unless the cleanup's own stages wrote it (their picture can be made again).
+        if (c.field === 'cover' && JSON.parse(c.new_json) !== 'nocover' && !this.byWrite(c, true)) {
+          wanted.run(c.library_id, c.calibre_uuid, c.calibre_id, c.book_id, now);
+          result.coversWanted++;
+        }
         if (this.byWrite(c)) continue;
         const rename = this.byRename(c);
         if (rename?.kind === 'cleanup') continue;

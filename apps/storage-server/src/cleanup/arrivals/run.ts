@@ -124,6 +124,11 @@ export type RunPhase =
   | 'report'
   | 'done';
 
+/** Stage 1's parts on the run's books: their files' sizes, then the library's of those sizes. */
+const STAGE1_PARTS = ['stat', 'match'] as const;
+/** The AI step's parts while the models answer: the first pair, then the stronger pair. */
+const AI_PARTS = ['cheap', 'strong'] as const;
+
 export const RUN_PHASES: readonly RunPhase[] = [
   'scan',
   'archives',
@@ -201,6 +206,16 @@ export interface CompareFacts {
   [k: string]: unknown;
 }
 
+/** A catalog file the run added to Calibre. */
+interface AddedFile {
+  id: number;
+  sha256: string;
+  size: number;
+  /** When the add phase ended (every index-step check of the book came after it). */
+  decided_at: number;
+  facts_json: string | null;
+}
+
 export interface RunProgress {
   phase: RunPhase;
   phaseStartedAt: number;
@@ -218,11 +233,20 @@ export interface RunProgress {
   /** The compare phase's stage and its own start (the bar's pace). */
   cmp?: { stage: CompareStage; cursor: number; startedAt: number; startDone: number };
   /**
+   * The part of another phase that runs in parts counted on their own (stage 1's file sizes,
+   * then its same-size books; the AI's first pair, then the stronger pair), with its own start
+   * (the bar's pace). WP20g run 7, 2026-11-25: steps without a count showed no time left and
+   * the bar jumped from step to step.
+   */
+  part?: { name: string; index: number; count: number; startedAt: number; startDone: number };
+  /**
    * Since when the run waits for another stage's analysis. The bar shows no time left meanwhile,
    * and the wait is taken out of the pace when the run goes on (WP20g, 2026-11-24: a two-hour
    * wait for stage 2 showed "about 82 h left").
    */
   waitingSince?: number;
+  /** The index step saw every added book in the reader's snapshot (its slices skip the check). */
+  indexSeen?: boolean;
   reviews: number;
   stage4: Stage4Progress | null;
   ai: ArrivalAiProgress | null;
@@ -646,7 +670,65 @@ export class BookArrivals {
     p.phaseStartedAt = t;
     p.phaseStartDone = 0;
     p.waiting = null;
+    delete p.part;
     this.save(runId, p);
+  }
+
+  /** This phase's part (a new part counts from its own start). */
+  private setPart(p: RunProgress, name: string, parts: readonly string[]): void {
+    if (parts.length < 2) return;
+    if (p.part?.name === name) return;
+    p.part = {
+      name,
+      index: Math.max(0, parts.indexOf(name)),
+      count: parts.length,
+      startedAt: Date.now(),
+      startDone: 0,
+    };
+  }
+
+  private lastPassSave = 0;
+
+  /** A long pass's progress into the phase's count, saved at most every 5 s for the card. */
+  private passProgress(
+    runId: number,
+    p: RunProgress,
+    parts: readonly string[],
+    name: string,
+    done: number,
+    total: number,
+  ): void {
+    this.setPart(p, name, parts);
+    const c = this.count(p, p.phase);
+    c.done = done;
+    c.total = total;
+    const t = Date.now();
+    if (t - this.lastPassSave >= 5000) {
+      this.lastPassSave = t;
+      this.save(runId, p);
+    }
+  }
+
+  /** The run's changes of these stages written so far, of those it will write (class auto). */
+  private writeCount(
+    p: RunProgress,
+    phase: RunPhase,
+    stages: number[],
+    libraryId: string,
+    runId: number,
+  ): void {
+    const rows = this.db
+      .prepare(
+        `SELECT state, COUNT(*) AS n FROM proposed_changes INDEXED BY proposed_changes_counts
+         WHERE stage IN (${stages.map(() => '?').join(', ')}) AND library_id = ? AND analysis_id = ?
+           AND class = 'auto' GROUP BY state`,
+      )
+      .all(...stages, libraryId, arrivalAnalysisId(runId)) as { state: string; n: number }[];
+    const c = this.count(p, phase);
+    c.total = rows.reduce((a, r) => a + r.n, 0);
+    c.done = rows
+      .filter((r) => r.state !== 'proposed' && r.state !== 'queued')
+      .reduce((a, r) => a + r.n, 0);
   }
 
   /** The time zone the schedule uses (blank: the server's). */
@@ -730,6 +812,66 @@ export class BookArrivals {
   }
 
   // ---------------------------------------------------------------- books added by hand
+
+  /**
+   * An added book's EPUB hashed in Calibre: kept in stage 1's file_facts as stage 1 would keep it
+   * (path, size, mtime, SHA-256), so stage 1's pass reuses it instead of reading the file again.
+   */
+  private keepLibraryHash(
+    libraryId: string,
+    b: SnapshotBook,
+    st: { size: number; mtimeMs: number },
+    sha256: string,
+  ): void {
+    const now = Date.now();
+    this.db
+      .prepare(
+        `INSERT INTO file_facts (library_id, calibre_id, calibre_uuid, file_path, size, mtime_ms,
+           calibre_last_modified, sha256, stat_at, hashed_at, error)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+         ON CONFLICT(library_id, calibre_id) DO UPDATE SET calibre_uuid = excluded.calibre_uuid,
+           file_path = excluded.file_path, size = excluded.size, mtime_ms = excluded.mtime_ms,
+           calibre_last_modified = excluded.calibre_last_modified, sha256 = excluded.sha256,
+           stat_at = excluded.stat_at, hashed_at = excluded.hashed_at, error = NULL`,
+      )
+      .run(
+        libraryId,
+        b.calibreId,
+        b.uuid,
+        b.filePath,
+        st.size,
+        st.mtimeMs,
+        b.lastModified,
+        sha256,
+        now,
+        now,
+      );
+  }
+
+  /** The run's added books (Calibre id) and the catalog file each came from (by primary key). */
+  private addedFiles(runId: number): Map<number, AddedFile> {
+    const rows = this.db
+      .prepare(
+        `SELECT i.calibre_id, f.id, f.sha256, f.size, f.decided_at, f.facts_json FROM calibre_arrival_batch_items i
+         JOIN calibre_arrival_batches b ON b.id = i.batch_id
+         JOIN calibre_arrival_files f ON f.id = i.file_id
+         WHERE b.run_id = ? AND b.kind = 'add' AND i.state = 'added' AND i.calibre_id IS NOT NULL
+         ORDER BY f.id`,
+      )
+      .all(runId) as (AddedFile & { calibre_id: number })[];
+    const m = new Map<number, AddedFile>();
+    for (const r of rows) if (!m.has(r.calibre_id)) m.set(r.calibre_id, r);
+    return m;
+  }
+
+  /** A book of the scope not among the run's add items (none expected): the catalog scanned. */
+  private addedFileByScan(calibreId: number): AddedFile | undefined {
+    return this.db
+      .prepare(
+        `SELECT id, sha256, size, decided_at, facts_json FROM calibre_arrival_files WHERE json_extract(facts_json, '$.addedAs.calibreId') = ?`,
+      )
+      .get(calibreId) as AddedFile | undefined;
+  }
 
   private snapshotBooks(libraryId: string): Map<number, SnapshotBook> {
     return readSnapshotBooks(snapshotFile(this.deps.cacheDir, libraryId));
@@ -898,6 +1040,7 @@ export class BookArrivals {
       const waited = Date.now() - p.waitingSince;
       p.phaseStartedAt += waited;
       if (p.cmp) p.cmp.startedAt += waited;
+      if (p.part) p.part.startedAt += waited;
       delete p.waitingSince;
     }
     // A stage set Off is not run for the arrivals either: the run waits for it (as the
@@ -1002,7 +1145,7 @@ export class BookArrivals {
       case 'add':
         return this.addStep(run, p, libraryId, shouldStop);
       case 'index':
-        return this.indexStep(run, p, libraryId, libDir);
+        return this.indexStep(run, p, libraryId, libDir, shouldStop);
       case 'stage1': {
         const scope = this.scopeBooks(p, libraryId);
         if (!scope.length) {
@@ -1012,7 +1155,13 @@ export class BookArrivals {
         const books = this.snapshotBooks(libraryId);
         const res = await this.withDisk(
           p,
-          () => stage1Pass(this.passDeps(run.id, libraryId, libDir), scope, books, shouldStop),
+          () =>
+            stage1Pass(
+              this.passDeps(run.id, libraryId, libDir, p, STAGE1_PARTS),
+              scope,
+              books,
+              shouldStop,
+            ),
           shouldStop,
         );
         if (!res) return 'wait';
@@ -1030,6 +1179,7 @@ export class BookArrivals {
           return 'more';
         }
         const id = arrivalAnalysisId(run.id);
+        this.writeCount(p, 'removals', [1, 3], libraryId, run.id);
         if (this.checksWait(p)) return 'wait';
         for (const stage of [1, 3] as const) {
           const r =
@@ -1062,7 +1212,7 @@ export class BookArrivals {
             p,
             () =>
               stage2Pass(
-                this.passDeps(run.id, libraryId, libDir),
+                this.passDeps(run.id, libraryId, libDir, p, ['read']),
                 this.deps.stage2!,
                 uuids,
                 shouldStop,
@@ -1093,6 +1243,15 @@ export class BookArrivals {
         p.s5 ??= emptyStage5Pass();
         const r = await this.s5.step(p.stage4, p.s5, uuids, shouldStop);
         p.cost = (p.ai?.cost ?? 0) + (p.s5.cost ?? 0);
+        const c5 = this.count(p, 'stage5');
+        // Two questions a book while the models answer, then the books decided.
+        c5.total = p.s5.phase === 'models' ? p.s5.keys.length * 2 : uuids.length;
+        c5.done =
+          p.s5.phase === 'models'
+            ? p.s5.pending === undefined
+              ? 0
+              : Math.max(0, c5.total - p.s5.pending)
+            : p.s5.decided;
         p.waiting = p.s5.wait;
         if (r === 'done') this.next(run.id, p, 'write5');
         return r === 'done' ? 'more' : r;
@@ -1112,8 +1271,17 @@ export class BookArrivals {
     }
   }
 
-  private passDeps(runId: number, libraryId: string, libDir: string): PassDeps {
+  private passDeps(
+    runId: number,
+    libraryId: string,
+    libDir: string,
+    p?: RunProgress,
+    parts: readonly string[] = [],
+  ): PassDeps {
     return {
+      progress: p
+        ? (name, done, total) => this.passProgress(runId, p, parts, name, done, total)
+        : undefined,
       cleanup: this.db,
       main: this.deps.main,
       libraryId,
@@ -2293,9 +2461,10 @@ export class BookArrivals {
     p: RunProgress,
     libraryId: string,
     libDir: string,
+    shouldStop: () => boolean = () => false,
   ): Promise<'more' | 'wait'> {
     const file = snapshotFile(this.deps.cacheDir, libraryId);
-    if (p.scope.import.length) {
+    if (p.scope.import.length && !p.indexSeen) {
       const presence = fs.existsSync(file) ? readSnapshotPresence(file) : new Map();
       const ids = new Set([...presence.values()].map((x: { calibreId: number }) => x.calibreId));
       const missing = p.scope.import.filter((id) => !ids.has(id));
@@ -2304,31 +2473,81 @@ export class BookArrivals {
         p.waiting = `Waiting for the reader's library index to show the ${missing.length} added books`;
         return 'wait';
       }
+      p.indexSeen = true;
     }
     // The added books: each one's EPUB checked against the file it came from, and its text facts
-    // carried over (stage 3 compares later arrivals with it).
+    // carried over (stage 3 compares later arrivals with it). In slices with a bar; a book already
+    // checked (inCalibre, written in the same synchronous step as its text) is not read again.
+    // Each book's catalog file comes from the run's own add items (WP20g run 7: a lookup per book
+    // scanned the whole catalog, 1.85 s each at 194,351 rows, the server blocked meanwhile).
+    const added = this.addedFiles(run.id);
     const books = this.snapshotBooks(libraryId);
     const cd = this.compareDeps(libraryId, libDir, books);
     const settings = getSettings(this.db);
     const pacer = new Pacer(settings.pacing.readMbPerSecond * 1024 * 1024);
+    const c = this.count(p, 'index');
+    c.total = p.scope.import.length;
+    c.done = 0;
+    const sliceEnd = Date.now() + 30_000;
+    let open = 0;
     for (const id of p.scope.import) {
+      const f = added.get(id) ?? this.addedFileByScan(id);
+      if (!f) {
+        c.done++;
+        continue;
+      }
+      const facts = f.facts_json ? JSON.parse(f.facts_json) : {};
       const b = books.get(id);
-      const f = this.db
-        .prepare(
-          `SELECT id, sha256, facts_json FROM calibre_arrival_files WHERE calibre_id = ? OR json_extract(facts_json, '$.addedAs.calibreId') = ?`,
-        )
-        .get(id, id) as { id: number; sha256: string; facts_json: string | null } | undefined;
-      if (!b || !f) continue;
+      const checked = facts.inCalibre as
+        | { sameBytes: boolean; sha256: string | null; mtimeMs?: number | null }
+        | undefined;
+      // Checked before its hash was kept for stage 1 (run 7, before this change): kept now when the
+      // file has not changed since the add phase ended (every check came after that).
+      if (checked && (checked.mtimeMs !== undefined || !checked.sha256 || !b)) {
+        c.done++;
+        continue;
+      }
+      if (!b) {
+        c.done++;
+        continue;
+      }
+      if (Date.now() > sliceEnd || shouldStop()) {
+        open++;
+        continue;
+      }
       const epub = resolveInside(libDir, b.filePath);
+      if (checked) {
+        const st = await statFile(epub);
+        const kept = !!st && st.size === f.size && st.mtimeMs <= f.decided_at;
+        if (kept) this.keepLibraryHash(libraryId, b, st, checked.sha256!);
+        this.db
+          .prepare(
+            `UPDATE calibre_arrival_files SET facts_json = json_set(facts_json, '$.inCalibre.mtimeMs', ?) WHERE id = ?`,
+          )
+          .run(kept ? st.mtimeMs : null, f.id);
+        c.done++;
+        continue;
+      }
       const st = await statFile(epub);
       const h = st ? await hashSourceFile(epub, pacer) : null;
-      const facts = f.facts_json ? JSON.parse(f.facts_json) : {};
+      const after = h ? await statFile(epub) : null;
+      // The hash is kept for stage 1 (its file_facts) only when the file did not change while read:
+      // stage 1 then never reads the added books again (WP20g run 7: 430 GB, about 3 hours).
+      const stable = !!st && !!after && after.size === st.size && after.mtimeMs === st.mtimeMs;
       const same = !!h && h.sha256 === f.sha256;
+      if (stable && h) this.keepLibraryHash(libraryId, b, st, h.sha256);
       this.db
         .prepare(
           `UPDATE calibre_arrival_files SET facts_json = json_set(COALESCE(facts_json, '{}'), '$.inCalibre', json(?)) WHERE id = ?`,
         )
-        .run(JSON.stringify({ sameBytes: same, sha256: h?.sha256 ?? null }), f.id);
+        .run(
+          JSON.stringify({
+            sameBytes: same,
+            sha256: h?.sha256 ?? null,
+            mtimeMs: stable ? st.mtimeMs : null,
+          }),
+          f.id,
+        );
       if (st && facts.text) {
         saveLibraryText(
           cd,
@@ -2345,16 +2564,18 @@ export class BookArrivals {
           -f.id,
         );
       }
+      c.done++;
+    }
+    if (open) {
+      p.waiting = `Checking the added books in Calibre: ${c.done.toLocaleString('en-US')} of ${c.total.toLocaleString('en-US')}`;
+      this.save(run.id, p);
+      return 'more';
     }
     // The added files' sketches now live under their Calibre ids.
     dropNewSketches(
       cd,
       p.scope.import.flatMap((id) => {
-        const f = this.db
-          .prepare(
-            `SELECT id FROM calibre_arrival_files WHERE json_extract(facts_json, '$.addedAs.calibreId') = ?`,
-          )
-          .get(id) as { id: number } | undefined;
+        const f = added.get(id) ?? this.addedFileByScan(id);
         return f ? [-f.id] : [];
       }),
     );
@@ -2677,8 +2898,15 @@ export class BookArrivals {
     p.cost = p.ai.cost;
     p.waiting = p.ai.wait;
     const c = this.count(p, 'ai');
-    c.total = uuids.length;
-    c.done = p.ai.decided;
+    if (p.ai.phase === 'cheap' || p.ai.phase === 'strong') {
+      // While the models answer: their questions (two a book), each pair counted on its own.
+      this.setPart(p, p.ai.phase, p.ai.design === 'E' ? ['cheap'] : AI_PARTS);
+      c.total = (p.ai.phase === 'cheap' ? p.ai.keys.length : p.ai.strongKeys.length) * 2;
+      c.done = p.ai.pending === undefined ? 0 : Math.max(0, c.total - p.ai.pending);
+    } else {
+      c.total = uuids.length;
+      c.done = p.ai.decided;
+    }
     if (r === 'done') this.next(run.id, p, 'write4');
     return r === 'done' ? 'more' : r;
   }
@@ -2703,6 +2931,7 @@ export class BookArrivals {
           ? this.deps.stage4Batches
           : this.deps.stage5Batches;
     const w = (p.writes[`s${stage}`] ??= { batches: [], applied: 0, failed: 0 });
+    this.writeCount(p, p.phase, [stage], libraryId, run.id);
     if (this.checksWait(p)) return 'wait';
     if (this.deps.batches.open()) {
       p.waiting = 'A batch is being applied';
@@ -2941,6 +3170,9 @@ export class BookArrivals {
         )
         .get(libraryId, analysisId) as { n: number }
     ).n;
+    const cm = this.count(p, 'move');
+    cm.total = p.move.auto;
+    cm.done = Math.max(0, p.move.auto - left);
     if (left === 0) {
       p.move.moved = (
         this.db

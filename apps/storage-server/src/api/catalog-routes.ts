@@ -12,6 +12,7 @@ import { openSourceStream } from '../calibre/source-fs';
 import { calibreEtag, fileHashes, locateCalibreFile, uploadEtag } from '../catalog/file-hashes';
 import { planGroups } from '../catalog/groups';
 import { NAME_FIELDS, suggestNames, type NameField } from '../catalog/names';
+import { nextInSeriesIds } from '../catalog/next-in-series';
 import { collectionCards } from '../collections/cards';
 import {
   type BookFileLocation,
@@ -284,6 +285,16 @@ export function createCatalogRouter(db: Database.Database, catalog: CatalogOptio
       } catch (err) {
         searchErrors(err);
       }
+    }),
+  );
+
+  // Next in your series (2026-11-25, docs/design/next-in-series.md): the next volume of each
+  // series you are reading, in the Home row's order. Ids only; the cards come from lookup.
+  router.get(
+    '/next-in-series',
+    asyncHandler(async (_req, res) => {
+      const user = askingUser(res);
+      res.json({ ids: nextInSeriesIds(db, user.id) });
     }),
   );
 

@@ -47,7 +47,11 @@ export const QUERY_LIMITS = {
   maxRegexLength: 200
 } as const;
 
-export const QUERY_STATUSES = ['unread', 'reading', 'completed', 'dropped'] as const;
+/**
+ * Statuses of the `status:` term. `next` is not a book's status: it is the next volume of a
+ * series you are reading (docs/design/next-in-series.md), worked out live.
+ */
+export const QUERY_STATUSES = ['unread', 'reading', 'completed', 'dropped', 'next'] as const;
 export type QueryStatus = (typeof QUERY_STATUSES)[number];
 
 export type TextField = 'author' | 'illustrator' | 'series' | 'tag';

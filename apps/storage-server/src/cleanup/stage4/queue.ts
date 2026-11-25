@@ -647,6 +647,10 @@ export class FetchQueue {
         this.db.prepare('UPDATE audio_fetch_waiters SET ready = 1 WHERE request_id = ?').run(id);
         // More Bookmeter coverage (stage4/bookmeter-more.ts) waits in its own table too.
         this.db.prepare('UPDATE bookmeter_more_waiters SET ready = 1 WHERE request_id = ?').run(id);
+        // So does the Bookmeter links pass (stage4/bookmeter-listing.ts).
+        this.db
+          .prepare('UPDATE bookmeter_listing_waiters SET ready = 1 WHERE request_id = ?')
+          .run(id);
       }
       return next.state;
     })();
@@ -738,10 +742,14 @@ export class FetchQueue {
       const readyBm = this.db.prepare(
         'UPDATE bookmeter_more_waiters SET ready = 1 WHERE request_id = ?',
       );
+      const readyBl = this.db.prepare(
+        'UPDATE bookmeter_listing_waiters SET ready = 1 WHERE request_id = ?',
+      );
       for (const id of ids) {
         fail.run(now, now, id);
         ready.run(id);
         readyBm.run(id);
+        readyBl.run(id);
       }
     })();
     return ids;

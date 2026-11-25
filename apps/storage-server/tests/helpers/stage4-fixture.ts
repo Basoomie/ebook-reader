@@ -61,12 +61,12 @@ export function bookwalkerDetail(name: string, description: string, keywords: st
 }
 
 export function bookmeterPartial(
-  books: { id: string; title: string; authors: string[]; pages?: number }[],
+  books: { id: string; title: string; authors: string[]; pages?: number; reg?: number }[],
 ): string {
   return `<span id="contents"><div class="books"><ul class="book-list__group">${books
     .map(
       (b) =>
-        `<li class="group__book"><div class="book__detail"><div class="detail__title"><a href="/books/${b.id}">${esc(b.title)}</a></div><ul class="detail__authors">${b.authors.map((a) => `<li><a href="/search?author=x">${esc(a)}</a></li>`).join('')}</ul><div class="detail__page">${b.pages ?? 300}</div></div></li>`,
+        `<li class="group__book"><div class="book__detail"><div class="detail__title"><a href="/books/${b.id}">${esc(b.title)}</a></div><ul class="detail__authors">${b.authors.map((a) => `<li><a href="/search?author=x">${esc(a)}</a></li>`).join('')}</ul><div class="detail__page">${b.pages ?? 300}</div>${b.reg !== undefined ? `<dl class="detail__options"><dt class="options__title">登録</dt><dd class="options__item">${b.reg}</dd></dl>` : ''}</div></li>`,
     )
     .join('')}</ul></div></span>`;
 }

@@ -2592,6 +2592,134 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
         ON proposed_changes (library_id, analysis_id, state, class) WHERE stage = 11;
     `,
   },
+  {
+    version: 35,
+    name: 'Bookmeter links: the saved ids checked against the listing readers log',
+    // Bookmeter listings (bookmeter-listings.md; stage4/bookmeter-listing.ts, 2026-11-25). One
+    // pass with its own Off/Preview/On over every saved bookmeter id: searched again with the
+    // author field, the most registered listing that is the book picked. bookmeter_listing_books:
+    // one row per book with a saved id (saved_id as Calibre held it when looked at), its state
+    // (search: the new search is open; keep, change, adaptation, unseen, ai, nofacts, yours) and
+    // the decision (both listings with their 登録 counts). bookmeter_listing_waiters: the pass's
+    // own waiters on the fetch queue, made ready by the queue like More Bookmeter coverage's.
+    // bookmeter_listing_spot: the 50 changes drawn for the spot check and the user's verdicts.
+    sql: `
+      CREATE TABLE bookmeter_listing_state (
+        id            INTEGER PRIMARY KEY CHECK (id = 1),
+        library_id    TEXT,
+        mode          TEXT NOT NULL DEFAULT 'off' CHECK (mode IN ('off', 'analyse', 'on')),
+        progress_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(progress_json)),
+        paused_reason TEXT,
+        paused_detail TEXT,
+        updated_at    INTEGER NOT NULL
+      );
+      INSERT INTO bookmeter_listing_state (id, updated_at) VALUES (1, 0);
+      CREATE TABLE bookmeter_listing_books (
+        library_id    TEXT NOT NULL,
+        calibre_uuid  TEXT NOT NULL,
+        calibre_id    INTEGER NOT NULL,
+        labeled       INTEGER NOT NULL DEFAULT 0,
+        saved_id      TEXT NOT NULL,
+        state         TEXT NOT NULL CHECK (state IN
+                        ('search', 'keep', 'change', 'adaptation', 'unseen', 'ai', 'nofacts', 'yours')),
+        decision_json TEXT CHECK (decision_json IS NULL OR json_valid(decision_json)),
+        proposed      INTEGER NOT NULL DEFAULT 0,
+        updated_at    INTEGER NOT NULL,
+        PRIMARY KEY (library_id, calibre_uuid)
+      ) WITHOUT ROWID;
+      CREATE INDEX bookmeter_listing_books_state
+        ON bookmeter_listing_books (library_id, state, calibre_uuid);
+      CREATE TABLE bookmeter_listing_waiters (
+        request_id    INTEGER NOT NULL,
+        library_id    TEXT NOT NULL,
+        calibre_uuid  TEXT NOT NULL,
+        ready         INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (request_id, library_id, calibre_uuid)
+      ) WITHOUT ROWID;
+      CREATE INDEX bookmeter_listing_waiters_ready
+        ON bookmeter_listing_waiters (ready, request_id) WHERE ready = 1;
+      -- The open searches, counted for the card's bar every few seconds.
+      CREATE INDEX bookmeter_listing_waiters_open
+        ON bookmeter_listing_waiters (ready) WHERE ready = 0;
+      CREATE INDEX bookmeter_listing_waiters_book
+        ON bookmeter_listing_waiters (library_id, calibre_uuid);
+      CREATE TABLE bookmeter_listing_spot (
+        library_id    TEXT NOT NULL,
+        calibre_uuid  TEXT NOT NULL,
+        position      INTEGER NOT NULL,
+        verdict       TEXT CHECK (verdict IN ('right', 'wrong')),
+        decided_at    INTEGER,
+        PRIMARY KEY (library_id, calibre_uuid)
+      ) WITHOUT ROWID;
+    `,
+  },
+  {
+    version: 36,
+    name: 'Bookmeter links: a book Bookmeter could not search is listed, never decided',
+    // User, 2026-11-25: a refused search must never leave a book quietly with its wrong link.
+    // Refused searches are asked again (the pass, BL_SEARCH_VERSION 2); a search Bookmeter
+    // answers "not found" puts the book in the new state unsearched (listed on the card). SQLite
+    // can't change a CHECK, so the table is made again with the same rows.
+    sql: `
+      CREATE TABLE bookmeter_listing_books_v36 (
+        library_id    TEXT NOT NULL,
+        calibre_uuid  TEXT NOT NULL,
+        calibre_id    INTEGER NOT NULL,
+        labeled       INTEGER NOT NULL DEFAULT 0,
+        saved_id      TEXT NOT NULL,
+        state         TEXT NOT NULL CHECK (state IN ('search', 'keep', 'change', 'adaptation',
+                        'unseen', 'unsearched', 'ai', 'nofacts', 'yours')),
+        decision_json TEXT CHECK (decision_json IS NULL OR json_valid(decision_json)),
+        proposed      INTEGER NOT NULL DEFAULT 0,
+        updated_at    INTEGER NOT NULL,
+        PRIMARY KEY (library_id, calibre_uuid)
+      ) WITHOUT ROWID;
+      INSERT INTO bookmeter_listing_books_v36 SELECT library_id, calibre_uuid, calibre_id, labeled,
+        saved_id, state, decision_json, proposed, updated_at FROM bookmeter_listing_books;
+      DROP TABLE bookmeter_listing_books;
+      ALTER TABLE bookmeter_listing_books_v36 RENAME TO bookmeter_listing_books;
+      CREATE INDEX bookmeter_listing_books_state
+        ON bookmeter_listing_books (library_id, state, calibre_uuid);
+    `,
+  },
+  {
+    version: 37,
+    name: 'Book covers: the cover archive and the covers waiting to be kept',
+    // docs/design/book-covers.md: every picture a book's cover had before it was replaced, kept
+    // in DB_DIR/covers/<sha256>.<ext> (edits/cover-archive.ts). source: 'before' (Calibre's
+    // picture before a write; change_id = the write), 'seen' (the picture a cover change left,
+    // seen by the index), 'quarantine' (imported once from the sidecar's quarantine). change_id
+    // 0 = none. cover_archive_wanted: cover changes the index saw, whose new picture is read
+    // after the change attribution (one row per book).
+    sql: `
+      CREATE TABLE cover_archive (
+        id            INTEGER PRIMARY KEY,
+        library_id    TEXT NOT NULL,
+        calibre_uuid  TEXT NOT NULL,
+        calibre_id    INTEGER NOT NULL,
+        sha256        TEXT NOT NULL,
+        ext           TEXT NOT NULL,
+        width         INTEGER,
+        height        INTEGER,
+        bytes         INTEGER NOT NULL,
+        dhash         TEXT,
+        source        TEXT NOT NULL CHECK (source IN ('before', 'seen', 'quarantine')),
+        change_id     INTEGER NOT NULL DEFAULT 0,
+        kept_at       INTEGER NOT NULL,
+        UNIQUE (library_id, calibre_uuid, sha256, source, change_id)
+      );
+      CREATE INDEX cover_archive_change ON cover_archive (change_id);
+      CREATE TABLE cover_archive_wanted (
+        library_id    TEXT NOT NULL,
+        calibre_uuid  TEXT NOT NULL,
+        calibre_id    INTEGER NOT NULL,
+        book_id       TEXT NOT NULL,
+        tries         INTEGER NOT NULL DEFAULT 0,
+        seen_at       INTEGER NOT NULL,
+        PRIMARY KEY (library_id, calibre_uuid)
+      ) WITHOUT ROWID;
+    `,
+  },
 ];
 
 export const CLEANUP_SCHEMA_VERSION = CLEANUP_MIGRATIONS[CLEANUP_MIGRATIONS.length - 1].version;

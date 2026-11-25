@@ -71,6 +71,8 @@ export interface ArrivalAiProgress {
   strongKeys: string[];
   cursor: number;
   decided: number;
+  /** Questions of this phase not answered yet (the run's bar while the models answer). */
+  pending?: number;
   invented: number;
   /** Fields decided with E because J is below its bar on the labeled books. */
   eFields: string[];
@@ -143,6 +145,7 @@ export class ArrivalStage4Ai {
   private next(ai: ArrivalAiProgress, phase: ArrivalAiPhase, done = 0): void {
     ai.phase = phase;
     ai.cursor = 0;
+    ai.pending = undefined;
     ai.phaseStartedAt = Date.now();
     ai.phaseStartDone = done;
   }
@@ -206,6 +209,7 @@ export class ArrivalStage4Ai {
     if (ai.phase === 'cheap' || ai.phase === 'strong') {
       const r = await runner.step(STAGE4_SPEC, runId, shouldStop);
       ai.cost = (runSpend(this.db, 'calibre4', runId) as { costUsd: number }).costUsd ?? 0;
+      ai.pending = r.pending;
       if (r.wait) {
         ai.wait = waitText(r.wait);
         if (waitNeedsUser(r.wait)) return 'wait';

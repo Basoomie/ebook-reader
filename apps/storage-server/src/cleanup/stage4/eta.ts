@@ -94,10 +94,11 @@ export const NEXT_STEPS: Record<string, string[]> = {
   'bookwalker-series': ['bookwalker-detail'],
   'bookwalker-detail': [],
   'bookmeter-search': [],
+  'bookmeter-listing': ['bookmeter-stores'],
   'bookmeter-stores': [],
   cover: [],
   decide: ['amazon-dp', 'amazon-search'],
-  'after-core': ['bookmeter-stores', 'cover'],
+  'after-core': ['bookmeter-listing', 'bookmeter-stores', 'cover'],
 };
 
 /** The site each lookup step asks. */
@@ -111,6 +112,7 @@ export const STEP_SITE: Record<string, FetchSite> = {
   'bookwalker-series': 'bookwalker',
   'bookwalker-detail': 'bookwalker',
   'bookmeter-search': 'bookmeter',
+  'bookmeter-listing': 'bookmeter',
   'bookmeter-stores': 'bookmeter',
   cover: 'amazon-img',
 };
