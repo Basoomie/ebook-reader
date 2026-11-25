@@ -1331,6 +1331,38 @@ const searchHistoryKind: KindSpec = {
   },
 };
 
+// ---------------------------------------------------------------------------
+// Recently viewed (2026-11-24, docs/design/recently-viewed.md)
+// ---------------------------------------------------------------------------
+
+export const RECENTLY_VIEWED_KIND = 'recently-viewed';
+
+/**
+ * kind "recently-viewed": one record per book whose details page was viewed, lww,
+ * deletable (a removed, cleared or trimmed book is a deletion marker stored as {}).
+ * id = the server book id; data { viewedAt } only: the card comes from the catalog, so no
+ * title is kept. The book is not checked against the catalog: one that left the library
+ * simply isn't shown.
+ */
+const recentlyViewedKind: KindSpec = {
+  policy: () => 'lww',
+  deletable: true,
+  validate(id, data, deleted) {
+    if (!UUID_RE.test(id)) throw new RecordError('invalid_id', 'ids are book ids');
+    if (deleted) return { bookId: null, data: {} };
+    const obj = requireObject(data);
+    const keys = Object.keys(obj);
+    if (keys.some((k) => k !== 'viewedAt')) {
+      throw new RecordError('invalid_data', 'only viewedAt is stored');
+    }
+    const viewedAt = obj.viewedAt;
+    if (typeof viewedAt !== 'number' || !Number.isFinite(viewedAt) || viewedAt < 0) {
+      throw new RecordError('invalid_data', 'viewedAt must be a time');
+    }
+    return { bookId: null, data: { viewedAt } };
+  },
+};
+
 export const DEVICE_BOOKS_KIND = 'device-books';
 
 /**
@@ -1399,4 +1431,5 @@ export const DEFAULT_KINDS: KindRegistry = {
   'summary-skip': summarySkipKind,
   'series-recap': seriesRecapKind,
   [SEARCH_HISTORY_KIND]: searchHistoryKind,
+  [RECENTLY_VIEWED_KIND]: recentlyViewedKind,
 };

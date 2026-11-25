@@ -41,6 +41,13 @@ import {
   searchHistoryLimit$,
   searchHistoryOn$
 } from '$lib/search-history/settings';
+import {
+  recentlyViewedDwellSeconds$,
+  recentlyViewedKeep$,
+  recentlyViewedKeepBooks$,
+  recentlyViewedKeepDays$,
+  recentlyViewedOn$
+} from '$lib/recently-viewed/settings';
 import { libraryThemes$ } from '$lib/library/settings';
 import { parseStoredValue, SETTINGS_REGISTRY } from '$lib/sync/settings-registry';
 
@@ -77,7 +84,12 @@ export const GLOBAL_SETTING_SUBJECTS: Record<string, { next(value: never): void 
   searchHistoryOn: searchHistoryOn$,
   searchHistoryLimit: searchHistoryLimit$,
   bookSearchHistoryOn: bookSearchHistoryOn$,
-  bookSearchHistoryLimit: bookSearchHistoryLimit$
+  bookSearchHistoryLimit: bookSearchHistoryLimit$,
+  recentlyViewedOn: recentlyViewedOn$,
+  recentlyViewedDwellSeconds: recentlyViewedDwellSeconds$,
+  recentlyViewedKeep: recentlyViewedKeep$,
+  recentlyViewedKeepBooks: recentlyViewedKeepBooks$,
+  recentlyViewedKeepDays: recentlyViewedKeepDays$
 };
 
 /** Applies one global setting. null (never set on the source device) leaves this device's value. */

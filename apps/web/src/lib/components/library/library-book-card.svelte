@@ -41,6 +41,8 @@
   export let audioOnDevice = false;
   export let selectMode = false;
   export let selected = false;
+  /** Recently viewed (2026-11-24): the ⋮ menu offers Remove from Recently viewed. */
+  export let forgettable = false;
 
   const dispatch = createEventDispatcher<{
     open: CatalogBook;
@@ -49,6 +51,7 @@
     state: CatalogBook;
     collect: CatalogBook;
     remove: CatalogBook;
+    forget: CatalogBook;
   }>();
 
   /** WP19a: where an author name leads (default: that author in the Library). */
@@ -170,6 +173,8 @@
         {onDevice}
         on:collect={() => dispatch('collect', book)}
         on:remove={() => dispatch('remove', book)}
+        {forgettable}
+        on:forget={() => dispatch('forget', book)}
       />
     </div>
   {/if}

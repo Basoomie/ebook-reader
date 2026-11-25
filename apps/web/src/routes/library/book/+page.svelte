@@ -101,7 +101,15 @@
   import type { CatalogBook, CatalogBookDetail, CatalogLibrary } from '$lib/library/types';
   import { STATUS_LABELS, type BookState } from '$lib/sync/book-state';
   import type { LocalRecord } from '$lib/sync/sync-db';
-  import { bookStateApi, collectionsApi, libraryViewApi, notesApi } from '$lib/sync/sync-service';
+  import {
+    bookStateApi,
+    collectionsApi,
+    libraryViewApi,
+    notesApi,
+    recentlyViewedApi
+  } from '$lib/sync/sync-service';
+  import { ViewTimer } from '$lib/recently-viewed/view-timer';
+  import { currentDwellSeconds, recentlyViewedOn$ } from '$lib/recently-viewed/settings';
   import { onDestroy, onMount } from 'svelte';
   import BookEditForm from '$lib/components/calibre-edit/book-edit-form.svelte';
   import BookHistoryPanel from '$lib/components/calibre-edit/book-history-panel.svelte';
@@ -125,6 +133,22 @@
   const view = libraryViewApi();
   const collections = collectionsApi();
   const notes = notesApi();
+  const recentlyViewed = recentlyViewedApi();
+
+  /**
+   * Recently viewed (2026-11-24): the book counts once its page has been visible for the
+   * set time. Never blocks the page: recording failures are only logged.
+   */
+  const viewTimer = new ViewTimer({
+    now: () => Date.now(),
+    setTimeout: (fn, ms) => setTimeout(fn, ms),
+    clearTimeout: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
+    visible: () => typeof document === 'undefined' || document.visibilityState === 'visible',
+    record: (id) => {
+      if ($recentlyViewedOn$) void recentlyViewed.record(id);
+    }
+  });
+  const onVisibility = () => viewTimer.visibilityChanged();
 
   let connection: LibraryConnection | null | undefined;
   let api: LibraryApi | undefined;
@@ -250,6 +274,7 @@
     : '';
 
   onMount(async () => {
+    document.addEventListener('visibilitychange', onVisibility);
     const subscriptions = [
       bookState.onChanged(() => void loadStates()),
       view.onChanged(() => void loadViewData()),
@@ -322,6 +347,10 @@
   }
 
   onDestroy(() => {
+    viewTimer.stop();
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', onVisibility);
+    }
     clearInterval(editPoll);
     if (savedCover) URL.revokeObjectURL(savedCover);
     destroyed = true;
@@ -371,7 +400,10 @@
       return;
     }
     if (id === bookId && book) return;
-    if (id !== bookId) forgetSaved();
+    if (id !== bookId) {
+      forgetSaved();
+      viewTimer.stop();
+    }
     bookId = id;
     loadController?.abort();
     const controller = new AbortController();
@@ -415,6 +447,7 @@
       return;
     }
     loading = false;
+    if ($recentlyViewedOn$) viewTimer.start(book.id, currentDwellSeconds());
     void loadHighlights();
     void loadOnDevice();
     void loadRelated(book, controller.signal);

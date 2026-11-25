@@ -12,7 +12,8 @@ import type { BookListQuery } from '$lib/library/api';
  * Home rows (WP7b, decided with the user): per device, customizable. Anything can be
  * pinned (a collection, a built-in list, a series, an author or a tag); rows can be
  * reordered and hidden. Continue Reading is the default first row; "Recently added"
- * is optional and hidden by default. Stored as the per-device setting `homeRows`.
+ * is optional and hidden by default, and so is "Recently viewed" (2026-11-24: books whose
+ * details page you looked at). Stored as the per-device setting `homeRows`.
  */
 export type GroupRowType = 'series' | 'author' | 'tag';
 
@@ -24,11 +25,13 @@ export type PinTarget =
 export type HomeRow =
   | { type: 'continue'; hidden: boolean }
   | { type: 'recent'; hidden: boolean }
+  | { type: 'viewed'; hidden: boolean }
   | (PinTarget & { hidden: boolean });
 
 export const DEFAULT_HOME_ROWS: readonly HomeRow[] = [
   { type: 'continue', hidden: false },
-  { type: 'recent', hidden: true }
+  { type: 'recent', hidden: true },
+  { type: 'viewed', hidden: true }
 ];
 
 const PINNABLE = new Set(['builtin', 'collection', 'series', 'author', 'tag']);
@@ -37,7 +40,7 @@ export function rowKey(row: { type: string; ref?: string }): string {
   return row.ref === undefined ? row.type : `${row.type}:${row.ref}`;
 }
 
-/** A pinned row (as opposed to Continue Reading and Recently added, which can only be hidden). */
+/** A pinned row (as opposed to Continue Reading, Recently added and Recently viewed, which can only be hidden). */
 export function isPinnedRow(row: HomeRow): row is PinTarget & { hidden: boolean } {
   return PINNABLE.has(row.type);
 }
@@ -46,7 +49,9 @@ function parseRow(raw: unknown): HomeRow | null {
   if (!raw || typeof raw !== 'object') return null;
   const r = raw as { type?: unknown; ref?: unknown; hidden?: unknown };
   const hidden = r.hidden === true;
-  if (r.type === 'continue' || r.type === 'recent') return { type: r.type, hidden };
+  if (r.type === 'continue' || r.type === 'recent' || r.type === 'viewed') {
+    return { type: r.type, hidden };
+  }
   if (typeof r.type !== 'string' || !PINNABLE.has(r.type)) return null;
   if (typeof r.ref !== 'string' || r.ref === '') return null;
   if (r.type === 'builtin' && !builtinCollection(r.ref)) return null;
@@ -55,7 +60,8 @@ function parseRow(raw: unknown): HomeRow | null {
 
 /**
  * The stored rows, cleaned up: unreadable and repeated entries are dropped, and
- * Continue Reading and Recently added are always there (added with their defaults).
+ * Continue Reading, Recently added and Recently viewed are always there (added with their
+ * defaults).
  */
 export function normalizeRows(raw: unknown): HomeRow[] {
   const out: HomeRow[] = [];
@@ -68,6 +74,7 @@ export function normalizeRows(raw: unknown): HomeRow[] {
   }
   if (!seen.has('continue')) out.unshift({ type: 'continue', hidden: false });
   if (!seen.has('recent')) out.push({ type: 'recent', hidden: true });
+  if (!seen.has('viewed')) out.push({ type: 'viewed', hidden: true });
   return out;
 }
 
@@ -119,6 +126,8 @@ export function rowTitle(row: HomeRow, collectionName?: (id: string) => string |
       return 'Continue reading';
     case 'recent':
       return 'Recently added';
+    case 'viewed':
+      return 'Recently viewed';
     case 'builtin':
       return builtinCollection(row.ref)?.name ?? row.ref;
     case 'collection':
@@ -141,6 +150,8 @@ export function rowHref(row: HomeRow, base: string): string | null {
       return q({ collection: 'reading' });
     case 'recent':
       return `${base}/library`;
+    case 'viewed':
+      return `${base}/recently-viewed`;
     case 'builtin':
     case 'collection':
       return q({ collection: row.ref });
@@ -166,6 +177,7 @@ export function rowCountQuery(
 ): BookListQuery | null {
   switch (row.type) {
     case 'continue':
+    case 'viewed':
       return null;
     case 'recent':
       return {};

@@ -27,12 +27,15 @@
   export let detailsHref = '';
   /** WP15e: this device has a copy (offers Remove from this device). */
   export let onDevice = false;
+  /** Recently viewed (2026-11-24): offers Remove from Recently viewed. */
+  export let forgettable = false;
 
   const dispatch = createEventDispatcher<{
     read: void;
     state: void;
     collect: void;
     remove: void;
+    forget: void;
   }>();
 
   const item = 'c-btn c-btn-ghost w-full justify-start px-3 text-left';
@@ -106,6 +109,20 @@
         }}
       >
         Remove from this device…
+      </button>
+    {/if}
+    {#if forgettable}
+      {#if !onDevice}<div class="my-1 border-t" style="border-color: var(--c-line)" />{/if}
+      <button
+        type="button"
+        class={item}
+        data-testid="book-menu-forget-viewed"
+        on:click={() => {
+          close();
+          dispatch('forget');
+        }}
+      >
+        Remove from Recently viewed…
       </button>
     {/if}
   </div>

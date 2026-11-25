@@ -82,7 +82,11 @@
   import { BlurMode } from '$lib/data/blur-mode';
   import { dialogManager } from '$lib/data/dialog-manager';
   import { confirmDestructive } from '$lib/confirm/confirm';
-  import { clearSearchHistoryCopy, deleteThemeCopy } from '$lib/confirm/confirm-copy';
+  import {
+    clearRecentlyViewedCopy,
+    clearSearchHistoryCopy,
+    deleteThemeCopy
+  } from '$lib/confirm/confirm-copy';
   import {
     bookSearchHistoryLimit$,
     bookSearchHistoryOn$,
@@ -92,7 +96,25 @@
     SEARCH_HISTORY_LIMIT_MAX,
     SEARCH_HISTORY_LIMIT_MIN
   } from '$lib/search-history/settings';
-  import { searchHistoryApi } from '$lib/sync/sync-service';
+  import { recentlyViewedApi, searchHistoryApi } from '$lib/sync/sync-service';
+  import {
+    recentlyViewedDwellSeconds$,
+    recentlyViewedKeep$,
+    recentlyViewedKeepBooks$,
+    recentlyViewedKeepDays$,
+    recentlyViewedOn$
+  } from '$lib/recently-viewed/settings';
+  import {
+    DWELL_DEFAULT,
+    DWELL_MAX,
+    KEEP_BOOKS_DEFAULT,
+    KEEP_BOOKS_MAX,
+    KEEP_BOOKS_MIN,
+    KEEP_DAYS_DEFAULT,
+    KEEP_DAYS_MAX,
+    KEEP_DAYS_MIN,
+    clampSetting
+  } from '$lib/recently-viewed/recently-viewed';
   import { LocalFont } from '$lib/data/fonts';
   import type { FuriganaStyle } from '$lib/data/furigana-style';
   import { ImportHTMLFixMode } from '$lib/data/import-html-fix-mode';
@@ -329,6 +351,48 @@
   function fixHistoryLimit(subject: typeof searchHistoryLimit$, fallback: number) {
     subject.next(historyLimit(subject.getValue(), fallback));
     void searchHistory.pruneNow();
+  }
+
+  // Recently viewed (2026-11-24): Keep, the numbers and Clear.
+  const recentlyViewed = recentlyViewedApi();
+  const recentlyViewedEntries = recentlyViewed.entries;
+  $: recentlyViewedCount = $recentlyViewedEntries?.length ?? 0;
+  const optionsForRecentlyViewedKeep: ToggleOption<string>[] = [
+    { id: 'books', text: 'Last books' },
+    { id: 'days', text: 'Last days' },
+    { id: 'all', text: 'Everything' }
+  ];
+  let recentlyViewedKeepChoice = 'books';
+  $: recentlyViewedKeepChoice =
+    $recentlyViewedKeep$ === 'days' || $recentlyViewedKeep$ === 'all'
+      ? $recentlyViewedKeep$
+      : 'books';
+
+  /** Keep changed: the list is trimmed to it at once. */
+  function setRecentlyViewedKeep(value: string) {
+    recentlyViewedKeep$.next(value === 'days' || value === 'all' ? value : 'books');
+    void recentlyViewed.trimNow();
+  }
+
+  /** A number left: a bad value goes back to the default; a lower limit removes the oldest. */
+  function fixViewedNumber(
+    subject: typeof recentlyViewedKeepBooks$,
+    min: number,
+    max: number,
+    fallback: number
+  ) {
+    subject.next(clampSetting(subject.getValue(), min, max, fallback));
+    void recentlyViewed.trimNow();
+  }
+
+  async function clearRecentlyViewed() {
+    if (!recentlyViewedCount) return;
+    const confirmed = await confirmDestructive({
+      ...clearRecentlyViewedCopy(recentlyViewedCount),
+      testid: 'viewed-clear-confirm',
+      confirmTestid: 'viewed-clear-confirm-button'
+    });
+    if (confirmed) await recentlyViewed.clear();
   }
 
   async function deleteTheme(themeId: string) {
@@ -1213,6 +1277,106 @@
           on:click={() => clearSearchHistory('library')}
         >
           {libraryHistoryCount ? `Clear ${libraryHistoryCount}` : 'Nothing to clear'}
+        </button>
+      </SettingRow>
+    </SettingsGroup>
+    <!-- Recently viewed (2026-11-24): after Search. -->
+    <SettingsGroup id="library-recently-viewed">
+      <SettingRow id="recently-viewed-on" layout="inline" settingKey="recentlyViewedOn" let:labelId>
+        <SettingSwitch
+          bind:checked={$recentlyViewedOn$}
+          labelledby={labelId}
+          testid="recently-viewed-on"
+        />
+      </SettingRow>
+      <SettingRow id="recently-viewed-dwell" settingKey="recentlyViewedDwellSeconds" let:labelId>
+        <SettingField unit="seconds">
+          <input
+            type="number"
+            step="1"
+            min="0"
+            max={DWELL_MAX}
+            aria-labelledby={labelId}
+            data-testid="recently-viewed-dwell"
+            bind:value={$recentlyViewedDwellSeconds$}
+            on:change={() =>
+              recentlyViewedDwellSeconds$.next(
+                clampSetting($recentlyViewedDwellSeconds$, 0, DWELL_MAX, DWELL_DEFAULT)
+              )}
+          />
+        </SettingField>
+      </SettingRow>
+      <SettingRow id="recently-viewed-keep" settingKey="recentlyViewedKeep" let:labelId>
+        <SettingChoice
+          options={optionsForRecentlyViewedKeep}
+          value={recentlyViewedKeepChoice}
+          labelledby={labelId}
+          testid="recently-viewed-keep"
+          on:change={(ev) => setRecentlyViewedKeep(ev.detail)}
+        />
+      </SettingRow>
+      {#if recentlyViewedKeepChoice === 'books'}
+        <SettingRow
+          id="recently-viewed-keep-books"
+          settingKey="recentlyViewedKeepBooks"
+          child
+          let:labelId
+        >
+          <SettingField unit="books">
+            <input
+              type="number"
+              step="1"
+              min={KEEP_BOOKS_MIN}
+              max={KEEP_BOOKS_MAX}
+              aria-labelledby={labelId}
+              data-testid="recently-viewed-keep-books"
+              bind:value={$recentlyViewedKeepBooks$}
+              on:change={() =>
+                fixViewedNumber(
+                  recentlyViewedKeepBooks$,
+                  KEEP_BOOKS_MIN,
+                  KEEP_BOOKS_MAX,
+                  KEEP_BOOKS_DEFAULT
+                )}
+            />
+          </SettingField>
+        </SettingRow>
+      {:else if recentlyViewedKeepChoice === 'days'}
+        <SettingRow
+          id="recently-viewed-keep-days"
+          settingKey="recentlyViewedKeepDays"
+          child
+          let:labelId
+        >
+          <SettingField unit="days">
+            <input
+              type="number"
+              step="1"
+              min={KEEP_DAYS_MIN}
+              max={KEEP_DAYS_MAX}
+              aria-labelledby={labelId}
+              data-testid="recently-viewed-keep-days"
+              bind:value={$recentlyViewedKeepDays$}
+              on:change={() =>
+                fixViewedNumber(
+                  recentlyViewedKeepDays$,
+                  KEEP_DAYS_MIN,
+                  KEEP_DAYS_MAX,
+                  KEEP_DAYS_DEFAULT
+                )}
+            />
+          </SettingField>
+        </SettingRow>
+      {/if}
+      <SettingRow id="recently-viewed-clear" layout="inline">
+        <button
+          type="button"
+          class="c-btn c-btn-secondary"
+          disabled={!recentlyViewedCount}
+          data-testid="recently-viewed-clear"
+          on:click={clearRecentlyViewed}
+        >
+          {recentlyViewedCount ? `Clear ${recentlyViewedCount}…` : 'Nothing to clear'}
         </button>
       </SettingRow>
     </SettingsGroup>
