@@ -44,6 +44,8 @@
   export let infoLine = true;
   /** WP19b: show the first book large (Continue reading). */
   export let hero = false;
+  /** Recently viewed: each card's ⋮ menu offers Remove from Recently viewed. */
+  export let forgettable = false;
   /** The hero's progress (100% included) and time left, or null when nothing is known. */
   export let heroProgressOf: (book: CatalogBook) => {
     fraction: number;
@@ -58,6 +60,7 @@
     state: CatalogBook;
     collect: CatalogBook;
     remove: CatalogBook;
+    forget: CatalogBook;
     retry: void;
   }>();
 
@@ -193,6 +196,8 @@
             on:state={(ev) => dispatch('state', ev.detail)}
             on:collect={(ev) => dispatch('collect', ev.detail)}
             on:remove={(ev) => dispatch('remove', ev.detail)}
+            {forgettable}
+            on:forget={(ev) => dispatch('forget', ev.detail)}
           />
         {/each}
       </ul>

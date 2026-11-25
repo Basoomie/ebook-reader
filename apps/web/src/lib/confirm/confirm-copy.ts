@@ -108,6 +108,32 @@ export function clearSearchHistoryCopy(where: 'library' | 'books', count: number
   };
 }
 
+/** Recently viewed (2026-11-24): a card's ⋮ menu (one book) or Select (several). */
+export function forgetViewedCopy(count: number, title = ''): ConfirmCopy {
+  const one = count === 1;
+  return {
+    title:
+      one && title
+        ? `Remove ${quoted(title)} from Recently viewed?`
+        : `Remove ${books(count)} from Recently viewed?`,
+    message: [
+      `${one ? 'It is' : 'They are'} removed from the list on every device. ${one ? 'The book stays' : 'The books stay'} in your library; viewing ${one ? 'its' : 'their'} details again adds ${one ? 'it' : 'them'} back.`
+    ],
+    confirmLabel: 'Remove',
+    irreversible: true
+  };
+}
+
+/** Recently viewed: Clear all (its page and Settings). */
+export function clearRecentlyViewedCopy(count: number): ConfirmCopy {
+  return {
+    title: `Clear ${books(count)} from Recently viewed?`,
+    message: ['The list is emptied on every device. The books themselves stay in your library.'],
+    confirmLabel: 'Clear all',
+    irreversible: true
+  };
+}
+
 export function deleteThemeCopy(name: string): ConfirmCopy {
   return {
     title: `Delete the theme ${quoted(name)}?`,

@@ -58,7 +58,7 @@ describe('Home rows', () => {
     expect(normalizeRows([])).toEqual(DEFAULT_HOME_ROWS);
   });
 
-  it('drops unreadable and repeated entries and keeps the two fixed rows', () => {
+  it('drops unreadable and repeated entries and keeps the three fixed rows', () => {
     const rows = normalizeRows([
       { type: 'author', ref: '著者一', hidden: false },
       { type: 'author', ref: '著者一', hidden: true },
@@ -70,7 +70,8 @@ describe('Home rows', () => {
     expect(rows).toEqual([
       { type: 'continue', hidden: false },
       { type: 'author', ref: '著者一', hidden: false },
-      { type: 'recent', hidden: false }
+      { type: 'recent', hidden: false },
+      { type: 'viewed', hidden: true }
     ]);
   });
 
@@ -80,16 +81,16 @@ describe('Home rows', () => {
     rows = pinRow(rows, fav);
     rows = pinRow(rows, { type: 'series', ref: 'シリーズ' });
     expect(isPinned(rows, fav)).toBe(true);
-    expect(rows.map((r) => r.type)).toEqual(['continue', 'recent', 'builtin', 'series']);
-    rows = setRowHidden(rows, 2, true);
+    expect(rows.map((r) => r.type)).toEqual(['continue', 'recent', 'viewed', 'builtin', 'series']);
+    rows = setRowHidden(rows, 3, true);
     expect(isPinned(rows, fav)).toBe(false);
     rows = pinRow(rows, fav);
-    expect(rows[2]).toEqual({ type: 'builtin', ref: 'favorites', hidden: false });
-    rows = moveRow(rows, 3, -3);
-    expect(rows.map((r) => r.type)).toEqual(['series', 'continue', 'recent', 'builtin']);
+    expect(rows[3]).toEqual({ type: 'builtin', ref: 'favorites', hidden: false });
+    rows = moveRow(rows, 4, -4);
+    expect(rows.map((r) => r.type)).toEqual(['series', 'continue', 'recent', 'viewed', 'builtin']);
     expect(moveRow(rows, 0, -1)).toEqual(rows);
     rows = unpinRow(rows, fav);
-    expect(rows.map((r) => r.type)).toEqual(['series', 'continue', 'recent']);
+    expect(rows.map((r) => r.type)).toEqual(['series', 'continue', 'recent', 'viewed']);
   });
 
   it('puts a removed row back at its place, or last, and only once (Undo)', () => {

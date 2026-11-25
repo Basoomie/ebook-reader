@@ -31,6 +31,16 @@ import {
   historyLimit,
   searchHistoryLimit$
 } from '$lib/search-history/settings';
+import {
+  clearViewed,
+  recordView,
+  removeViewed,
+  trimNow as trimViewedNow,
+  viewedStore,
+  type RecentlyViewedDeps
+} from '$lib/recently-viewed/recently-viewed-service';
+import type { ViewedEntry } from '$lib/recently-viewed/recently-viewed';
+import { currentKeep } from '$lib/recently-viewed/settings';
 import { localBookmarkForTitle, localTitleSummaries } from '$lib/migration/local-summary';
 import { applyReadingGoals, applyStatDays } from '$lib/sync/apply-records';
 import {
@@ -963,6 +973,35 @@ export function searchHistoryApi() {
 }
 
 export type SearchHistoryApi = ReturnType<typeof searchHistoryApi>;
+
+// ---------------------------------------------------------------------------
+// Recently viewed (2026-11-24, docs/design/recently-viewed.md)
+// ---------------------------------------------------------------------------
+
+const recentlyViewedDeps: RecentlyViewedDeps = {
+  getEngine: getSyncEngine,
+  warn,
+  keep: currentKeep
+};
+
+let recentlyViewedEntries: Readable<ViewedEntry[] | null> | null = null;
+
+/**
+ * Books whose details page was viewed (synced records, one per book). Never rejects: a
+ * failure is logged and the list stays as it was. `entries` is null until first read.
+ */
+export function recentlyViewedApi() {
+  if (!recentlyViewedEntries) recentlyViewedEntries = viewedStore(recentlyViewedDeps);
+  return {
+    entries: recentlyViewedEntries,
+    record: (bookId: string) => recordView(bookId, recentlyViewedDeps),
+    remove: (bookIds: readonly string[]) => removeViewed(bookIds, recentlyViewedDeps),
+    clear: () => clearViewed(recentlyViewedDeps),
+    trimNow: () => trimViewedNow(recentlyViewedDeps)
+  };
+}
+
+export type RecentlyViewedApi = ReturnType<typeof recentlyViewedApi>;
 
 const notesDeps: NotesDeps = { getEngine: getSyncEngine, warn };
 

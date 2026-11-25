@@ -18,6 +18,7 @@
     faArrowDown,
     faArrowUp,
     faCheck,
+    faGripVertical,
     faMagnifyingGlass,
     faPen,
     faRotateRight
@@ -94,13 +95,26 @@
   import type { CatalogBook, CatalogLibrary } from '$lib/library/types';
   import type { BookState } from '$lib/sync/book-state';
   import type { LocalRecord } from '$lib/sync/sync-db';
-  import { bookStateApi, collectionsApi, libraryViewApi, statsApi } from '$lib/sync/sync-service';
+  import {
+    bookStateApi,
+    collectionsApi,
+    libraryViewApi,
+    recentlyViewedApi,
+    statsApi
+  } from '$lib/sync/sync-service';
+  import { confirmDestructive } from '$lib/confirm/confirm';
+  import { forgetViewedCopy } from '$lib/confirm/confirm-copy';
+  import { kept, type ViewedEntry } from '$lib/recently-viewed/recently-viewed';
+  import { currentKeep, recentlyViewedOn$ } from '$lib/recently-viewed/settings';
+  import { lookupInOrder } from '$lib/recently-viewed/lookup';
   import { onDestroy, onMount } from 'svelte';
 
   const store = getLibraryStore();
   const bookState = bookStateApi();
   const view = libraryViewApi();
   const collections = collectionsApi();
+  const recentlyViewed = recentlyViewedApi();
+  const viewedEntries = recentlyViewed.entries;
 
   let connection: LibraryConnection | null | undefined;
   let api: LibraryApi | undefined;
@@ -206,6 +220,23 @@
   async function recheckServer(conn: LibraryConnection) {
     if (!(await serverAnswersAgain(conn.serverUrl))) return;
     if (!destroyed && offline && connection === conn) void tryServerAgain();
+  }
+
+  /** Recently viewed (2026-11-24): the books the limit keeps, newest first (none while off). */
+  function viewedIds(entries: readonly ViewedEntry[] | null): string[] {
+    if (!$recentlyViewedOn$) return [];
+    return kept(entries ?? [], currentKeep(), Date.now()).map((e) => e.bookId);
+  }
+
+  // A view, removal or clear (here or on another device) reloads the row in place.
+  let viewedSeen: string | null = null;
+  $: viewedKey =
+    $viewedEntries === null ? null : `${$recentlyViewedOn$}:${viewedIds($viewedEntries).join(',')}`;
+  $: if (viewedKey !== null && viewedKey !== viewedSeen) {
+    const first = viewedSeen === null;
+    viewedSeen = viewedKey;
+    const row = shownRows.find((r) => r.type === 'viewed');
+    if (!first && row && ready && api && views.has(rowKey(row))) void loadRow(row, true);
   }
 
   // Rows load when first shown (also a row pinned, shown or added while here).
@@ -337,6 +368,11 @@
       }
       case 'recent':
         return page({});
+      case 'viewed': {
+        const ids = viewedIds(await firstViewed());
+        const books = await lookupInOrder(a, ids.slice(0, rowLength));
+        return { books, whole: ids.length <= rowLength };
+      }
       case 'builtin': {
         const b = builtinCollection(row.ref);
         return b ? page({ scope: b.query }) : { books: [], whole: true };
@@ -364,11 +400,15 @@
     const collection =
       row.type === 'collection' ? collectionList.find((c) => c.id === row.ref) : null;
     const query = rowCountQuery(row, collection);
-    if (!query && row.type !== 'continue') return;
+    if (!query && row.type !== 'continue' && row.type !== 'viewed') return;
     const asked = (countAsked.get(key) ?? 0) + 1;
     countAsked.set(key, asked);
     try {
-      const n = query ? await a.count(query) : await continueReadingCount(a);
+      const n = query
+        ? await a.count(query)
+        : row.type === 'viewed'
+          ? (await lookupInOrder(a, viewedIds(await firstViewed()))).length
+          : await continueReadingCount(a);
       if (!destroyed && countAsked.get(key) === asked) setCount(key, n);
     } catch (error) {
       logger.warn(`Home: could not count "${key}": ${(error as Error)?.message ?? error}`);
@@ -387,6 +427,31 @@
       n += (await a.lookup(ids.slice(i, i + 200))).books.length;
     }
     return n;
+  }
+
+  /** The viewed list once it has been read (the store starts empty-handed: null). */
+  function firstViewed(): Promise<ViewedEntry[]> {
+    return new Promise((resolve) => {
+      let off: (() => void) | undefined;
+      let done = false;
+      off = viewedEntries.subscribe((entries) => {
+        if (entries === null || done) return;
+        done = true;
+        resolve(entries);
+        // Unsubscribing inside the first call: off isn't set yet then.
+        queueMicrotask(() => off?.());
+      });
+    });
+  }
+
+  /** Recently viewed: Remove from Recently viewed (a card's ⋮ menu), after asking. */
+  async function forgetViewed(book: CatalogBook) {
+    const confirmed = await confirmDestructive({
+      ...forgetViewedCopy(1, book.title),
+      testid: 'viewed-forget-confirm',
+      confirmTestid: 'viewed-forget-confirm-button'
+    });
+    if (confirmed) await recentlyViewed.remove([book.id]);
   }
 
   function setCount(key: string, n: number) {
@@ -555,6 +620,34 @@
     $homeRows$ = next;
   }
 
+  /** With a mouse, rows can be dragged by their handle (as in a collection's reorder list). */
+  const canDrag = typeof matchMedia === 'function' && matchMedia('(pointer: fine)').matches;
+
+  function dragRows(node: HTMLElement) {
+    let sortable: { destroy: () => void } | null = null;
+    let gone = false;
+    void import('sortablejs').then(({ default: SortableJs }) => {
+      if (gone) return;
+      sortable = SortableJs.create(node, {
+        handle: '[data-drag-handle]',
+        animation: 0,
+        ghostClass: 'opacity-40',
+        onEnd({ oldIndex, newIndex, item, from }) {
+          if (oldIndex === undefined || newIndex === undefined || oldIndex === newIndex) return;
+          // Put the row back: Svelte owns the DOM and re-renders the new order.
+          from.insertBefore(item, from.children[oldIndex + (oldIndex > newIndex ? 1 : 0)] ?? null);
+          save(moveRow(rows, oldIndex, newIndex - oldIndex));
+        }
+      });
+    });
+    return {
+      destroy() {
+        gone = true;
+        sortable?.destroy();
+      }
+    };
+  }
+
   function showRow(index: number, hidden: boolean) {
     save(setRowHidden(rows, index, hidden));
   }
@@ -574,6 +667,11 @@
 
   function emptyTextFor(row: HomeRowEntry): string {
     if (row.type === 'continue') return 'Nothing in progress. Open a book from the Library.';
+    if (row.type === 'viewed') {
+      return $recentlyViewedOn$
+        ? 'Books whose details you open show up here.'
+        : 'Recently viewed is off. Turn it on in Settings › Library › Recently viewed.';
+    }
     return 'No books here yet.';
   }
 </script>
@@ -638,12 +736,21 @@
           />
         </div>
       {/if}
-      <ul class="flex flex-col gap-2">
+      <ul class="flex flex-col gap-2" use:dragRows>
         {#each rows as row, i (rowKey(row))}
           <li
             class="c-edit-row flex flex-wrap items-center gap-2 rounded p-2"
             data-testid="home-edit-row"
           >
+            {#if canDrag}
+              <span
+                class="flex h-10 w-8 shrink-0 cursor-grab items-center justify-center"
+                title="Drag to move"
+                data-drag-handle
+              >
+                <Fa icon={faGripVertical} />
+              </span>
+            {/if}
             <span class="min-w-0 grow font-medium">
               {rowTitle(row, collectionName)}
               {#if row.hidden}<span class="text-sm font-normal"> (hidden)</span>{/if}
@@ -731,6 +838,7 @@
           {heroProgressOf}
           {blurredOf}
           hero={row.type === 'continue'}
+          forgettable={row.type === 'viewed'}
           {onDevice}
           {audioOnDevice}
           {infoLine}
@@ -739,6 +847,7 @@
           on:state={(ev) => openBookState(ev.detail)}
           on:collect={(ev) => openAddToCollection(ev.detail)}
           on:remove={(ev) => removeFromDevice(ev.detail)}
+          on:forget={(ev) => forgetViewed(ev.detail)}
           on:retry={() => loadRow(row)}
         />
       {:else}

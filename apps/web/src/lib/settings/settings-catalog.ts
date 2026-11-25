@@ -134,6 +134,16 @@ export const SETTINGS_SECTIONS: CatalogSection[] = [
     description: 'The library search box’s recent searches, the same on every device.',
     keywords: 'search history recent searches'
   },
+  // Recently viewed (2026-11-24): after Search.
+  {
+    id: 'library-recently-viewed',
+    tab: 'Library',
+    jp: '閲覧',
+    title: 'Recently viewed',
+    description:
+      'Books whose details page you opened, for the “Recently viewed” row on Home. The same on every device.',
+    keywords: 'recently viewed history browsing looked at details'
+  },
   {
     id: 'library-book-page',
     tab: 'Library',
@@ -528,6 +538,51 @@ export const SETTINGS_CATALOG: CatalogSetting[] = [
     title: 'Clear library search history',
     description: 'Removes every remembered library search, on every device.',
     keywords: 'search history recent searches delete forget clear'
+  },
+  // Library › Recently viewed (2026-11-24)
+  {
+    id: 'recently-viewed-on',
+    section: 'library-recently-viewed',
+    title: 'Remember books you view',
+    description:
+      'A book counts once its details page has been open for the time below. Off: nothing new is remembered and the row is empty.',
+    keywords: 'recently viewed history browsing remember'
+  },
+  {
+    id: 'recently-viewed-dwell',
+    section: 'library-recently-viewed',
+    title: 'Counts after',
+    description:
+      'How long a book’s details page stays open (and on screen) before it counts as viewed. 0: as soon as it opens.',
+    keywords: 'recently viewed seconds time open'
+  },
+  {
+    id: 'recently-viewed-keep',
+    section: 'library-recently-viewed',
+    title: 'Keep',
+    description: 'The last so many books, the books of the last so many days, or every book.',
+    keywords: 'recently viewed limit number days forever keep'
+  },
+  {
+    id: 'recently-viewed-keep-books',
+    section: 'library-recently-viewed',
+    title: 'Books to keep',
+    description: 'With Keep set to Last books: the oldest beyond this are removed.',
+    keywords: 'recently viewed limit number'
+  },
+  {
+    id: 'recently-viewed-keep-days',
+    section: 'library-recently-viewed',
+    title: 'Days to keep',
+    description: 'With Keep set to Last days: books viewed longer ago are removed.',
+    keywords: 'recently viewed limit days'
+  },
+  {
+    id: 'recently-viewed-clear',
+    section: 'library-recently-viewed',
+    title: 'Clear recently viewed',
+    description: 'Empties the list on every device. The books stay in your library.',
+    keywords: 'recently viewed history delete forget clear'
   },
   {
     id: 'collection-groups-as',

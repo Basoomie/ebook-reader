@@ -96,6 +96,8 @@ describe('Settings › Library (calibre-metadata-display.md)', () => {
       'Theme and display', // was Look (library themes, 2026-11-24)
       // Search history (2026-11-24): after Look.
       'Search',
+      // Recently viewed (2026-11-24): after Search.
+      'Recently viewed',
       'Book page',
       // Book summaries session 4: after Book page.
       'Summaries',

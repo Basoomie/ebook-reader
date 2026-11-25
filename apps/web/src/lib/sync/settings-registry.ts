@@ -238,6 +238,13 @@ export const SETTINGS_REGISTRY: Record<string, SettingSpec> = {
   bookSearchHistoryOn: g('Boolean'),
   bookSearchHistoryLimit: g('Number'),
 
+  // --- lib/recently-viewed/settings.ts (every device, like the list itself; 2026-11-24) ---
+  recentlyViewedOn: g('Boolean'),
+  recentlyViewedDwellSeconds: g('Number'),
+  recentlyViewedKeep: g('String'),
+  recentlyViewedKeepBooks: g('Number'),
+  recentlyViewedKeepDays: g('Number'),
+
   // --- lib/calibre-edit/settings.ts (per device: Calibre metadata editing, Settings > Library) ---
   bookEditAs: d('String'),
   seriesEditAs: d('String'),
