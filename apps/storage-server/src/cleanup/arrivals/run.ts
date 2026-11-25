@@ -223,6 +223,8 @@ export interface RunProgress {
    * wait for stage 2 showed "about 82 h left").
    */
   waitingSince?: number;
+  /** The index step saw every added book in the reader's snapshot (its slices skip the check). */
+  indexSeen?: boolean;
   reviews: number;
   stage4: Stage4Progress | null;
   ai: ArrivalAiProgress | null;
@@ -731,6 +733,40 @@ export class BookArrivals {
 
   // ---------------------------------------------------------------- books added by hand
 
+  /** The run's added books (Calibre id) and the catalog file each came from (by primary key). */
+  private addedFiles(
+    runId: number,
+  ): Map<number, { id: number; sha256: string; facts_json: string | null }> {
+    const rows = this.db
+      .prepare(
+        `SELECT i.calibre_id, f.id, f.sha256, f.facts_json FROM calibre_arrival_batch_items i
+         JOIN calibre_arrival_batches b ON b.id = i.batch_id
+         JOIN calibre_arrival_files f ON f.id = i.file_id
+         WHERE b.run_id = ? AND b.kind = 'add' AND i.state = 'added' AND i.calibre_id IS NOT NULL
+         ORDER BY f.id`,
+      )
+      .all(runId) as {
+      calibre_id: number;
+      id: number;
+      sha256: string;
+      facts_json: string | null;
+    }[];
+    const m = new Map<number, { id: number; sha256: string; facts_json: string | null }>();
+    for (const r of rows) if (!m.has(r.calibre_id)) m.set(r.calibre_id, r);
+    return m;
+  }
+
+  /** A book of the scope not among the run's add items (none expected): the catalog scanned. */
+  private addedFileByScan(
+    calibreId: number,
+  ): { id: number; sha256: string; facts_json: string | null } | undefined {
+    return this.db
+      .prepare(
+        `SELECT id, sha256, facts_json FROM calibre_arrival_files WHERE json_extract(facts_json, '$.addedAs.calibreId') = ?`,
+      )
+      .get(calibreId) as { id: number; sha256: string; facts_json: string | null } | undefined;
+  }
+
   private snapshotBooks(libraryId: string): Map<number, SnapshotBook> {
     return readSnapshotBooks(snapshotFile(this.deps.cacheDir, libraryId));
   }
@@ -1002,7 +1038,7 @@ export class BookArrivals {
       case 'add':
         return this.addStep(run, p, libraryId, shouldStop);
       case 'index':
-        return this.indexStep(run, p, libraryId, libDir);
+        return this.indexStep(run, p, libraryId, libDir, shouldStop);
       case 'stage1': {
         const scope = this.scopeBooks(p, libraryId);
         if (!scope.length) {
@@ -2293,9 +2329,10 @@ export class BookArrivals {
     p: RunProgress,
     libraryId: string,
     libDir: string,
+    shouldStop: () => boolean = () => false,
   ): Promise<'more' | 'wait'> {
     const file = snapshotFile(this.deps.cacheDir, libraryId);
-    if (p.scope.import.length) {
+    if (p.scope.import.length && !p.indexSeen) {
       const presence = fs.existsSync(file) ? readSnapshotPresence(file) : new Map();
       const ids = new Set([...presence.values()].map((x: { calibreId: number }) => x.calibreId));
       const missing = p.scope.import.filter((id) => !ids.has(id));
@@ -2304,25 +2341,46 @@ export class BookArrivals {
         p.waiting = `Waiting for the reader's library index to show the ${missing.length} added books`;
         return 'wait';
       }
+      p.indexSeen = true;
     }
     // The added books: each one's EPUB checked against the file it came from, and its text facts
-    // carried over (stage 3 compares later arrivals with it).
+    // carried over (stage 3 compares later arrivals with it). In slices with a bar; a book already
+    // checked (inCalibre, written in the same synchronous step as its text) is not read again.
+    // Each book's catalog file comes from the run's own add items (WP20g run 7: a lookup per book
+    // scanned the whole catalog, 1.85 s each at 194,351 rows, the server blocked meanwhile).
+    const added = this.addedFiles(run.id);
     const books = this.snapshotBooks(libraryId);
     const cd = this.compareDeps(libraryId, libDir, books);
     const settings = getSettings(this.db);
     const pacer = new Pacer(settings.pacing.readMbPerSecond * 1024 * 1024);
+    const c = this.count(p, 'index');
+    c.total = p.scope.import.length;
+    c.done = 0;
+    const sliceEnd = Date.now() + 30_000;
+    let open = 0;
     for (const id of p.scope.import) {
+      const f = added.get(id) ?? this.addedFileByScan(id);
+      if (!f) {
+        c.done++;
+        continue;
+      }
+      const facts = f.facts_json ? JSON.parse(f.facts_json) : {};
+      if (facts.inCalibre) {
+        c.done++;
+        continue;
+      }
       const b = books.get(id);
-      const f = this.db
-        .prepare(
-          `SELECT id, sha256, facts_json FROM calibre_arrival_files WHERE calibre_id = ? OR json_extract(facts_json, '$.addedAs.calibreId') = ?`,
-        )
-        .get(id, id) as { id: number; sha256: string; facts_json: string | null } | undefined;
-      if (!b || !f) continue;
+      if (!b) {
+        c.done++;
+        continue;
+      }
+      if (Date.now() > sliceEnd || shouldStop()) {
+        open++;
+        continue;
+      }
       const epub = resolveInside(libDir, b.filePath);
       const st = await statFile(epub);
       const h = st ? await hashSourceFile(epub, pacer) : null;
-      const facts = f.facts_json ? JSON.parse(f.facts_json) : {};
       const same = !!h && h.sha256 === f.sha256;
       this.db
         .prepare(
@@ -2345,16 +2403,18 @@ export class BookArrivals {
           -f.id,
         );
       }
+      c.done++;
+    }
+    if (open) {
+      p.waiting = `Checking the added books in Calibre: ${c.done.toLocaleString('en-US')} of ${c.total.toLocaleString('en-US')}`;
+      this.save(run.id, p);
+      return 'more';
     }
     // The added files' sketches now live under their Calibre ids.
     dropNewSketches(
       cd,
       p.scope.import.flatMap((id) => {
-        const f = this.db
-          .prepare(
-            `SELECT id FROM calibre_arrival_files WHERE json_extract(facts_json, '$.addedAs.calibreId') = ?`,
-          )
-          .get(id) as { id: number } | undefined;
+        const f = added.get(id) ?? this.addedFileByScan(id);
         return f ? [-f.id] : [];
       }),
     );
