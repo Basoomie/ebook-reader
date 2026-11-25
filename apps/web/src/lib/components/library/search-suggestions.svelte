@@ -39,6 +39,8 @@
   export let library: string | undefined = undefined;
   export let container: HTMLElement | undefined;
   export let listId = 'library-search-suggestions';
+  /** In the search palette: part of the palette's list, not a drop-down over the page. */
+  export let inline = false;
   /** Out: whether the list is shown, and the highlighted row's id (for the field). */
   export let open = false;
   export let activeId: string | undefined = undefined;
@@ -200,7 +202,7 @@
 <svelte:window on:pointerdown={onWindowPointerDown} />
 
 {#if open}
-  <div class="ss-panel c-panel" data-testid="search-suggestions">
+  <div class={inline ? 'ss-inline' : 'ss-panel c-panel'} data-testid="search-suggestions">
     {#if hint}
       <p class="ss-head" data-testid="search-suggestions-hint">{hint}</p>
     {/if}
@@ -250,6 +252,10 @@
     overflow-y: auto;
     padding: 0.375rem;
     border-radius: 0.625rem;
+  }
+
+  .ss-inline {
+    padding: 0.25rem 0;
   }
 
   .ss-head,

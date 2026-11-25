@@ -389,7 +389,7 @@
   <title>{formatPageTitle('Recently viewed')}</title>
 </svelte:head>
 
-<AppHeader title="Recently viewed" />
+<AppHeader title="Recently viewed" search />
 
 <div class="{pxScreen} pb-24 pt-16 xl:pt-14" data-testid="viewed-page">
   <CataloguePageHeader jp="閲覧履歴" title="Recently viewed">

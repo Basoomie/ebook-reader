@@ -607,7 +607,7 @@
 
 <svelte:window on:keydown={onWindowKeydown} />
 
-<AppHeader title="Notes" />
+<AppHeader title="Notes" search />
 
 <div class="{pxScreen} pb-24 pt-16 xl:pt-14" data-testid="notes-page">
   <CataloguePageHeader jp="抜き書き" title="Notes">

@@ -27,6 +27,12 @@
   /** Out: whether the list is shown, and the highlighted row's id (for the field). */
   export let open = false;
   export let activeId: string | undefined = undefined;
+  /**
+   * Search palette step 2: the list shows the last few searches and a "More…" row that
+   * opens the palette with the box's text (decided with the user: no button in the bar).
+   */
+  export let more: ((query: string) => void) | undefined = undefined;
+  export let moreAfter = 5;
 
   const dispatch = createEventDispatcher<{ pick: string; edit: string }>();
   const api = searchHistoryApi();
@@ -36,8 +42,12 @@
   let active = -1;
 
   $: libraryEntries = $entriesStore.filter((e) => e.scope === 'lib');
-  $: shown = enabled ? filterEntries(libraryEntries, query) : [];
-  $: if (active >= shown.length) active = shown.length - 1;
+  $: matching = enabled ? filterEntries(libraryEntries, query) : [];
+  $: shown = more ? matching.slice(0, moreAfter) : matching;
+  $: hasMore = !!more && matching.length > shown.length;
+  /** Rows ↑/↓ move through: the searches, then "More…". */
+  $: rows = shown.length + (hasMore ? 1 : 0);
+  $: if (active >= rows) active = rows - 1;
   $: open = wanted && shown.length > 0;
   $: activeId = open && active >= 0 ? `${listId}-${active}` : undefined;
 
@@ -89,7 +99,7 @@
         return;
       }
       event.preventDefault();
-      const n = shown.length;
+      const n = rows;
       if (event.key === 'ArrowDown') active = active + 1 >= n ? -1 : active + 1;
       else active = active <= -1 ? n - 1 : active - 1;
       return;
@@ -98,13 +108,21 @@
       if (event.key === 'Enter') hide();
       return;
     }
-    if (event.key === 'Enter') {
+    if (event.key === 'Enter' && active === shown.length) {
+      event.preventDefault();
+      openMore();
+    } else if (event.key === 'Enter') {
       event.preventDefault();
       pick(shown[active]);
-    } else if (event.key === 'Delete' && event.shiftKey) {
+    } else if (event.key === 'Delete' && event.shiftKey && active < shown.length) {
       event.preventDefault();
       remove(shown[active]);
     }
+  }
+
+  function openMore() {
+    hide();
+    more?.(query);
   }
 
   function onWindowPointerDown(event: PointerEvent) {
@@ -134,6 +152,27 @@
         on:remove={(e) => remove(e.detail)}
         on:hover={(e) => (active = e.detail)}
       />
+      {#if hasMore}
+        <li
+          id="{listId}-{shown.length}"
+          class="lsh-more"
+          class:lsh-active={active === shown.length}
+          role="option"
+          aria-selected={active === shown.length}
+        >
+          <button
+            type="button"
+            tabindex="-1"
+            class="lsh-more-btn"
+            data-testid="search-history-more"
+            on:mousedown|preventDefault
+            on:click={openMore}
+            on:pointermove={() => (active = shown.length)}
+          >
+            More… <span class="text-c-muted">all {matching.length} searches</span>
+          </button>
+        </li>
+      {/if}
     </ul>
   </div>
 {/if}
@@ -149,6 +188,32 @@
     overflow-y: auto;
     padding: 0.375rem;
     border-radius: 0.625rem;
+  }
+
+  .lsh-more {
+    border-radius: 0.625rem;
+  }
+
+  .lsh-more.lsh-active,
+  .lsh-more:hover {
+    background-color: var(--c-tint);
+  }
+
+  .lsh-more-btn {
+    display: flex;
+    width: 100%;
+    align-items: center;
+    gap: 0.5rem;
+    min-height: var(--c-btn-h);
+    padding: 0.375rem 0.75rem;
+    text-align: left;
+    font-size: 0.875rem;
+    color: var(--c-ink);
+  }
+
+  :global(html.eink) .lsh-more.lsh-active {
+    outline: 2px solid #000;
+    outline-offset: -2px;
   }
 
   .lsh-head {

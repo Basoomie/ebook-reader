@@ -3,6 +3,10 @@
   import { pagePath } from '$lib/data/env';
   import { onDestroy, onMount } from 'svelte';
   import AppNavLinks from './app-nav-links.svelte';
+  import Fa from 'svelte-fa';
+  import { faMagnifyingGlass } from '@fortawesome/free-solid-svg-icons';
+  import { searchHeaderButton$, searchPaletteCtrlK$ } from '$lib/library/search-settings';
+  import { openSearchPalette, opensPalette } from '$lib/search-palette/open';
   /**
    * A catalogue page's fixed header (WP19b: the navy bar of the "Archive" look) with the
    * app navigation on wider screens. Pages put <AppBottomBar /> at their end for phones
@@ -16,12 +20,27 @@
    * dialogs and overlays (z-50). `data-app-header` lets a floating menu keep clear of it.
    */
   export let title: string;
+  /**
+   * Search palette step 2: the search button and its keys ("/", Ctrl+K when on). Only the
+   * catalogue pages pass it (Home, Library, Collections, Notes, Recently viewed, Stats).
+   */
+  export let search = false;
+
+  function onKeydown(event: KeyboardEvent) {
+    if (!search || !opensPalette(event, $searchPaletteCtrlK$)) return;
+    // Another dialog is open: its own keys win.
+    if (document.querySelector('.c-modal-layer')) return;
+    event.preventDefault();
+    void openSearchPalette();
+  }
 
   onMount(() => document.documentElement.classList.add('catalogue'));
   onDestroy(() => {
     if (typeof document !== 'undefined') document.documentElement.classList.remove('catalogue');
   });
 </script>
+
+<svelte:window on:keydown={onKeydown} />
 
 <div
   class="fixed inset-x-0 top-0 z-40 bg-c-header text-c-header-ink"
@@ -45,6 +64,26 @@
       </a>
       <div class="flex h-full items-center">
         <slot />
+        {#if search && $searchHeaderButton$}
+          <button
+            type="button"
+            class="c-focus mr-1 flex h-9 items-center gap-2 rounded-[10px] px-3 text-sm text-c-header-muted hover:text-c-header-ink sm:mr-2 sm:border"
+            style="border-color: color-mix(in srgb, var(--c-header-muted) 40%, transparent)"
+            title="Search the library (/)"
+            aria-label="Search the library"
+            aria-keyshortcuts="/"
+            data-testid="header-search"
+            on:click={() => openSearchPalette()}
+          >
+            <Fa icon={faMagnifyingGlass} />
+            <span class="hidden lg:inline">Search</span>
+            <kbd
+              class="hidden rounded border px-1 font-mono text-xs lg:inline"
+              style="border-color: color-mix(in srgb, var(--c-header-muted) 40%, transparent)"
+              >/</kbd
+            >
+          </button>
+        {/if}
         <AppNavLinks />
       </div>
     </div>

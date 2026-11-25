@@ -534,6 +534,22 @@ export const SETTINGS_CATALOG: CatalogSetting[] = [
     keywords: 'search reads as explain meaning help syntax comma'
   },
   {
+    id: 'search-header-button',
+    section: 'library-search',
+    title: 'Search button in the header',
+    description:
+      'Opens the search from Home, the Library, Collections, Notes, Recently viewed and Stats, with your recent searches and recently viewed books. The / key opens it too.',
+    keywords: 'search palette button header anywhere slash shortcut'
+  },
+  {
+    id: 'search-palette-ctrl-k',
+    section: 'library-search',
+    title: 'Open the search with Ctrl+K',
+    description:
+      'On this device, Ctrl+K (⌘K on a Mac) opens the search too. Off by default: browsers use Ctrl+K for their own search.',
+    keywords: 'search palette keyboard shortcut ctrl k command'
+  },
+  {
     id: 'search-history-on',
     section: 'library-search',
     title: 'Remember library searches',
