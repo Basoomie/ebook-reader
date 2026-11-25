@@ -7,6 +7,7 @@
  */
 import { createHash } from 'crypto';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import request from 'supertest';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -14,6 +15,8 @@ import { listLibraries, updateLibrary } from '../src/calibre/libraries';
 import { MOVE_STAGE } from '../src/cleanup/field-stages';
 import { findCalibreSource } from '../src/cleanup/handoff';
 import { decideMove, drawSpot, type MoveCandidate } from '../src/cleanup/move/select';
+import { memoryOpener, readWhole, sameEpubContents } from '../src/cleanup/move/epub-same';
+import { recentPaceLeftMs } from '../src/cleanup/move/pace';
 import { CALIBRE_AI_STAGES, rekeyCleanupState } from '../src/cleanup/move/rekey';
 import { getMoveState, moveArrivalsAnalysisId, setMoveMode } from '../src/cleanup/move/state';
 import { getSettings, updateSettings } from '../src/cleanup/settings';
@@ -77,6 +80,42 @@ describe('the move rules', () => {
     expect(decideMove(candidate({ title: 'あ'.repeat(120) }), reader(10), 5000).hold).toBe(
       'too_long',
     );
+  });
+
+  it('the time left comes from the last hour, not from a stop long ago', () => {
+    const now = 10 * 3_600_000;
+    // 60 books in the last 30 minutes (one every 30 s), after a long stop.
+    const moved = Array.from({ length: 60 }, (_, i) => now - 30 * 60_000 + i * 30_000);
+    expect(recentPaceLeftMs(moved, 120, now)).toBe(Math.round(((30 * 60_000) / 60) * 120));
+    // Too few recent books: no estimate yet.
+    expect(recentPaceLeftMs(moved.slice(0, 5), 10, now)).toBeNull();
+    expect(recentPaceLeftMs([now - 3 * 3_600_000], 10, now)).toBeNull();
+  });
+
+  it('compares the files inside two EPUBs the same in memory as on disk', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'epub-same-'));
+    try {
+      const a = path.join(dir, 'a.epub');
+      const b = path.join(dir, 'b.epub');
+      const c = path.join(dir, 'c.epub');
+      fs.writeFileSync(a, mangaEpub());
+      fs.writeFileSync(b, mangaEpub({ repack: true }));
+      fs.writeFileSync(c, mangaEpub({ repack: true, page: 'x' }));
+      const disk = (f: string) => fs.promises.open(f, 'r');
+      const mem = memoryOpener(
+        new Map(await Promise.all([a, b, c].map(async (f) => [f, (await readWhole(f))!] as const))),
+      );
+      for (const opener of [disk, mem]) {
+        expect(await sameEpubContents(a, b, opener)).toMatchObject({ same: true });
+        expect(await sameEpubContents(a, c, opener)).toMatchObject({
+          same: false,
+          problem: 'OEBPS/p2.jpg differs',
+        });
+      }
+      expect(await readWhole(a, 10)).toBeNull();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('draws the spot check in proportion to the tags, the same every time', () => {

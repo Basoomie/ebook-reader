@@ -53,6 +53,7 @@ import {
 } from './stage4/bookmeter-more';
 import { SeriesPairs, seriesPairsAnalysisId } from './series-pairs/pass';
 import { MovePass } from './move/pass';
+import { recentPaceLeftMs } from './move/pace';
 import { moveAnalysisId } from './move/state';
 import { MOVE_SIDECAR_VERSION, MOVE_STAGE } from './field-stages';
 import { booksWithReaderData } from './handoff';
@@ -1219,9 +1220,21 @@ export class CleanupService {
             startedAt: p.write.startedAt,
           }
         : null;
+    // The time left from the last hour's pace (move/pace.ts), not from the first batch.
     const left =
-      bar && bar.startedAt && bar.done > 0 && bar.done < bar.total
-        ? Math.round(((now - bar.startedAt) / bar.done) * (bar.total - bar.done))
+      bar && lib && bar.done < bar.total
+        ? recentPaceLeftMs(
+            (
+              this.db
+                .prepare(
+                  `SELECT moved_at FROM calibre_moves INDEXED BY calibre_moves_from
+                   WHERE from_library_id = ? ORDER BY moved_at DESC LIMIT 200`,
+                )
+                .all(lib) as { moved_at: number }[]
+            ).map((r) => r.moved_at),
+            bar.total - bar.done,
+            now,
+          )
         : null;
     const t = target ? getLibrary(this.opts.main, target) : null;
     return {

@@ -9,8 +9,11 @@
 #
 # Allowed: `list`; `set_metadata <id> --field ...` for the fields the sidecar may set;
 # `remove <id>` (one book, to Calibre's trash, never --permanent); `export <id>` into a folder
-# under TTSU_EXPORT_DIRS (the quarantine) only. The sidecar builds and checks the arguments;
-# this checks them again.
+# under TTSU_EXPORT_DIRS (the quarantine) only; `add` (1.6.1) in exactly the sidecar's three forms:
+# a quarantined export folder (`--duplicates --one-book-per-directory <folder>` under
+# TTSU_EXPORT_DIRS: the move and Undo's re-add) and one arrival EPUB from its own temporary
+# folder (`--duplicates [--title <title>] <…/ttsu-arrival-<n>/<name>.epub>`). The sidecar builds
+# and checks the arguments; this checks them again.
 #
 # Protocol: one JSON object per line on stdin {"id", "args", "password"}; one line per answer
 # on stdout, "@@ttsu " + {"id", "code", "stdout", "stderr"}. The first line says it is ready.
@@ -18,6 +21,7 @@
 import io
 import json
 import os
+import re
 import sys
 import traceback
 
@@ -48,11 +52,49 @@ def send(obj):
     PROTO.flush()
 
 
-def check(cmd, opts, rest):
+ARRIVAL_FILE = re.compile(r'^/.*/ttsu-arrival-\d+/[^/]+\.epub$', re.IGNORECASE)
+
+
+def inside_export_dirs(path):
+    dirs = [d for d in os.environ.get('TTSU_EXPORT_DIRS', '').split(':') if d]
+    to = os.path.realpath(path or '')
+    return any(to.startswith(os.path.realpath(d) + os.sep) for d in dirs)
+
+
+def add_args(raw):
+    # The add's own arguments: the raw list without calibredb's global options and their values.
+    out, skip = [], False
+    for a in raw:
+        if skip:
+            skip = False
+        elif a in GLOBAL:
+            skip = True
+        else:
+            out.append(a)
+    return out
+
+
+def check_add(raw):
+    a = add_args(raw)
+    if len(a) == 3 and a[:2] == ['--duplicates', '--one-book-per-directory'] and inside_export_dirs(a[2]):
+        return
+    if len(a) == 2 and a[0] == '--duplicates' and ARRIVAL_FILE.match(a[1]):
+        return
+    if (len(a) == 4 and a[0] == '--duplicates' and a[1] == '--title' and a[2].strip()
+            and chr(10) not in a[2] and chr(13) not in a[2] and ARRIVAL_FILE.match(a[3])):
+        return
+    raise SystemExit('add takes a quarantined folder or one arrival EPUB')
+
+
+def check(cmd, opts, rest, raw=()):
     if not (opts.library_path or '').startswith(('http://', 'https://')):
         raise SystemExit('Only a content server (http URL) is allowed')
     if cmd == 'list':
         return
+    if cmd == 'add':
+        # Exactly the sidecar's forms: no other option (never -m/--automerge, never a folder of
+        # files) can pass, whatever calibre's defaults are.
+        return check_add(list(raw))
     if cmd == 'remove':
         if getattr(opts, 'permanent', True) or len(rest) != 1 or not rest[0].isdigit():
             raise SystemExit('remove takes exactly one book id, never --permanent')
@@ -87,7 +129,7 @@ def context(opts, parser):
 
 def run(args, password):
     # As calibredb's main(): the command is taken out, the rest parsed by its parser.
-    if not args or args[0] not in ('list', 'set_metadata', 'remove', 'export'):
+    if not args or args[0] not in ('list', 'set_metadata', 'remove', 'export', 'add'):
         raise SystemExit(f'{args[0] if args else "nothing"} is not allowed')
     cmd = args[0]
     argv = ['calibredb'] + list(args[1:])
@@ -95,7 +137,7 @@ def run(args, password):
     opts, rest = parser.parse_args(argv)
     rest = rest[1:]
     opts.password = password
-    check(cmd, opts, rest)
+    check(cmd, opts, rest, args[1:])
     return run_cmd(cmd, opts, rest, context(opts, parser))
 
 
@@ -104,8 +146,10 @@ def answer(req):
     out = io.TextIOWrapper(out_bytes, encoding='utf-8', errors='replace', write_through=True)
     err = io.StringIO()
     code = 0
-    old_out, old_err = sys.stdout, sys.stderr
-    sys.stdout, sys.stderr = out, err
+    # calibredb add prints "Added book ids: N" to sys.__stdout__ (calibre 9.18, db/cli/cmd_add.py),
+    # not sys.stdout: both are this call's output, or the sidecar never sees the new book's id.
+    old_out, old_err, old_real = sys.stdout, sys.stderr, sys.__stdout__
+    sys.stdout, sys.stderr, sys.__stdout__ = out, err, out
     try:
         ret = run(req.get('args') or [], req.get('password') or '')
         code = ret if isinstance(ret, int) else 0
@@ -121,7 +165,7 @@ def answer(req):
         err.write(traceback.format_exc())
     finally:
         out.flush()
-        sys.stdout, sys.stderr = old_out, old_err
+        sys.stdout, sys.stderr, sys.__stdout__ = old_out, old_err, old_real
     return {
         'id': req.get('id'),
         'code': code,

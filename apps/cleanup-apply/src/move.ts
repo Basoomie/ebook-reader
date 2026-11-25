@@ -189,6 +189,8 @@ export interface MoveContext {
   pollUntil<T>(until: number, check: () => Promise<T | null>): Promise<T | null>;
   isStopped(): boolean;
   step<T>(name: string, fn: () => Promise<T>): Promise<T>;
+  /** A server call asked again while the server can't be reached (as every report is). */
+  retry<T>(fn: () => Promise<T>): Promise<T>;
   /** Whether the libraries' #illustrator is a names column (" & " separates its values). */
   illustratorNames(): boolean;
   waits: { removeWaitSeconds: number; trashRestoreWaitSeconds: number; writeWaitSeconds: number };
@@ -303,6 +305,71 @@ export class MoveWorker {
     }
   }
 
+  /**
+   * After the add: every field compared and what is missing written again, then the server's
+   * check (asked again while the server can't be reached); reports `tagged`. Returns why the
+   * copy must go out again (the caller takes it out), or null.
+   */
+  private async arrived(
+    batch: Batch,
+    item: BatchItem,
+    target: Login,
+    dir: string,
+    before: Listed,
+    copy: { id: number; uuid: string }
+  ): Promise<string | null> {
+    const { ctx } = this;
+    let after = await this.listedPatiently(target, copy.id);
+    if (!after) throw new Error('The added copy is not listed');
+    let diff = differingFields(before, after);
+    const fixed = [...diff];
+    if (diff.length > 0) {
+      if (diff.includes('formats')) return `Not every format arrived (${str(before.formats)})`;
+      const cover = path.join(dir, 'book.jpg');
+      const args = fieldArgsFrom(
+        diff,
+        before,
+        ctx.illustratorNames(),
+        (await exists(cover)) ? cover : null
+      );
+      if (args.length > 0) {
+        try {
+          await ctx.calibredb.setFields(target, copy.id, args, [dir]);
+        } catch (err) {
+          ctx.log.info(`Fields of ${copy.id}: ${shorten((err as Error).message, 200)}`);
+        }
+        after = await this.listedPatiently(target, copy.id);
+        if (!after) throw new Error('The added copy is not listed');
+        diff = differingFields(before, after);
+      }
+      if (diff.length > 0) return `These fields did not arrive: ${diff.join(', ')}`;
+    }
+    // The server's half: the stored EPUB, the cover and the title sort (read from the mounts).
+    let check: { ok: boolean; problems: string[] } = { ok: false, problems: [] };
+    const until = Date.now() + 60_000;
+    for (;;) {
+      check = await ctx.retry(() =>
+        ctx.api.moveCheck(batch.id, item.itemId, { calibreId: copy.id, uuid: copy.uuid })
+      );
+      if (check.ok || !check.problems.every((p) => /does not show/.test(p)) || Date.now() > until)
+        break;
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+    if (!check.ok) return check.problems.join('; ');
+    await ctx.report(batch, item, {
+      step: 'tagged',
+      calibreId: copy.id,
+      uuid: copy.uuid,
+      fields: after,
+      fixed
+    });
+    item.move = {
+      ...(item.move ?? { added: null }),
+      added: { calibreId: copy.id, uuid: copy.uuid }
+    };
+    return null;
+  }
+
   /** One item of a move batch (source: the old library's login, target: the new one's). */
   async applyItem(batch: Batch, item: BatchItem, source: Login, target: Login): Promise<void> {
     const { ctx } = this;
@@ -372,63 +439,25 @@ export class MoveWorker {
         return;
       }
       const copy = await this.addOnce(target, dir, str(before.title), `${item.calibreId}.add.json`);
-      const takeOut = async (why: string) => {
+      let why: string | null;
+      try {
+        why = await this.arrived(batch, item, target, dir, before, copy);
+      } catch (err) {
+        // Any failure after the add takes the copy out again (live 2026-11-25: a "fetch failed"
+        // from the server check left two copies in manga-library while the books stayed in
+        // japanese-library). Stopping (SIGTERM) keeps it: the step is repeated after the
+        // restart, and the add is never sent twice (its note in the quarantine finds the copy).
+        if (ctx.isStopped()) throw err;
+        why = shorten((err as Error).message, 600);
+      }
+      if (why !== null) {
         const out = await this.removeCopy(target, copy.id, copy.uuid);
         await ctx.report(batch, item, {
           step: 'failed',
           detail: `${why}. ${out ? `The copy added to ${target.libraryId} was taken out again` : `The copy added to ${target.libraryId} (id ${copy.id}) could not be taken out: check Calibre`}; the book stays where it was.`
         });
-      };
-      let after = await this.listedPatiently(target, copy.id);
-      if (!after) throw new Error('The added copy is not listed');
-      let diff = differingFields(before, after);
-      const fixed = [...diff];
-      if (diff.length > 0) {
-        if (diff.includes('formats'))
-          return takeOut(`Not every format arrived (${str(before.formats)})`);
-        const cover = path.join(dir, 'book.jpg');
-        const args = fieldArgsFrom(
-          diff,
-          before,
-          ctx.illustratorNames(),
-          (await exists(cover)) ? cover : null
-        );
-        if (args.length > 0) {
-          try {
-            await ctx.calibredb.setFields(target, copy.id, args, [dir]);
-          } catch (err) {
-            ctx.log.info(`Fields of ${copy.id}: ${shorten((err as Error).message, 200)}`);
-          }
-          after = await this.listedPatiently(target, copy.id);
-          if (!after) throw new Error('The added copy is not listed');
-          diff = differingFields(before, after);
-        }
-        if (diff.length > 0) return takeOut(`These fields did not arrive: ${diff.join(', ')}`);
+        return;
       }
-      // The server's half: the stored EPUB, the cover and the title sort (read from the mounts).
-      let check: { ok: boolean; problems: string[] } = { ok: false, problems: [] };
-      const until = Date.now() + 60_000;
-      for (;;) {
-        check = await ctx.api.moveCheck(batch.id, item.itemId, {
-          calibreId: copy.id,
-          uuid: copy.uuid
-        });
-        if (check.ok || !check.problems.every((p) => /does not show/.test(p)) || Date.now() > until)
-          break;
-        await new Promise((r) => setTimeout(r, 3000));
-      }
-      if (!check.ok) return takeOut(check.problems.join('; '));
-      await ctx.report(batch, item, {
-        step: 'tagged',
-        calibreId: copy.id,
-        uuid: copy.uuid,
-        fields: after,
-        fixed
-      });
-      item.move = {
-        ...(item.move ?? { added: null }),
-        added: { calibreId: copy.id, uuid: copy.uuid }
-      };
     }
     if (item.state === 'tagged') {
       const added = item.move?.added;

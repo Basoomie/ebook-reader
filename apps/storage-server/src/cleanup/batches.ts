@@ -208,6 +208,8 @@ export interface SidecarBatch {
    */
   calibreLibrary?: string | null;
   targetCalibreLibrary?: string | null;
+  /** A move batch (sidecar 1.6.1): stop after this many books failed in a row. */
+  stopAfterFailures?: number;
 }
 
 export interface ItemReport {

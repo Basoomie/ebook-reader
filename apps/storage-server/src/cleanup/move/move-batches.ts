@@ -49,7 +49,7 @@ import { MOVE_STAGE } from '../field-stages';
 import { findCalibreSource, presentBookCount } from '../handoff';
 import { getSettings } from '../settings';
 import { moveReaderSource, moveReaderSourceBack, type MoveHandoff } from './move-handoff';
-import { sameEpubContents } from './epub-same';
+import { memoryOpener, readWhole, sameEpubContents, sha256Of } from './epub-same';
 import { rekeyCleanupState, type BookIdentity } from './rekey';
 import { pauseMove } from './state';
 
@@ -180,10 +180,13 @@ export class MoveBatches {
       return { batch: null, reason: "Waiting for the reader's index to take in the last move" };
     const settings = getSettings(this.db);
     const present = presentBookCount(this.deps.main, libraryId);
+    // The move's own batch size: between batches it waits for the reader to index both
+    // libraries again (several minutes each time); a run of failures stops a batch early
+    // (move.stopAfterFailures), so a bigger batch risks no more books than a small one.
     const cap = Math.max(
       1,
       Math.min(
-        settings.pacing.batchSize,
+        settings.move.batchSize,
         Math.floor((present * settings.pacing.maxBatchPercent) / 100),
       ),
     );
@@ -322,7 +325,7 @@ export class MoveBatches {
           move: { added: note.added ?? null },
         };
       });
-      return { ...base, items };
+      return { ...base, items, stopAfterFailures: getSettings(this.db).move.stopAfterFailures };
     }
     const rows = this.db
       .prepare(
@@ -405,7 +408,9 @@ export class MoveBatches {
     else if (item.export_sha256) {
       try {
         const stored = resolveInside(toDir, to.epub);
-        const sha = await sha256File(stored);
+        // Each copy is read once: its SHA-256 and, when needed, its files from the same read.
+        const storedBuf = await readWhole(stored);
+        const sha = storedBuf ? await sha256Of(storedBuf) : await sha256File(stored);
         if (sha !== item.export_sha256) {
           // Calibre's file-type plugins (DeDRM) pack the EPUB again as it is added: the copy is
           // the same EPUB when every file inside is (epub-same.ts; decided 2026-11-25). Compared
@@ -416,10 +421,23 @@ export class MoveBatches {
             );
           else {
             const own = resolveInside(fromDir, from.epub);
-            if ((await sha256File(own)) !== item.export_sha256)
+            const ownBuf = storedBuf ? await readWhole(own) : null;
+            const ownSha = ownBuf ? await sha256Of(ownBuf) : await sha256File(own);
+            if (ownSha !== item.export_sha256)
               problems.push('The book’s EPUB changed in the old library since it was exported');
             else {
-              const c = await sameEpubContents(own, stored, openSourceFile);
+              const c = await sameEpubContents(
+                own,
+                stored,
+                storedBuf && ownBuf
+                  ? memoryOpener(
+                      new Map([
+                        [own, ownBuf],
+                        [stored, storedBuf],
+                      ]),
+                    )
+                  : openSourceFile,
+              );
               if (!c.same)
                 problems.push(
                   `The EPUB stored in the new library differs from the book’s: ${c.problem}`,

@@ -14,7 +14,7 @@
  *   the cover; never tags, never an OPF).
  * The password goes in through stdin (`--password <stdin>`), never on the command line.
  *
- * list, set_tags, set_fields, remove and export go through the long-lived calibredb helper when there is one
+ * list, set_tags, set_fields, remove, export and add go through the long-lived calibredb helper when there is one
  * (calibredb-helper.ts), with the same argument lists; everything else runs the program.
  */
 import { spawn } from 'child_process';
@@ -122,13 +122,17 @@ export interface CalibredbOptions {
   helper?: CalibredbHelper | null;
 }
 
-/** The commands the helper runs (calibredb list and set_metadata). */
+/**
+ * The commands the helper runs. `add` since 1.6.1: a new calibredb program per add cost about
+ * 0.4-0.6 s of each move's 6 s (measured with real calibre 9.18, 2026-11-25).
+ */
 const HELPER_COMMANDS: readonly CalibredbCommand[] = [
   'list',
   'set_tags',
   'set_fields',
   'remove',
-  'export'
+  'export',
+  'add'
 ];
 
 export function withLibrary(login: Login, libraryId = login.libraryId): string {
