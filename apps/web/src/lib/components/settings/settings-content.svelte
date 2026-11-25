@@ -96,6 +96,7 @@
     SEARCH_HISTORY_LIMIT_MAX,
     SEARCH_HISTORY_LIMIT_MIN
   } from '$lib/search-history/settings';
+  import { searchReadsAsOn$, searchSuggestionsOn$ } from '$lib/library/search-settings';
   import { recentlyViewedApi, searchHistoryApi } from '$lib/sync/sync-service';
   import {
     recentlyViewedDwellSeconds$,
@@ -1247,6 +1248,25 @@
     </SettingsGroup>
     <!-- Search history (2026-11-24): after Look. -->
     <SettingsGroup id="library-search">
+      <SettingRow
+        id="search-suggestions-on"
+        layout="inline"
+        settingKey="searchSuggestionsOn"
+        let:labelId
+      >
+        <SettingSwitch
+          bind:checked={$searchSuggestionsOn$}
+          labelledby={labelId}
+          testid="search-suggestions-on"
+        />
+      </SettingRow>
+      <SettingRow id="search-reads-as-on" layout="inline" settingKey="searchReadsAsOn" let:labelId>
+        <SettingSwitch
+          bind:checked={$searchReadsAsOn$}
+          labelledby={labelId}
+          testid="search-reads-as-on"
+        />
+      </SettingRow>
       <SettingRow id="search-history-on" layout="inline" settingKey="searchHistoryOn" let:labelId>
         <SettingSwitch
           bind:checked={$searchHistoryOn$}

@@ -516,7 +516,23 @@ export const SETTINGS_CATALOG: CatalogSetting[] = [
     description: 'Used for Dark, and for “Like the book” on a dark book.',
     keywords: 'colour color custom theme library night'
   },
-  // Library › Search (search history, 2026-11-24)
+  // Library › Search (search history, 2026-11-24; suggestions and Reads as, search palette step 1)
+  {
+    id: 'search-suggestions-on',
+    section: 'library-search',
+    title: 'Suggestions while typing',
+    description:
+      'As you type a search, suggests the search words (tag:, author:, chars: …) and the library’s own tags, authors, series and illustrators. Tab completes one.',
+    keywords: 'search suggestions autocomplete complete tag author series illustrator'
+  },
+  {
+    id: 'search-reads-as-on',
+    section: 'library-search',
+    title: 'Show what a search means',
+    description:
+      'A line under the search box puts the search in plain words, for example “tag contains SF or BL and not completed”.',
+    keywords: 'search reads as explain meaning help syntax comma'
+  },
   {
     id: 'search-history-on',
     section: 'library-search',

@@ -514,3 +514,28 @@ describe('OfflineCatalog reads', () => {
     expect(await catalog.count({})).toBe(1);
   });
 });
+
+describe('OfflineCatalog.names (search suggestions)', () => {
+  it('counts names of the visible books and ranks them like the server', async () => {
+    const catalog = new OfflineCatalog(async () =>
+      data({
+        books: [
+          book('a', { tags: ['SF', 'ハードSF'] }),
+          book('b', { tags: ['SF'], illustrators: ['しの', 'しの'] }),
+          book('c', { tags: ['SF'], libraryId: 'lib2' }),
+          book('d', { tags: ['SF'], missing: true })
+        ]
+      })
+    );
+    expect(await catalog.names({ field: 'tag', text: 'sf' })).toEqual([
+      { name: 'SF', count: 3 },
+      { name: 'ハードSF', count: 1 }
+    ]);
+    expect(await catalog.names({ field: 'tag', text: '', library: 'lib2' })).toEqual([
+      { name: 'SF', count: 1 }
+    ]);
+    expect(await catalog.names({ field: 'illustrator', text: '' })).toEqual([
+      { name: 'しの', count: 1 }
+    ]);
+  });
+});

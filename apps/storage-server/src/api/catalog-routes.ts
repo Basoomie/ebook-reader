@@ -11,6 +11,7 @@ import type { IndexerStatus } from '../calibre/indexer';
 import { openSourceStream } from '../calibre/source-fs';
 import { calibreEtag, fileHashes, locateCalibreFile, uploadEtag } from '../catalog/file-hashes';
 import { planGroups } from '../catalog/groups';
+import { NAME_FIELDS, suggestNames, type NameField } from '../catalog/names';
 import { collectionCards } from '../collections/cards';
 import {
   type BookFileLocation,
@@ -283,6 +284,28 @@ export function createCatalogRouter(db: Database.Database, catalog: CatalogOptio
       } catch (err) {
         searchErrors(err);
       }
+    }),
+  );
+
+  // Search suggestions (search palette step 1, 2026-11-24): names containing the text.
+  router.get(
+    '/names',
+    asyncHandler(async (req, res) => {
+      askingUser(res);
+      const field = req.query.field;
+      if (!NAME_FIELDS.includes(field as NameField)) {
+        throw new ApiError(400, 'invalid_field', `field must be one of ${NAME_FIELDS.join(', ')}`);
+      }
+      const text = typeof req.query.text === 'string' ? req.query.text : '';
+      if (text.length > 200) throw new ApiError(400, 'invalid_text', 'text is too long');
+      res.json({
+        names: suggestNames(db, {
+          field: field as NameField,
+          text,
+          libraryId: queryString(req.query.library),
+          limit: listLimit(req),
+        }),
+      });
     }),
   );
 

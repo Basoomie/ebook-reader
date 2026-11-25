@@ -178,6 +178,10 @@
   import Fa from 'svelte-fa';
   import LibrarySearchHistory from '$lib/components/search-history/library-search-history.svelte';
   import { searchHistoryOn$ } from '$lib/search-history/settings';
+  import SearchSuggestions from '$lib/components/library/search-suggestions.svelte';
+  import { describeQuery } from '$lib/library/query/describe';
+  import { searchReadsAsOn$, searchSuggestionsOn$ } from '$lib/library/search-settings';
+  import type { NameListQuery } from '$lib/library/api';
 
   /**
    * Library (WP6, WP7a): browse and search the Calibre catalog and open a book through
@@ -279,6 +283,39 @@
   let searchHistory: LibrarySearchHistory | undefined;
   let historyOpen = false;
   let historyActiveId: string | undefined;
+  // Search palette step 1 (2026-11-24): suggestions while typing and the "Reads as" line.
+  let suggestions: SearchSuggestions | undefined;
+  let suggestOpen = false;
+  let suggestActiveId: string | undefined;
+  /** The caret's place in the search box. */
+  let searchCursor = 0;
+  let searchFocused = false;
+  $: reading = $searchReadsAsOn$
+    ? describeQuery(queryInput, searchCursor)
+    : { kind: 'none' as const };
+
+  function trackCursor() {
+    searchCursor = searchInput?.selectionStart ?? queryInput.length;
+  }
+
+  function suggestNames(q: NameListQuery) {
+    const s = source();
+    return s ? s.names(q) : Promise.resolve([]);
+  }
+
+  function onSearchKeydown(event: KeyboardEvent) {
+    if (suggestions?.onKeydown(event)) return;
+    searchHistory?.onKeydown(event);
+  }
+
+  async function pickSuggestion(next: { text: string; cursor: number }) {
+    queryInput = next.text;
+    queryError = '';
+    await tick();
+    searchInput?.focus();
+    searchInput?.setSelectionRange(next.cursor, next.cursor);
+    searchCursor = next.cursor;
+  }
   /** WP19c: how the page was last reached ('popstate' = back/forward). */
   let lastNavigation: string | null = null;
   /** WP19c: what a list snapshot keeps. */
@@ -1873,6 +1910,7 @@
     }
     queryError = '';
     searchHistory?.hide();
+    suggestions?.hide();
     // Remembered only when typed and searched (or picked from the list): never chips,
     // tab or group links, back/forward or opening a collection.
     if (q && $searchHistoryOn$) void searchHistoryApi().recordLibrary(q);
@@ -2355,16 +2393,33 @@
                 data-testid="library-search"
                 role="combobox"
                 aria-autocomplete="list"
-                aria-expanded={historyOpen}
-                aria-controls="library-search-history"
-                aria-activedescendant={historyActiveId}
+                aria-expanded={suggestOpen || historyOpen}
+                aria-controls={suggestOpen
+                  ? 'library-search-suggestions'
+                  : 'library-search-history'}
+                aria-activedescendant={suggestOpen ? suggestActiveId : historyActiveId}
                 autocomplete="off"
                 bind:value={queryInput}
                 bind:this={searchInput}
-                on:focus={() => searchHistory?.show()}
-                on:click={() => searchHistory?.show()}
-                on:input={() => searchHistory?.show()}
-                on:keydown={(event) => searchHistory?.onKeydown(event)}
+                on:focus={() => {
+                  searchFocused = true;
+                  trackCursor();
+                  searchHistory?.show();
+                }}
+                on:blur={() => (searchFocused = false)}
+                on:click={() => {
+                  trackCursor();
+                  searchHistory?.show();
+                }}
+                on:input={() => {
+                  trackCursor();
+                  // The live line under the box takes over from the last search's error.
+                  if ($searchReadsAsOn$) queryError = '';
+                  searchHistory?.show();
+                }}
+                on:keyup={trackCursor}
+                on:select={trackCursor}
+                on:keydown={onSearchKeydown}
               />
             </label>
             <button class="c-btn c-btn-secondary px-4" type="submit" title="Search">
@@ -2377,12 +2432,33 @@
             bind:open={historyOpen}
             bind:activeId={historyActiveId}
             query={queryInput}
-            enabled={$searchHistoryOn$}
+            enabled={$searchHistoryOn$ && !suggestOpen}
             container={searchBox}
             on:pick={(event) => searchFromHistory(event.detail)}
             on:edit={(event) => editFromHistory(event.detail)}
           />
+          <SearchSuggestions
+            bind:this={suggestions}
+            bind:open={suggestOpen}
+            bind:activeId={suggestActiveId}
+            query={queryInput}
+            cursor={searchFocused ? searchCursor : -1}
+            enabled={$searchSuggestionsOn$}
+            names={api ? suggestNames : undefined}
+            library={appliedLibrary || undefined}
+            container={searchBox}
+            on:pick={(event) => pickSuggestion(event.detail)}
+          />
         </div>
+        {#if reading.kind === 'reads' && !queryError}
+          <p class="pt-2 text-sm text-c-muted" data-testid="query-reads-as">
+            Reads as: {reading.text}
+          </p>
+        {:else if reading.kind === 'error' && !queryError && queryInput.trim() !== appliedQuery}
+          <p class="pt-2 text-sm text-c-seal" data-testid="query-reads-as-error">
+            {reading.error.message}
+          </p>
+        {/if}
         {#if queryError}
           <p
             id="library-query-error"

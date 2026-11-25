@@ -238,6 +238,10 @@ export const SETTINGS_REGISTRY: Record<string, SettingSpec> = {
   bookSearchHistoryOn: g('Boolean'),
   bookSearchHistoryLimit: g('Number'),
 
+  // --- lib/library/search-settings.ts (search palette step 1; every device; 2026-11-24) ---
+  searchSuggestionsOn: g('Boolean'),
+  searchReadsAsOn: g('Boolean'),
+
   // --- lib/recently-viewed/settings.ts (every device, like the list itself; 2026-11-24) ---
   recentlyViewedOn: g('Boolean'),
   recentlyViewedDwellSeconds: g('Number'),

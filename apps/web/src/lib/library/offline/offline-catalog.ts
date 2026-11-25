@@ -10,9 +10,11 @@ import {
   LibraryApiError,
   type BookListQuery,
   type GroupListQuery,
+  type NameListQuery,
   type RequestOptions
 } from '$lib/library/api';
 import { parseQuery, type ParsedQuery, type TextField } from '$lib/library/query/parse';
+import { MAX_SUGGESTIONS, rankNames, type NameCount } from '$lib/library/query/suggest';
 import type { BookSortKey, GroupSortKey, ServerSort } from '$lib/library/sort';
 import type {
   CatalogBook,
@@ -341,6 +343,17 @@ export class OfflineCatalog {
       throw new LibraryApiError('server', 'This book is not on this device.', 404, 'not_found');
     }
     return book;
+  }
+
+  /** Search suggestions (search palette step 1): the same as the server's GET /names. */
+  async names(query: NameListQuery): Promise<NameCount[]> {
+    const data = await this.data();
+    const counts = new Map<string, number>();
+    for (const b of this.visible(data, { library: query.library })) {
+      for (const name of fieldNames(b, query.field)) counts.set(name, (counts.get(name) ?? 0) + 1);
+    }
+    const all = [...counts].map(([name, count]) => ({ name, count }));
+    return rankNames(all, query.text, [], query.limit ?? MAX_SUGGESTIONS);
   }
 
   async groups(query: GroupListQuery, options?: RequestOptions): Promise<CatalogGroupPage> {
