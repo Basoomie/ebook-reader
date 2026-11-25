@@ -2682,6 +2682,44 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
         ON bookmeter_listing_books (library_id, state, calibre_uuid);
     `,
   },
+  {
+    version: 37,
+    name: 'Book covers: the cover archive and the covers waiting to be kept',
+    // docs/design/book-covers.md: every picture a book's cover had before it was replaced, kept
+    // in DB_DIR/covers/<sha256>.<ext> (edits/cover-archive.ts). source: 'before' (Calibre's
+    // picture before a write; change_id = the write), 'seen' (the picture a cover change left,
+    // seen by the index), 'quarantine' (imported once from the sidecar's quarantine). change_id
+    // 0 = none. cover_archive_wanted: cover changes the index saw, whose new picture is read
+    // after the change attribution (one row per book).
+    sql: `
+      CREATE TABLE cover_archive (
+        id            INTEGER PRIMARY KEY,
+        library_id    TEXT NOT NULL,
+        calibre_uuid  TEXT NOT NULL,
+        calibre_id    INTEGER NOT NULL,
+        sha256        TEXT NOT NULL,
+        ext           TEXT NOT NULL,
+        width         INTEGER,
+        height        INTEGER,
+        bytes         INTEGER NOT NULL,
+        dhash         TEXT,
+        source        TEXT NOT NULL CHECK (source IN ('before', 'seen', 'quarantine')),
+        change_id     INTEGER NOT NULL DEFAULT 0,
+        kept_at       INTEGER NOT NULL,
+        UNIQUE (library_id, calibre_uuid, sha256, source, change_id)
+      );
+      CREATE INDEX cover_archive_change ON cover_archive (change_id);
+      CREATE TABLE cover_archive_wanted (
+        library_id    TEXT NOT NULL,
+        calibre_uuid  TEXT NOT NULL,
+        calibre_id    INTEGER NOT NULL,
+        book_id       TEXT NOT NULL,
+        tries         INTEGER NOT NULL DEFAULT 0,
+        seen_at       INTEGER NOT NULL,
+        PRIMARY KEY (library_id, calibre_uuid)
+      ) WITHOUT ROWID;
+    `,
+  },
 ];
 
 export const CLEANUP_SCHEMA_VERSION = CLEANUP_MIGRATIONS[CLEANUP_MIGRATIONS.length - 1].version;
