@@ -577,6 +577,14 @@ export class BookArrivals {
   /** A library's state (its row is made on first read: Off). */
   state(libraryId?: string | null): StateRow {
     const lib = this.libOr(libraryId);
+    // A row the migration could not give a library (no ttsu.db to ask) is the first library's.
+    if (
+      lib !== '' &&
+      !this.db.prepare('SELECT 1 FROM calibre_arrivals_state WHERE library_id = ?').get(lib)
+    )
+      this.db
+        .prepare("UPDATE calibre_arrivals_state SET library_id = ? WHERE library_id = ''")
+        .run(lib);
     this.db
       .prepare(
         'INSERT OR IGNORE INTO calibre_arrivals_state (library_id, updated_at) VALUES (?, 0)',
@@ -2906,7 +2914,7 @@ export class BookArrivals {
     }
     const ins = this.db.prepare(
       `INSERT INTO calibre_arrival_books (run_id, library_id, calibre_id, calibre_uuid, origin, file_id)
-       VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(run_id, calibre_id) DO NOTHING`,
+       VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(run_id, library_id, calibre_id) DO NOTHING`,
     );
     for (const id of p.scope.import) {
       const b = books.get(id);

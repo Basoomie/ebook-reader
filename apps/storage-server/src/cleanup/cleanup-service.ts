@@ -408,6 +408,56 @@ export class CleanupService {
     return parts;
   }
 
+  /**
+   * The primary library's stage objects and round state (tools and tests that work on one
+   * library). The service itself always names a library (lp()).
+   */
+  get analysis(): Stage1Analysis | null {
+    return this.lp(this.targetLibrary()).analysis;
+  }
+  get analysis2(): Stage2Analysis | null {
+    return this.lp(this.targetLibrary()).analysis2;
+  }
+  get analysis3(): Stage3Analysis | null {
+    return this.lp(this.targetLibrary()).analysis3;
+  }
+  get analysis4(): Stage4Analysis | null {
+    return this.lp(this.targetLibrary()).analysis4;
+  }
+  get stage4Ai(): Stage4Ai | null {
+    return this.lp(this.targetLibrary()).stage4Ai;
+  }
+  get stage5(): Stage5 | null {
+    return this.lp(this.targetLibrary()).stage5;
+  }
+  get bookmeter(): BookmeterMore | null {
+    return this.lp(this.targetLibrary()).bookmeter;
+  }
+  get seriesPairs(): SeriesPairs | null {
+    return this.lp(this.targetLibrary()).seriesPairs;
+  }
+  get links(): LinkDiscovery | null {
+    return this.lp(this.targetLibrary()).links;
+  }
+  get listings(): BookmeterListings | null {
+    return this.lp(this.targetLibrary()).listings;
+  }
+  get waiting(): string | null {
+    return this.lp(this.targetLibrary()).waiting;
+  }
+  get waiting2(): string | null {
+    return this.lp(this.targetLibrary()).waiting2;
+  }
+  get waiting3(): string | null {
+    return this.lp(this.targetLibrary()).waiting3;
+  }
+  get waiting4(): string | null {
+    return this.lp(this.targetLibrary()).waiting4;
+  }
+  get waiting5(): string | null {
+    return this.lp(this.targetLibrary()).waiting5;
+  }
+
   /** Every library whose parts exist (the ones worked on since the server started). */
   private allParts(): LibraryParts[] {
     return [...this.partsByLibrary.values()];
@@ -1904,6 +1954,7 @@ export class CleanupService {
 
   /** Stage 5's card (cached 10 s: the bar's per-model count reads ai_requests' run index). */
   stage5Status(target: string | null, now = Date.now()): unknown {
+    target = target ?? this.targetLibrary();
     const P = this.lp(target);
     if (P.status5Cache && now - P.status5Cache.at < 10_000) return P.status5Cache.value;
     const p = P.stage5?.progress() ?? null;
@@ -1950,6 +2001,7 @@ export class CleanupService {
 
   /** Stage 4's books whose changes were all undone, proposed again (the stage-4 card's button). */
   async reproposeStage4Undone(target: string | null): Promise<{ books: number }> {
+    target = target ?? this.targetLibrary();
     const P = this.lp(target);
     const books = (await P.stage4Ai?.reproposeUndone()) ?? 0;
     P.status4Cache = null;
@@ -1959,6 +2011,7 @@ export class CleanupService {
 
   /** Stage 5's given-up AI questions asked again (the card's button). */
   askStage5AiAgain(target: string | null): { questions: number } {
+    target = target ?? this.targetLibrary();
     const P = this.lp(target);
     const questions = P.stage5?.askAgain() ?? 0;
     P.status5Cache = null;
@@ -1971,6 +2024,7 @@ export class CleanupService {
     target: string | null,
     f: { state: string; outside: boolean | null; offset: number; limit: number },
   ) {
+    target = target ?? this.targetLibrary();
     const id = target ? currentAnalysisId(this.db, target, 5) : null;
     if (!target || !id) return { total: 0, rows: [] };
     const where = `stage = 5 AND library_id = ? AND state = ? AND field = 'tags' AND analysis_id = ?${
@@ -2249,7 +2303,9 @@ export class CleanupService {
     if (!p) return false;
     // Manga part B: this library's answered waiters (each library's analysis takes its own).
     const ready = this.db
-      .prepare('SELECT 1 FROM fetch_waiters WHERE ready = 1 AND library_id = ? LIMIT 1')
+      .prepare(
+        `SELECT 1 FROM fetch_waiters WHERE ready = 1 AND library_id IN (?, 'natively') LIMIT 1`,
+      )
       .get(target);
     if (ready) return true;
     const books = this.db
@@ -2266,6 +2322,7 @@ export class CleanupService {
     site: string,
     now = Date.now(),
   ): { requests: number; books: number } {
+    target = target ?? this.targetLibrary();
     const P = this.lp(target);
     const p = P.analysis4?.progress();
     const requests = this.fetchQueue.retryFailed(site, now);
@@ -2291,6 +2348,7 @@ export class CleanupService {
 
   /** Stage 4's AI questions that were given up, asked again (the stage-4 card's button). */
   askStage4AiAgain(target: string | null): { questions: number } {
+    target = target ?? this.targetLibrary();
     const P = this.lp(target);
     const questions = P.stage4Ai?.askAgain() ?? 0;
     P.status4Cache = null;
@@ -2309,6 +2367,7 @@ export class CleanupService {
       limit: number;
     },
   ) {
+    target = target ?? this.targetLibrary();
     const P = this.lp(target);
     const p = P.analysis4?.progress();
     if (!p || !target) return { total: 0, items: [] };
@@ -2373,6 +2432,7 @@ export class CleanupService {
    * review, each whole and in order, or the books outside a series with a best guess.
    */
   stage4Guesses(target: string | null, kind: 'series' | 'other', offset: number, limit: number) {
+    target = target ?? this.targetLibrary();
     if (!target) return kind === 'series' ? { total: 0, series: [] } : { total: 0, books: [] };
     return kind === 'series'
       ? listSeriesGuesses(this.db, target, offset, limit)
@@ -2381,6 +2441,7 @@ export class CleanupService {
 
   /** The titles shortened or cut to fit Calibre's folder names (cleanup.db v26), newest first. */
   titleFits(target: string | null, offset: number, limit: number) {
+    target = target ?? this.targetLibrary();
     if (!target) return { total: 0, items: [] };
     return listTitleFits(this.db, this.opts.main, target, offset, limit);
   }
@@ -2404,6 +2465,7 @@ export class CleanupService {
 
   /** Stage 4's status for the page (cached 30 s: some counts read the whole queue). */
   stage4Status(target: string | null, now = Date.now()): unknown {
+    target = target ?? this.targetLibrary();
     const P = this.lp(target);
     if (P.status4Cache && now - P.status4Cache.at < 30_000) return P.status4Cache.value;
     const p = P.analysis4?.progress() ?? null;
@@ -2896,6 +2958,7 @@ export class CleanupService {
     pairId: number,
     decision: 'keep_both' | 'remove_a' | 'remove_b' | 'clear',
   ): void {
+    target = target ?? this.targetLibrary();
     const P = this.lp(target);
     const p = P.analysis3?.progress();
     if (!target || !p || !P.analysis3) throw new Error('Stage 3 has no analysis');
@@ -3030,6 +3093,7 @@ export class CleanupService {
   stage2Counts(
     target: string | null,
   ): { field: string; class: string; state: string; n: number }[] {
+    target = target ?? this.targetLibrary();
     if (!target) return [];
     return this.db
       .prepare(
@@ -3045,6 +3109,7 @@ export class CleanupService {
   }
 
   stage2SkipReasons(target: string | null): { reason: string; count: number }[] {
+    target = target ?? this.targetLibrary();
     if (!target) return [];
     return this.db
       .prepare(
@@ -3070,6 +3135,7 @@ export class CleanupService {
 
   /** Books left to write (auto, not paused). */
   stage2BooksLeft(target: string | null): number {
+    target = target ?? this.targetLibrary();
     if (!target) return 0;
     const paused = listFieldPauses(this.db, target, 2).map((p) => p.field);
     const placeholders = paused.map(() => '?').join(',');
@@ -3218,6 +3284,7 @@ export class CleanupService {
   }
 
   stage1Counts(target: string | null): Record<string, number> {
+    target = target ?? this.targetLibrary();
     if (!target) return {};
     const rows = this.db
       .prepare(
@@ -3230,6 +3297,7 @@ export class CleanupService {
 
   /** Why copies were skipped, most common first (for the page). */
   stage1SkipReasons(target: string | null): { reason: string; count: number }[] {
+    target = target ?? this.targetLibrary();
     if (!target) return [];
     return this.db
       .prepare(
@@ -3269,6 +3337,7 @@ export class CleanupService {
     view: string,
     { cls, offset = 0, limit = 50 }: { cls?: string; offset?: number; limit?: number } = {},
   ): { total: number; items: Record<string, unknown>[] } {
+    target = target ?? this.targetLibrary();
     const P = this.lp(target);
     const p = P.analysis3?.progress();
     if (!target || !p || !P.analysis3) return { total: 0, items: [] };
@@ -3371,6 +3440,7 @@ export class CleanupService {
     view: string,
     { offset = 0, limit = 50 }: { offset?: number; limit?: number } = {},
   ): { total: number; items: Record<string, unknown>[] } {
+    target = target ?? this.targetLibrary();
     const P = this.lp(target);
     if (!target || !P.analysis3) return { total: 0, items: [] };
     const where =
@@ -3403,12 +3473,14 @@ export class CleanupService {
 
   /** The gate's result per measured pair. */
   stage3Gate(target: string | null) {
+    target = target ?? this.targetLibrary();
     const P = this.lp(target);
     return P.analysis3?.progress()?.gate ?? null;
   }
 
   /** Stage 3's line on the page (the gate's per-pair results come from their own route). */
   stage3Status(target: string | null, now = Date.now()) {
+    target = target ?? this.targetLibrary();
     const P = this.lp(target);
     const p = P.analysis3?.progress() ?? null;
     const counts: Record<string, number> = {};

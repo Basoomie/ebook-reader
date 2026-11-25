@@ -113,7 +113,7 @@ describe('stage 4 On: written through the field-write path', () => {
       u === 'https://m.media-amazon.com/x.jpg' ? storeCover : null,
     );
     // A finished stage-4 analysis with its proposals (the AI check decided them).
-    updateStage(env.cleanupDb, 4, {
+    updateStage(env.cleanupDb, env.libraryId(), 4, {
       progress: { analysisId: 'a4', phase: 'done', libraryId: env.libraryId() } as Record<
         string,
         unknown

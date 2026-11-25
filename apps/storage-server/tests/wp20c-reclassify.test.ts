@@ -72,7 +72,7 @@ describe('stage 3: classified again, and the review decisions', () => {
   async function settle() {
     for (let i = 0; i < 1200; i++) {
       await env.service.tick();
-      const st = getStage(env.cleanupDb, 3).state;
+      const st = getStage(env.cleanupDb, env.libraryId(), 3).state;
       const p = env.service.analysis3?.progress();
       if ((st === 'ready' || st === 'failed') && p && !env.service.analysis3!.needsReclassify(p))
         return st;
@@ -163,7 +163,7 @@ describe('stage 3: classified again, and the review decisions', () => {
 
     const c = pair('C1', 'C2');
     const waitingIds = () =>
-      env.service.stage3Pairs('review', { limit: 1000 }).items.map((x) => x.id as number);
+      env.service.stage3Pairs(null, 'review', { limit: 1000 }).items.map((x) => x.id as number);
     expect(waitingIds()).toContain(c.id);
     // A pair whose copy the cleanup removed (in favour of a third copy) leaves nothing to decide;
     // an Undo brings it back (2026-11-17: 365 such pairs were still counted). Each lookup is an
@@ -190,7 +190,7 @@ describe('stage 3: classified again, and the review decisions', () => {
     expect(plan.filter((d) => /^SCAN/.test(d))).toEqual([]);
     expect(plan.filter((d) => /pair_decisions|proposed_changes_book/.test(d))).toHaveLength(4);
     const note = 'Same book; the copy with commentary has everything the other has';
-    const out = recordReviewDecisions(env.cleanupDb, {
+    const out = recordReviewDecisions(env.cleanupDb, env.libraryId(), {
       decisions: [
         { aUuid: c.a_uuid, bUuid: c.b_uuid, decision: 'remove_a', note },
         { aUuid: e.a_uuid, bUuid: e.b_uuid, decision: 'remove_a', note: 'should not apply' },
@@ -216,7 +216,9 @@ describe('stage 3: classified again, and the review decisions', () => {
     // review list leave it out, and agree (2026-11-17: the count included decided pairs).
     expect(pair('C1', 'C2').class).toBe('review');
     expect(waitingIds()).not.toContain(c.id);
-    expect(env.service.analysis3!.progress()!.review).toBe(env.service.stage3Pairs('review').total);
+    expect(env.service.analysis3!.progress()!.review).toBe(
+      env.service.stage3Pairs(null, 'review').total,
+    );
 
     // No single winner in E's set (you keep E1 and E2 both), but E3 loses to both: it goes, in
     // favour of E1 (2026-11-17: 78 such sets kept every copy).
@@ -268,18 +270,18 @@ describe('stage 3: classified again, and the review decisions', () => {
   it('a decisions file with a missing note or an unknown pair records nothing', () => {
     const c = pair('C1', 'C2');
     expect(
-      recordReviewDecisions(env.cleanupDb, {
+      recordReviewDecisions(env.cleanupDb, env.libraryId(), {
         decisions: [{ aUuid: c.a_uuid, bUuid: c.b_uuid, decision: 'keep_both', note: '' }],
       }).ok,
     ).toBe(false);
     expect(
-      recordReviewDecisions(env.cleanupDb, {
+      recordReviewDecisions(env.cleanupDb, env.libraryId(), {
         decisions: [{ aUuid: 'x', bUuid: 'y', decision: 'keep_both', note: 'n' }],
       }).ok,
     ).toBe(false);
     // The same pair twice, here once in each order: refused, nothing recorded.
     const before = env.cleanupDb.prepare('SELECT COUNT(*) AS n FROM pair_decisions').get();
-    const twice = recordReviewDecisions(env.cleanupDb, {
+    const twice = recordReviewDecisions(env.cleanupDb, env.libraryId(), {
       decisions: [
         { aUuid: c.a_uuid, bUuid: c.b_uuid, decision: 'keep_both', note: 'one' },
         { aUuid: c.b_uuid, bUuid: c.a_uuid, decision: 'remove_a', note: 'two' },

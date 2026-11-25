@@ -76,7 +76,8 @@
     libraryThemes$,
     libraryLightTheme$,
     libraryDarkTheme$,
-    collectionGroupsAs$
+    collectionGroupsAs$,
+    cleanupLibrariesAs$
   } from '$lib/library/settings';
   import { readAloudAheadSeconds$, readAloudLookupResume$ } from '$lib/read-aloud/settings';
   import { customFontNames$ } from '$lib/fonts/server-fonts-browser';
@@ -500,6 +501,12 @@
   const optionsForCollectionGroupsAs: ToggleOption<string>[] = [
     { id: 'tabs', text: 'Tabs' },
     { id: 'sections', text: 'Sections' }
+  ];
+
+  // Manga part B: how /cleanup shows the Calibre libraries (per device).
+  const optionsForCleanupLibrariesAs: ToggleOption<string>[] = [
+    { id: 'picker', text: 'Picker' },
+    { id: 'columns', text: 'Side by side' }
   ];
 
   // Season 2 §6: where the book page shows the book's illustrations.
@@ -1655,6 +1662,14 @@
         <a class="c-btn c-btn-secondary" href="{pagePath}/cleanup" data-testid="cleanup-link">
           Open
         </a>
+      </SettingRow>
+      <SettingRow id="cleanup-libraries-as" let:labelId>
+        <SettingChoice
+          options={optionsForCleanupLibrariesAs}
+          bind:value={$cleanupLibrariesAs$}
+          labelledby={labelId}
+          testid="cleanup-libraries-as"
+        />
       </SettingRow>
     </SettingsGroup>
   {:else if activeSettings === 'Anki'}

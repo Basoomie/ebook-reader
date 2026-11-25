@@ -589,7 +589,10 @@ describe('More Bookmeter coverage: the pass', () => {
     db.prepare(
       `INSERT INTO user_fields (library_id, calibre_uuid, field, value_json, source, since) VALUES (?, 'g', 'identifiers', '{}', 'edit', 0)`,
     ).run(LIB);
-    db.prepare(`UPDATE bookmeter_more_state SET mode = 'analyse' WHERE id = 1`).run();
+    db.prepare(
+      `INSERT INTO bookmeter_more_state (library_id, mode, updated_at) VALUES (?, 'analyse', 0)
+       ON CONFLICT(library_id) DO UPDATE SET mode = 'analyse'`,
+    ).run(LIB);
   });
   afterEach(() => {
     db.close();
@@ -599,7 +602,9 @@ describe('More Bookmeter coverage: the pass', () => {
   it('is cleanup.db v30 with its tables, Off by default', () => {
     expect(CLEANUP_SCHEMA_VERSION).toBeGreaterThanOrEqual(30);
     const fresh = openCleanupDatabase(path.join(dir, 'fresh.db'));
-    expect(new BookmeterMore({ db: fresh } as never).state().mode).toBe('off');
+    expect(new BookmeterMore({ db: fresh, targetLibrary: () => 'x' } as never).state().mode).toBe(
+      'off',
+    );
     fresh.close();
   });
 
@@ -728,9 +733,10 @@ describe('More Bookmeter coverage: the pass', () => {
     st.spot = { drawnAt: Date.now(), size: 1, notified: false };
     st.second.enqueued = true;
     st.stores.enqueued = true;
-    db.prepare(
-      'UPDATE bookmeter_more_state SET progress_json = ?, library_id = ? WHERE id = 1',
-    ).run(JSON.stringify(st), LIB);
+    db.prepare('UPDATE bookmeter_more_state SET progress_json = ? WHERE library_id = ?').run(
+      JSON.stringify(st),
+      LIB,
+    );
     await runUntil(p, () => false); // re-ask, AI, second, stores (waits for the new store list)
     expect(p.state().progress.nearVersion).toBe(2);
     expect(db.prepare('SELECT COUNT(*) AS n FROM bookmeter_more_spot').get()).toEqual({ n: 0 });
@@ -799,9 +805,10 @@ describe('More Bookmeter coverage: the pass', () => {
     const st = p.state().progress;
     st.libraryId = LIB;
     st.phase = 'propose';
-    db.prepare(
-      'UPDATE bookmeter_more_state SET progress_json = ?, library_id = ? WHERE id = 1',
-    ).run(JSON.stringify(st), LIB);
+    db.prepare('UPDATE bookmeter_more_state SET progress_json = ? WHERE library_id = ?').run(
+      JSON.stringify(st),
+      LIB,
+    );
     await runUntil(p, (ph) => ph === 'spot');
     await p.step(); // draws
     expect(p.spotCounts()).toEqual({ size: 6, right: 0, wrong: 0, open: 6 });

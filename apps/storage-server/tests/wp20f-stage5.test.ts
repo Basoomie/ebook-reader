@@ -524,8 +524,8 @@ describe('stage 5 from evidence to proposals', () => {
       modes: { 'claude-haiku-5-5': 'direct', 'gpt-6-luna': 'direct' },
     });
     const runner = cleanupRunner(db, core, { now: () => now, sleep: async () => {} });
-    const s5 = new Stage5({ db, runner, analysis, stage4Ai });
-    setStageMode(db, 5, 'analyse');
+    const s5 = new Stage5({ db, libraryId: lib, runner, analysis, stage4Ai });
+    setStageMode(db, lib, 5, 'analyse');
     expect(s5.needsWork(lib)).toBe(true);
     for (let i = 0; i < 200 && s5.needsWork(lib); i++) {
       await s5.step(lib, () => false);
@@ -579,7 +579,7 @@ describe('stage 5 from evidence to proposals', () => {
     // The propose phase's bar counts books, not the cursor (a Calibre id: the live run showed
     // "61,282 of 53,247").
     const saved = s5.progress()!;
-    updateStage(db, 5, {
+    updateStage(db, lib, 5, {
       progress: {
         ...saved,
         phase: 'propose',
@@ -596,7 +596,7 @@ describe('stage 5 from evidence to proposals', () => {
       total: 53_247,
       secondsLeft: Math.round((52_247 * 60_000) / 1_000 / 1000),
     });
-    updateStage(db, 5, { progress: saved as unknown as Record<string, unknown> });
+    updateStage(db, lib, 5, { progress: saved as unknown as Record<string, unknown> });
     // Nothing asked again after a rules change; decided and proposed again.
     const calls = standin.calls.length;
     updateSettings(db, { customTags: [...CUSTOM, 'Manga'] });
@@ -609,7 +609,7 @@ describe('stage 5 from evidence to proposals', () => {
       )
       .get() as { new_json: string };
     expect(JSON.parse(r4.new_json)).toEqual({ add: [], remove: ['metadata-unmatched'] });
-    expect(getStage(db, 5).state).toBe('ready');
+    expect(getStage(db, lib, 5).state).toBe('ready');
     db.close();
   });
 });
@@ -689,7 +689,7 @@ describe('stage 5 On: the tags written through the field-write path', () => {
       .set(auth(user))
       .send({ value: PASSWORD })
       .expect(200);
-    updateStage(env.cleanupDb, 5, {
+    updateStage(env.cleanupDb, env.libraryId(), 5, {
       progress: { analysisId: 'a5', stage4AnalysisId: 'a4', phase: 'done' } as Record<
         string,
         unknown

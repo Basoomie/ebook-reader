@@ -682,6 +682,7 @@ describe('wp20g: a run end to end', () => {
     ).toEqual({ n: 0 });
     const last = (await request(env.app).get('/api/v1/cleanup/arrivals').set(auth(env.userToken())))
       .body;
+    if (last.last.state !== 'done') console.log('RUNERR', last.last.error);
     expect(last.last.state).toBe('done');
     expect(last.last.report.estimate.books).toBe(2);
     expect(last.pairs[0].firstDoneAt).not.toBeNull();
@@ -943,7 +944,7 @@ describe('wp20g: a run end to end', () => {
       .all() as { calibre_id: number }[])
       env.lib.removeBook(r.calibre_id);
     await env.index();
-    pauseField(env.cleanupDb, 2, 'title', 'library_changed', 'test');
+    pauseField(env.cleanupDb, env.libraryId(), 2, 'title', 'library_changed', 'test');
     fs.writeFileSync(
       path.join(src, 'Discord', 'F.epub'),
       makeTextEpub({ title: '[作者] F の本', chapters: chaptersOf(41) }),
@@ -985,7 +986,7 @@ describe('wp20g: a run end to end', () => {
     expect(held.state).toBe('proposed');
     env.service.arrivals.stopRun();
     // Resumed: the next run has no new book, and writes what the first one held.
-    resumeField(env.cleanupDb, 2, 'title');
+    resumeField(env.cleanupDb, env.libraryId(), 2, 'title');
     await requestWhenFree();
     await steps();
     const later = env.service.arrivals.currentRun()!;
@@ -1298,7 +1299,7 @@ describe('wp20g: the settle time on a folder’s first look', () => {
     // On: the follow-up still belongs to the folder's first run, which never adds.
     env.service.arrivals.setMode('on');
     env.service.arrivals.stopRun();
-    const id = env.service.arrivals.maybeStart(later);
+    const id = env.service.arrivals.maybeStart(undefined, later);
     expect(id).not.toBeNull();
     // Part way through reading the texts another job waits for the disk: the reading stops
     // taking new books and hands the disk over; every book read so far is kept in its catalog row
@@ -1438,7 +1439,7 @@ describe('wp20g: Stop, Off, and a stopped run’s comparison', () => {
     expect(a().currentRun()).toBeNull();
     // Neither the due scheduled run nor a follow-up starts now (also a minute later).
     expect(a().maybeStart()).toBeNull();
-    expect(a().maybeStart(Date.now() + 61_000)).toBeNull();
+    expect(a().maybeStart(undefined, Date.now() + 61_000)).toBeNull();
     expect(
       env.cleanupDb.prepare('SELECT state FROM calibre_arrival_runs WHERE id = ?').get(run.id),
     ).toEqual({ state: 'stopped' });

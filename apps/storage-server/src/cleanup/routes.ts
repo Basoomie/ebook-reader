@@ -864,6 +864,15 @@ export function createCleanupRouter(options: CleanupOptions): Router {
   const router = express.Router();
   addAudioRoutes(router, options);
 
+  // Manga part B: the libraries the cleanup works on, one line each (the page's picker or
+  // columns); light (each library's stage rows and its cached book count).
+  router.get('/cleanup/libraries', (_req, res) => {
+    const service = serviceOr503(options);
+    res.json({
+      libraries: service.cleanupLibraries().map((id) => service.librarySummary(id)),
+    });
+  });
+
   router.get('/cleanup/status', (req, res) => {
     if (!options.service) {
       res.json({ available: false, error: options.error ?? 'not set up' });

@@ -2719,9 +2719,9 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
       );
       INSERT INTO stages_v37 (stage, library_id, mode, state, pause_reason, pause_detail,
           paused_at, progress_json, precision_json, updated_at)
-        SELECT s.stage, p.id, s.mode, s.state, s.pause_reason, s.pause_detail, s.paused_at,
-          s.progress_json, s.precision_json, s.updated_at
-        FROM stages s, _v37_primary p WHERE p.id IS NOT NULL;
+        SELECT s.stage, COALESCE(p.id, ''), s.mode, s.state, s.pause_reason, s.pause_detail,
+          s.paused_at, s.progress_json, s.precision_json, s.updated_at
+        FROM stages s, _v37_primary p;
       DROP TABLE stages;
       ALTER TABLE stages_v37 RENAME TO stages;
 
@@ -2832,9 +2832,10 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
         updated_at          INTEGER NOT NULL
       );
       INSERT INTO calibre_arrivals_state_v37
-        SELECT p.id, s.mode, s.pause_reason, s.pause_detail, s.paused_at, s.last_scheduled_day,
-          s.run_now, s.current_run, s.baseline_at, s.snapshot_seen, s.hand_checked_at, s.updated_at
-        FROM calibre_arrivals_state s, _v37_primary p WHERE p.id IS NOT NULL;
+        SELECT COALESCE(p.id, ''), s.mode, s.pause_reason, s.pause_detail, s.paused_at,
+          s.last_scheduled_day, s.run_now, s.current_run, s.baseline_at, s.snapshot_seen,
+          s.hand_checked_at, s.updated_at
+        FROM calibre_arrivals_state s, _v37_primary p;
       DROP TABLE calibre_arrivals_state;
       ALTER TABLE calibre_arrivals_state_v37 RENAME TO calibre_arrivals_state;
 

@@ -73,6 +73,13 @@ function toStage(r: Row): StageRow {
 
 /** Makes the library's six rows (0-5) when it has none yet: every stage Off. */
 export function ensureStageRows(db: Database.Database, libraryId: string): void {
+  // Rows the migration could not give a library (library ''; no ttsu.db to ask) go to the first
+  // library that asks for its own.
+  if (
+    libraryId !== '' &&
+    !db.prepare('SELECT 1 FROM stages WHERE library_id = ? LIMIT 1').get(libraryId)
+  )
+    db.prepare("UPDATE stages SET library_id = ? WHERE library_id = ''").run(libraryId);
   db.prepare(
     `INSERT OR IGNORE INTO stages (stage, library_id, updated_at)
      VALUES (0, @l, 0), (1, @l, 0), (2, @l, 0), (3, @l, 0), (4, @l, 0), (5, @l, 0)`,
@@ -221,7 +228,9 @@ export function resumeStage(
 export function stageLibraries(db: Database.Database): string[] {
   return (
     db
-      .prepare('SELECT library_id, MIN(rowid) AS r FROM stages GROUP BY library_id ORDER BY r')
+      .prepare(
+        "SELECT library_id, MIN(rowid) AS r FROM stages WHERE library_id <> '' GROUP BY library_id ORDER BY r",
+      )
       .all() as { library_id: string }[]
   ).map((r) => r.library_id);
 }

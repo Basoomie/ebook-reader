@@ -378,11 +378,11 @@ describe('the sidecar with the server', () => {
       .set(auth(user))
       .send({ mode: 'on' })
       .expect(200);
-    for (let i = 0; i < 100 && getStage(env.cleanupDb, 1).state !== 'ready'; i++) {
+    for (let i = 0; i < 100 && getStage(env.cleanupDb, env.libraryId(), 1).state !== 'ready'; i++) {
       await env.service.tick();
       await new Promise((r) => setTimeout(r, 20));
     }
-    expect(getStage(env.cleanupDb, 1).state).toBe('ready');
+    expect(getStage(env.cleanupDb, env.libraryId(), 1).state).toBe('ready');
   }
 
   /** Lets the server plan, the sidecar work, and the indexer take it in, until nothing is left. */

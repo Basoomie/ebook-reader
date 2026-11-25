@@ -1943,7 +1943,7 @@ export class Stage4Analysis {
     const ready = db
       .prepare(
         `SELECT request_id, library_id, calibre_uuid, step FROM fetch_waiters INDEXED BY fetch_waiters_ready
-         WHERE ready = 1 AND library_id = ? LIMIT ?`,
+         WHERE ready = 1 AND library_id IN (?, 'natively') LIMIT ?`,
       )
       .all(this.deps.libraryId, ANSWER_CHUNK) as {
       request_id: number;
