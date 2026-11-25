@@ -129,6 +129,17 @@ Stop condition: each work package is finished on its own branch, with a summary 
 - Work on a branch per work package; never commit directly to the main branch. Commits follow Conventional Commits (commitlint is configured).
 - Before merging anything to `main`, run the full builds, not only the tests: `pnpm build` for the web app and `npm run build` (tsc, as used by the Docker image) for the storage server. Tests run transpile-only and miss type errors (this broke the Docker build once, fixed in `96a16b2`).
 
+## Disk space: test data never stays on the PC (unbreakable)
+
+Sessions filled the PC's C: drive twice: 600 GB in five days (2026-11-20 to 11-25), mostly copies of live databases in `.tmp-e2e` (563 files, 271 GB), plus worktrees and `%TEMP%\claude`. Every session follows these rules, with no exceptions:
+
+- **One folder per session.** All test data goes under `C:\Data\Projects\local-ttsu\.tmp-e2e\<short-session-name>\`. Never in the repo, never loose in `%TEMP%`.
+- **One copy per database.** Copies of live databases (`ttsu.db`, `cleanup.db`, `metadata.db`, `summaries.db`, …), audiobook/ebook copies and archives are made once per session and overwritten for the next try: never `copy2`, `copy3`, `before.db`/`after.db` side by side. Before making a new copy, delete the old one.
+- **Delete at the end.** When the work the data tested is merged and deployed (or dropped), delete every database, audio, ebook and archive file in the session's folder before the final message. Keep only scripts, reports, logs and decision files (small text). Say in the final message what was deleted and how many GB the folder holds now.
+- **Report the size.** Every final message that used `.tmp-e2e` states the session folder's size. A session folder over 20 GB is a problem to fix in that session, not later.
+- **Never delete what isn't yours.** Only the session's own folder; never another session's, and never `.tmp-e2e/wp20a`, `wp20b`, `wp20c` (shared real-calibre test setups), `scripts`, `edits`, `pw-profiles` or `docs-backup-*`.
+- **Docker:** remove the test images a session built (`ttsu-*:<tag>`) when its work is deployed, never `ttsu-irodori:3`, the PC worker's pinned images (`ttsu-keep/*`) or other projects' images. Never run `docker image prune`: it deletes the worker's digest-pinned images.
+
 ## Playwright / Windows lockout
 
 - In e2e scripts, never import `chromium` from `playwright-core` (nor `node_modules/playwright-core/index.mjs`). Import it from `C:\Data\Projects\local-ttsu\.tmp-e2e\scripts\lib\pw.mjs` (relative path from the script; `require` it with `createRequire` in CommonJS). Its `chromium.launch()` and `browser.newContext()`/`newPage()`/`close()`/`version()` work as before.
