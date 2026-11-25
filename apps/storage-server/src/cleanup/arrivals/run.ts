@@ -68,6 +68,7 @@ import {
   buildLibraryLookup,
   candidatePairsOf,
   copyNewSketches,
+  copySketchAs,
   dropCrossSketches,
   dropNewSketches,
   judgePair,
@@ -484,6 +485,12 @@ export async function inPool<T>(
 
 /** A run without new books goes from one write to the next (the stages have no books). */
 const NEXT_WRITE = { write2: 'write4', write4: 'write5', write5: 'check' } as const;
+
+/**
+ * Manga part B: the keys a hand-added book's sketch takes under another library (negative, apart
+ * from the source files' -id keys, which stay far below this).
+ */
+const HAND_CROSS_KEY = 1_000_000_000;
 
 export class BookArrivals {
   readonly addBatches: ArrivalBatches;
@@ -2470,8 +2477,8 @@ export class BookArrivals {
           );
           this.addReview(
             run.id,
-            `better:${r.id}:${b.uuid}`,
-            'better_copy',
+            `cross:${r.id}:${b.uuid}`,
+            'cross_copy',
             r.id,
             beat.otherKey,
             b.uuid,
@@ -3123,6 +3130,11 @@ export class BookArrivals {
           const kk = await withFile(kept);
           if (a && kk) proposeStage3Removal(pd, a, kk, pair);
         }
+        // Manga part B (answer 3): the same books against the other libraries, review only.
+        for (const other of p.otherLibraries ?? []) {
+          if (shouldStop()) return false;
+          await this.crossHand(run.id, libraryId, other, hand, news, pacer, shouldStop);
+        }
         return true;
       },
       shouldStop,
@@ -3130,6 +3142,103 @@ export class BookArrivals {
     if (ok === null || ok === false) return 'wait';
     this.next(run.id, p, 'removals');
     return 'more';
+  }
+
+  /**
+   * Manga part B (answer 3 at stop 0): books added by hand to this library, checked against
+   * another library: the same file (stage 1's hashes there) or the same text (that library's
+   * candidate index, stage 3's measure and rules). A match is a 'cross_copy' review item, never a
+   * removal (nothing leaves one library because of a book in another).
+   */
+  private async crossHand(
+    runId: number,
+    libraryId: string,
+    other: string,
+    hand: SnapshotBook[],
+    own: Map<number, NewText>,
+    pacer: SourcePacer,
+    shouldStop: () => boolean,
+  ): Promise<void> {
+    const row = getLibrary(this.deps.main, other);
+    if (!row || !this.deps.calibreDir || !fs.existsSync(snapshotFile(this.deps.cacheDir, other)))
+      return;
+    const name = row.name || row.folder;
+    const libDir = path.join(this.deps.calibreDir, row.folder);
+    const ownDir = path.join(this.deps.calibreDir, getLibrary(this.deps.main, libraryId)!.folder);
+    const books = this.snapshotBooks(other);
+    const cd = this.compareDeps(other, libDir, books);
+    const pd = this.passDeps(runId, other, libDir);
+    const review = (b: SnapshotBook, there: SnapshotBook, detail: Record<string, unknown>) =>
+      this.addReview(
+        runId,
+        `cross:${b.uuid}:${there.uuid}`,
+        'cross_copy',
+        null,
+        there.calibreId,
+        there.uuid,
+        { ...detail, title: there.title, newId: b.calibreId, library: other, libraryName: name },
+        other,
+      );
+    const found = new Set<number>();
+    // The same file.
+    const libPacer = new Pacer(getSettings(this.db).pacing.readMbPerSecond * 1024 * 1024);
+    for (const b of hand) {
+      if (shouldStop()) return;
+      const file = resolveInside(ownDir, b.filePath) as string;
+      const st = await statFile(file);
+      if (!st) continue;
+      const same = await libraryHashesOfSize(pd, books, st.size, libPacer, shouldStop);
+      if (!same.length) continue;
+      const h = await hashSource(file, pacer, shouldStop);
+      const hit = h ? same.find((s) => s.sha256 === h.sha256) : undefined;
+      if (hit && books.get(hit.calibreId)) {
+        review(b, books.get(hit.calibreId)!, {
+          reason: `The same file as ${name} book ${hit.calibreId}`,
+        });
+        found.add(b.calibreId);
+      }
+    }
+    // The same text: the hand books' sketches under the other library, at keys of their own.
+    const keyOf = (calibreId: number) => -(HAND_CROSS_KEY + calibreId);
+    const news = new Map<number, NewText>();
+    for (const b of hand) {
+      const t = own.get(b.calibreId);
+      if (!t || t.error || t.imageOnly || found.has(b.calibreId)) continue;
+      copySketchAs(cd, libraryId, b.calibreId, keyOf(b.calibreId));
+      news.set(keyOf(b.calibreId), { ...t, key: keyOf(b.calibreId) });
+    }
+    if (!news.size) return;
+    try {
+      const pairs = (await candidatePairsOf(cd, [...news.values()])).filter(
+        (pr) => pr.a < 0 !== pr.b < 0,
+      );
+      if (!pairs.length) return;
+      const measured = await measurePairs(cd, news, pairs);
+      const quality = this.qualityOf(cd, news, new Map(), pacer);
+      for (const m of measured) {
+        if (!m.m || shouldStop()) continue;
+        const k = m.pair.a < 0 ? m.pair.a : m.pair.b;
+        const otherKey = k === m.pair.a ? m.pair.b : m.pair.a;
+        const v = await judgePair(cd, k, otherKey, m.m, news, quality);
+        if (v.cls !== 'duplicate' && v.cls !== 'superset') continue;
+        const b = hand.find((x) => keyOf(x.calibreId) === k);
+        const there = books.get(otherKey);
+        if (!b || !there) continue;
+        review(b, there, {
+          reason: `The same text as ${name} book ${otherKey} (${v.reason})`,
+          pair: {
+            aInB: v.aInB,
+            bInA: v.bInA,
+            cls: v.cls,
+            rule: v.rule,
+            reason: v.reason,
+            best: v.best,
+          },
+        });
+      }
+    } finally {
+      dropCrossSketches(cd);
+    }
   }
 
   // ---------------------------------------------------------------- stage 4
@@ -3526,7 +3635,7 @@ export class BookArrivals {
   private addReview(
     runId: number,
     key: string,
-    kind: 'better_copy' | 'archive' | 'add_failed' | 'too_long',
+    kind: 'better_copy' | 'archive' | 'add_failed' | 'too_long' | 'cross_copy',
     fileId: number | null,
     calibreId: number | null,
     uuid: string | null,
@@ -3577,6 +3686,9 @@ export class BookArrivals {
     if (!r) throw new Error('No such review item');
     const allowed: Record<string, string[]> = {
       better_copy: ['keep_library', 'add_new', 'keep_both', 'clear'],
+      // Manga part B: a copy of another library's book: recorded only (nothing is removed from
+      // one library because of another; you act in Calibre).
+      cross_copy: ['keep_library', 'keep_both', 'seen', 'clear'],
       archive: ['seen', 'clear'],
       add_failed: ['retry', 'seen', 'clear'],
       too_long: ['seen', 'clear'],

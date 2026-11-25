@@ -2892,11 +2892,37 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
       UPDATE calibre_arrival_batch_items SET calibre_library_id =
           (SELECT b.library_id FROM calibre_arrival_batches b WHERE b.id = calibre_arrival_batch_items.batch_id)
         WHERE calibre_id IS NOT NULL;
-      ALTER TABLE calibre_arrival_reviews ADD COLUMN calibre_library_id TEXT;
-      UPDATE calibre_arrival_reviews SET calibre_library_id = COALESCE(
-          (SELECT f.calibre_library_id FROM calibre_arrival_files f WHERE f.id = calibre_arrival_reviews.file_id),
-          (SELECT id FROM _v38_primary))
-        WHERE calibre_id IS NOT NULL;
+      -- Review items name the library of their Calibre book; kind 'cross_copy': a copy of a book
+      -- in another library (a better copy, or a book added by hand there) is only ever review
+      -- (answer 3 at stop 0; nothing is removed from one library because of another).
+      CREATE TABLE calibre_arrival_reviews_v38 (
+        id          INTEGER PRIMARY KEY,
+        review_key  TEXT NOT NULL UNIQUE,
+        kind        TEXT NOT NULL CHECK (kind IN ('better_copy', 'archive', 'add_failed',
+                      'too_long', 'cross_copy')),
+        file_id     INTEGER,
+        calibre_id  INTEGER,
+        calibre_uuid TEXT,
+        detail_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(detail_json)),
+        run_id      INTEGER,
+        created_at  INTEGER NOT NULL,
+        decision    TEXT,
+        decided_at  INTEGER,
+        applied_at  INTEGER,
+        calibre_library_id TEXT
+      );
+      INSERT INTO calibre_arrival_reviews_v38 (id, review_key, kind, file_id, calibre_id,
+          calibre_uuid, detail_json, run_id, created_at, decision, decided_at, applied_at,
+          calibre_library_id)
+        SELECT r.id, r.review_key, r.kind, r.file_id, r.calibre_id, r.calibre_uuid, r.detail_json,
+          r.run_id, r.created_at, r.decision, r.decided_at, r.applied_at,
+          CASE WHEN r.calibre_id IS NULL THEN NULL ELSE COALESCE(
+            (SELECT f.calibre_library_id FROM calibre_arrival_files f WHERE f.id = r.file_id),
+            (SELECT id FROM _v38_primary)) END
+        FROM calibre_arrival_reviews r;
+      DROP TABLE calibre_arrival_reviews;
+      ALTER TABLE calibre_arrival_reviews_v38 RENAME TO calibre_arrival_reviews;
+      CREATE INDEX calibre_arrival_reviews_open ON calibre_arrival_reviews (decision, id);
 
       -- A statement that names a Calibre book without its library means the file's own library
       -- (its pair's), as every statement did before; one that names another library sets it.

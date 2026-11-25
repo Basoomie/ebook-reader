@@ -469,6 +469,63 @@ describe('two libraries: the service, the checks and the new arrivals', () => {
     expect(states.map((s) => s.b)).toEqual([1, 1]);
   }, 120_000);
 
+  it('a book added by hand that copies a book of the other library is review, never removed', async () => {
+    // Added by hand to manga-library: japanese-library's A (the same file) and B's text again.
+    M.Ahand = await manga.addBook({ title: 'A', authors: ['作者'], epub: A });
+    M.Bhand = await manga.addBook({
+      title: 'B 完全版',
+      authors: ['作者'],
+      epub: makeTextEpub({ title: 'B 完全版', chapters: chaptersOf(12) }),
+    });
+    manga.age();
+    await env.indexer.checkLibrary(listLibraries(env.db).find((l) => l.id === mangaId())!);
+    env.service.arrivals.requestRun(mangaId());
+    await steps();
+    const run = env.cleanupDb
+      .prepare('SELECT library_id, state, error FROM calibre_arrival_runs ORDER BY id DESC LIMIT 1')
+      .get() as { library_id: string; state: string; error: string | null };
+    // Past stage 3 (where the books added by hand are compared); it then waits for manga-library's
+    // own stage 4, which these books need first.
+    expect(run.library_id).toBe(mangaId());
+    expect(env.service.arrivals.currentRun()?.p.phase).not.toMatch(
+      /^(scan|archives|identify|compare|plan|add|index|stage1|stage3)$/,
+    );
+    env.service.arrivals.stopRun();
+    const reviews = env.cleanupDb
+      .prepare(
+        `SELECT kind, calibre_id, calibre_library_id, json_extract(detail_json, '$.newId') AS newId
+         FROM calibre_arrival_reviews WHERE kind = 'cross_copy' ORDER BY newId`,
+      )
+      .all() as { kind: string; calibre_id: number; calibre_library_id: string; newId: number }[];
+    const byNew = new Map(reviews.map((r) => [r.newId, r]));
+    expect(byNew.get(M.Ahand)).toMatchObject({
+      calibre_id: J.A,
+      calibre_library_id: env.libraryId(),
+    });
+    expect(byNew.get(M.Bhand)).toMatchObject({
+      calibre_id: J.B,
+      calibre_library_id: env.libraryId(),
+    });
+    // Nothing proposed for removal in either library because of the other.
+    expect(
+      env.cleanupDb
+        .prepare(
+          `SELECT COUNT(*) AS n FROM proposed_changes WHERE field = 'book' AND calibre_id IN (?, ?, ?, ?)`,
+        )
+        .get(M.Ahand, M.Bhand, J.A, J.B),
+    ).toEqual({ n: 0 });
+    // The choices: recorded only.
+    const id = (
+      env.cleanupDb
+        .prepare(`SELECT id FROM calibre_arrival_reviews WHERE kind = 'cross_copy' LIMIT 1`)
+        .get() as {
+        id: number;
+      }
+    ).id;
+    expect(() => env.service.arrivals.decide(id, 'add_new')).toThrow();
+    env.service.arrivals.decide(id, 'keep_both');
+  }, 120_000);
+
   it('an add batch names its library; an older sidecar never gets another library’s', async () => {
     const run = Number(
       env.cleanupDb

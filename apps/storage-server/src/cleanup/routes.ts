@@ -1642,6 +1642,7 @@ export function createCleanupRouter(options: CleanupOptions): Router {
           req.params.list,
           Number(q.offset ?? 0) || 0,
           Number(q.limit ?? 50) || 50,
+          libOf(service, req),
         ),
       );
     } catch (err) {

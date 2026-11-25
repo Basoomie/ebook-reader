@@ -217,9 +217,19 @@ export function arrivalsList(
   list: string,
   offset = 0,
   limit = 50,
+  /** Manga part B: one library's lists (its folders, runs, batches, books); null = every one. */
+  libraryId: string | null = null,
 ): { total: number; items: unknown[] } {
   const lim = Math.min(200, Math.max(1, limit));
   const off = Math.max(0, offset);
+  const L = libraryId ? [libraryId] : [];
+  const ofPairs = (col: string) =>
+    libraryId
+      ? ` AND ${col} IN (SELECT pair_key FROM calibre_arrival_pairs WHERE library_id = ?)`
+      : '';
+  const ofRuns = libraryId
+    ? ' AND (r.run_id IS NULL OR r.run_id IN (SELECT id FROM calibre_arrival_runs WHERE library_id = ?))'
+    : '';
   if (LIST_OUTCOMES[list]) {
     const outs = LIST_OUTCOMES[list];
     const ph = outs.map(() => '?').join(', ');
@@ -227,9 +237,9 @@ export function arrivalsList(
       db
         .prepare(
           `SELECT COUNT(*) AS n FROM calibre_arrival_files INDEXED BY calibre_arrival_files_outcome
-           WHERE outcome IN (${ph}) AND gone_at IS NULL`,
+           WHERE outcome IN (${ph}) AND gone_at IS NULL${ofPairs('pair_key')}`,
         )
-        .get(...outs) as { n: number }
+        .get(...outs, ...L) as { n: number }
     ).n;
     const items = db
       .prepare(
@@ -237,30 +247,36 @@ export function arrivalsList(
            run_id, decided_at, archive_id, json_extract(facts_json, '$.title') AS title,
            json_extract(facts_json, '$.addedAs.calibreId') AS added_as
          FROM calibre_arrival_files INDEXED BY calibre_arrival_files_outcome
-         WHERE outcome IN (${ph}) AND gone_at IS NULL ORDER BY outcome, pair_key, id LIMIT ? OFFSET ?`,
+         WHERE outcome IN (${ph}) AND gone_at IS NULL${ofPairs('pair_key')}
+         ORDER BY outcome, pair_key, id LIMIT ? OFFSET ?`,
       )
-      .all(...outs, lim, off);
+      .all(...outs, ...L, lim, off);
     return { total, items };
   }
   if (list === 'archives') {
     const total = (
-      db.prepare('SELECT COUNT(*) AS n FROM calibre_arrival_archives').get() as { n: number }
+      db
+        .prepare(
+          `SELECT COUNT(*) AS n FROM calibre_arrival_archives WHERE 1 = 1${ofPairs('pair_key')}`,
+        )
+        .get(...L) as { n: number }
     ).n;
     const items = db
       .prepare(
         `SELECT id, pair_key, rel_path, size, state, detail, books, volumes_json, listed_at, unpacked_at
-         FROM calibre_arrival_archives ORDER BY id DESC LIMIT ? OFFSET ?`,
+         FROM calibre_arrival_archives WHERE 1 = 1${ofPairs('pair_key')} ORDER BY id DESC LIMIT ? OFFSET ?`,
       )
-      .all(lim, off);
+      .all(...L, lim, off);
     return { total, items };
   }
   if (list === 'reviews') {
     const total = (
       db
         .prepare(
-          `SELECT COUNT(*) AS n FROM calibre_arrival_reviews INDEXED BY calibre_arrival_reviews_open WHERE decision IS NULL`,
+          `SELECT COUNT(*) AS n FROM calibre_arrival_reviews r INDEXED BY calibre_arrival_reviews_open
+           WHERE r.decision IS NULL${ofRuns}`,
         )
-        .get() as { n: number }
+        .get(...L) as { n: number }
     ).n;
     const items = db
       .prepare(
@@ -268,37 +284,43 @@ export function arrivalsList(
            f.rel_path, f.pair_key
          FROM calibre_arrival_reviews r INDEXED BY calibre_arrival_reviews_open
          LEFT JOIN calibre_arrival_files f ON f.id = r.file_id
-         WHERE r.decision IS NULL ORDER BY r.id LIMIT ? OFFSET ?`,
+         WHERE r.decision IS NULL${ofRuns} ORDER BY r.id LIMIT ? OFFSET ?`,
       )
-      .all(lim, off);
+      .all(...L, lim, off);
     return { total, items };
   }
   if (list === 'hand') {
     const total = (
-      db.prepare(`SELECT COUNT(*) AS n FROM calibre_known_books WHERE origin = 'hand'`).get() as {
-        n: number;
-      }
+      db
+        .prepare(
+          `SELECT COUNT(*) AS n FROM calibre_known_books WHERE origin = 'hand'${libraryId ? ' AND library_id = ?' : ''}`,
+        )
+        .get(...L) as { n: number }
     ).n;
     const items = db
       .prepare(
         `SELECT calibre_id, calibre_uuid, added_at, settled_at, run_id FROM calibre_known_books
-         WHERE origin = 'hand' ORDER BY added_at DESC LIMIT ? OFFSET ?`,
+         WHERE origin = 'hand'${libraryId ? ' AND library_id = ?' : ''} ORDER BY added_at DESC LIMIT ? OFFSET ?`,
       )
-      .all(lim, off);
+      .all(...L, lim, off);
     return { total, items };
   }
   if (list === 'runs') {
     const total = (
-      db.prepare('SELECT COUNT(*) AS n FROM calibre_arrival_runs').get() as { n: number }
+      db
+        .prepare(
+          `SELECT COUNT(*) AS n FROM calibre_arrival_runs${libraryId ? ' WHERE library_id = ?' : ''}`,
+        )
+        .get(...L) as { n: number }
     ).n;
     const items = (
       db
         .prepare(
           `SELECT id, CASE WHEN json_extract(progress_json, '$.followUp') = 'settle' THEN 'files settled'
              ELSE trigger END AS trigger, mode, state, phase, started_at, finished_at, report_json, error
-           FROM calibre_arrival_runs ORDER BY id DESC LIMIT ? OFFSET ?`,
+           FROM calibre_arrival_runs${libraryId ? ' WHERE library_id = ?' : ''} ORDER BY id DESC LIMIT ? OFFSET ?`,
         )
-        .all(lim, off) as { report_json: string | null }[]
+        .all(...L, lim, off) as { report_json: string | null }[]
     ).map((r) => ({
       ...r,
       report: r.report_json ? JSON.parse(r.report_json) : null,
@@ -308,7 +330,11 @@ export function arrivalsList(
   }
   if (list === 'batches') {
     const total = (
-      db.prepare('SELECT COUNT(*) AS n FROM calibre_arrival_batches').get() as { n: number }
+      db
+        .prepare(
+          `SELECT COUNT(*) AS n FROM calibre_arrival_batches${libraryId ? ' WHERE library_id = ?' : ''}`,
+        )
+        .get(...L) as { n: number }
     ).n;
     const items = db
       .prepare(
@@ -316,9 +342,9 @@ export function arrivalsList(
            (SELECT COUNT(*) FROM calibre_arrival_batch_items i WHERE i.batch_id = b.id AND i.state IN ('added', 'removed')) AS done,
            (SELECT COUNT(*) FROM calibre_arrival_batch_items i WHERE i.batch_id = b.id AND i.state = 'failed') AS failed,
            EXISTS (SELECT 1 FROM calibre_arrival_batches u WHERE u.undo_of = b.id) AS undone
-         FROM calibre_arrival_batches b ORDER BY b.id DESC LIMIT ? OFFSET ?`,
+         FROM calibre_arrival_batches b${libraryId ? ' WHERE b.library_id = ?' : ''} ORDER BY b.id DESC LIMIT ? OFFSET ?`,
       )
-      .all(lim, off);
+      .all(...L, lim, off);
     return { total, items };
   }
   throw new Error(`No such list: ${list}`);

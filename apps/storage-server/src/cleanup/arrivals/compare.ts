@@ -262,6 +262,24 @@ export function copyNewSketches(deps: CompareDeps, fromLibraryId: string, keys: 
   })();
 }
 
+/** Manga part B: one book's sketch put under another library at another key (a hand-added book). */
+export function copySketchAs(
+  deps: CompareDeps,
+  fromLibraryId: string,
+  fromKey: number,
+  toKey: number,
+): void {
+  openCache(deps)
+    .prepare(
+      `INSERT INTO sketches (library_id, calibre_id, size, mtime_ms, build, samples)
+       SELECT ?, ?, size, mtime_ms, 'arrivals-cross', samples FROM sketches
+       WHERE library_id = ? AND calibre_id = ?
+       ON CONFLICT(library_id, calibre_id) DO UPDATE SET samples = excluded.samples,
+         build = excluded.build`,
+    )
+    .run(deps.libraryId, toKey, fromLibraryId, fromKey);
+}
+
 /** Removes the sketches a check across the libraries put under another library (copyNewSketches). */
 export function dropCrossSketches(deps: CompareDeps): void {
   openCache(deps)
