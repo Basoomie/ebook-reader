@@ -6,7 +6,13 @@
 
 import { describe, expect, it } from 'vitest';
 import type { BookRatingsAnswer } from './api';
-import { RATING_PARTS, cardRatingText, ratingPieces, volumeOneText } from './store-ratings';
+import {
+  RATING_PARTS,
+  cardRatingText,
+  ratingPieces,
+  refreshLeftText,
+  volumeOneText
+} from './store-ratings';
 
 const fig = (avg: number | null, count: number | null, reviews: number | null = null) => ({
   avg,
@@ -113,5 +119,15 @@ describe('volumeOneText (the series page)', () => {
       )
     ).toBe('Volume 1: 4.2 · 310 ratings');
     expect(volumeOneText(null, { bookmeter: true })).toBeNull();
+  });
+});
+
+describe('refreshLeftText (the fetch bar)', () => {
+  it('says when the pace is still being measured, then minutes, hours or days', () => {
+    expect(refreshLeftText(null)).toBe('working out the time left');
+    expect(refreshLeftText(0)).toBe('');
+    expect(refreshLeftText(30 * 60)).toBe('about 30 min left');
+    expect(refreshLeftText(5 * 3600 + 600)).toBe('about 5 h 10 min left');
+    expect(refreshLeftText(3 * 86_400)).toBe('about 3 days left');
   });
 });

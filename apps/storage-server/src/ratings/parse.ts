@@ -7,7 +7,8 @@
  *   aria-label="217 レビュー"` (the other "5つ星のうち" on the page belong to other products). A
  *   product page without them has no ratings yet.
  * - BOOK☆WALKER (`/de<id>/`): the JSON-LD `Product` whose `url` is the book's own page, with
- *   `aggregateRating {ratingValue, reviewCount}` when it has reviews.
+ *   `aggregateRating {ratingValue, reviewCount}` when it has reviews. A Japan-only title seen from
+ *   abroad is an error page (`t-p-detail--error`, "日本国内のみでの販売"): `blocked`.
  * - 読書メーター (`/books/<id>`): no stars; 登録数 (`.bm-details-side__pickup` after "登録数") and
  *   the 感想・レビュー count (`.content__count`).
  */
@@ -18,7 +19,12 @@ export type ParsedRating =
   /** The book's page, with no ratings yet. */
   | { kind: 'none' }
   /** Not a page we can read (an error page, a changed format). */
-  | { kind: 'unreadable' };
+  | { kind: 'unreadable' }
+  /**
+   * The store hides the book from the fetcher's country: BOOK☆WALKER's error page "この作品は、
+   * 日本国内のみでの販売となります。" (Japan-only titles; the VPN exits in the United States).
+   */
+  | { kind: 'blocked' };
 
 const num = (s: string): number => Number(s.replace(/[,，]/g, ''));
 
@@ -69,6 +75,8 @@ export function parseBookwalkerRating(html: string, id: string): ParsedRating {
       return { kind: 'none' };
     }
   }
+  if (/t-p-detail--error/.test(html) && /日本国内のみでの販売/.test(html))
+    return { kind: 'blocked' };
   return { kind: 'unreadable' };
 }
 

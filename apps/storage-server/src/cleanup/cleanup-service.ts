@@ -58,6 +58,7 @@ import { moveAnalysisId } from './move/state';
 import { MOVE_SIDECAR_VERSION, MOVE_STAGE } from './field-stages';
 import { booksWithReaderData } from './handoff';
 import { LinkDiscovery } from './stage4/link-discovery';
+import { BookmeterListings } from './stage4/bookmeter-listing';
 import { CALIBRE_FETCH_SITES, type FetchSite } from './settings';
 import {
   BUILT_STAGES,
@@ -241,6 +242,10 @@ export class CleanupService {
   readonly links: LinkDiscovery | null;
   private linksRunning: Promise<void> | null = null;
   private linksCache: { at: number; value: unknown } | null = null;
+  /** Bookmeter links: saved ids checked against the listing readers log (bookmeter-listings.md). */
+  readonly listings: BookmeterListings | null;
+  private listingsRunning: Promise<void> | null = null;
+  private listingsCache: { at: number; value: unknown } | null = null;
   private bookmeterCache: { at: number; value: unknown } | null = null;
   /** Calibre metadata editing from the reader: the user's edits, their history and Undo. */
   readonly edits: EditService;
@@ -504,6 +509,19 @@ export class CleanupService {
           log: this.log,
         })
       : null;
+    this.listings = a4
+      ? new BookmeterListings({
+          db: opts.cleanup,
+          analysis: a4,
+          queue: this.fetchQueue,
+          batches: this.batches.stage4,
+          targetLibrary: () => this.targetLibrary(),
+          stage4Done: () => stage4Finished(this.db, this.stage4Ai?.isDone() ?? false),
+          writeWait: (lib) => this.bookmeterWriteWait(lib),
+          referenceFile: () => a4.referenceFile(),
+          log: this.log,
+        })
+      : null;
     // Stage 4's covers are the stores' pictures, read from the fetch cache.
     this.batches.stage4.setStoreCover((url) => {
       const r = opts.cleanup
@@ -529,8 +547,9 @@ export class CleanupService {
         this.logError('Cleanup: an answer listener failed:', err);
       }
     }
-    // More Bookmeter coverage's pass waits on its own answers.
+    // More Bookmeter coverage's pass waits on its own answers, and so does Bookmeter links'.
     this.runBookmeter();
+    this.runListings();
     if (this.stopped || this.analysing4) return;
     try {
       this.round4(this.targetLibrary());
@@ -1105,6 +1124,7 @@ export class CleanupService {
     this.runSeriesPairs();
     this.runMove();
     this.runLinks();
+    this.runListings();
   }
 
   /**
@@ -1391,6 +1411,46 @@ export class CleanupService {
   linksChanged(): void {
     this.linksCache = null;
     this.runLinks();
+  }
+
+  /**
+   * Bookmeter links: its pass, stepped in its own loop like More direct links (never blocks a
+   * round; each step works about 25 ms). Woken by the 5 s round, by answers and by the card.
+   */
+  runListings(): void {
+    if (this.listingsRunning || this.stopped || !this.listings) return;
+    const pass = this.listings;
+    this.listingsRunning = (async () => {
+      try {
+        for (let i = 0; i < 1_000_000; i++) {
+          if (this.stopped) break;
+          const r = await pass.step();
+          if (r === 'idle' || r === 'wait') break;
+          await new Promise((res) => setImmediate(res));
+        }
+      } catch (err) {
+        this.logError('Cleanup: Bookmeter links failed:', err);
+      } finally {
+        this.listingsRunning = null;
+      }
+    })();
+  }
+
+  /** Bookmeter links' card; cached 5 s (its counts read one covering index). */
+  listingsStatus(target: string | null, now = Date.now()): unknown {
+    const pass = this.listings;
+    if (!pass) return null;
+    if (this.listingsCache && now - this.listingsCache.at < 5_000) return this.listingsCache.value;
+    const b = this.fetchQueue.blocked('bookmeter', now);
+    const value = pass.status(target, now, b && b.reason !== 'pace' ? b.reason : null);
+    this.listingsCache = { at: now, value };
+    return value;
+  }
+
+  /** Drops the card's cached status (after the user's change on the page) and works at once. */
+  listingsChanged(): void {
+    this.listingsCache = null;
+    this.runListings();
   }
 
   /** Why the pass's write must wait now (as stage 4 On's own: apply4), else null. */

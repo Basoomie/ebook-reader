@@ -1260,6 +1260,94 @@ export function createCleanupRouter(options: CleanupOptions): Router {
     res.json({ counts: pass.spotCounts(), passed: pass.spotPassed() });
   });
 
+  // ---- Bookmeter links: the listing readers log (bookmeter-listings.md) ----
+
+  const listingsOr503 = () => {
+    const service = serviceOr503(options);
+    if (!service.listings) throw new ApiError(503, 'no_calibre', 'No Calibre library is set up');
+    return { service, pass: service.listings };
+  };
+  const LISTING_STATES = [
+    'change',
+    'keep',
+    'adaptation',
+    'unseen',
+    'unsearched',
+    'ai',
+    'nofacts',
+    'yours',
+  ] as const;
+
+  router.get('/cleanup/bookmeter-links', (_req, res) => {
+    const { service } = listingsOr503();
+    res.json(service.listingsStatus(service.targetLibrary()));
+  });
+
+  router.put('/cleanup/bookmeter-links/mode', (req, res) => {
+    const { service, pass } = listingsOr503();
+    const mode = (req.body as { mode?: unknown } | undefined)?.mode;
+    if (mode !== 'off' && mode !== 'analyse' && mode !== 'on')
+      throw new ApiError(400, 'bad_mode', 'mode must be off, analyse or on');
+    try {
+      pass.setMode(mode);
+    } catch (err) {
+      throw new ApiError(409, 'not_now', (err as Error).message);
+    }
+    service.listingsChanged();
+    res.json(service.listingsStatus(service.targetLibrary()));
+  });
+
+  router.post('/cleanup/bookmeter-links/again', (_req, res) => {
+    const { service, pass } = listingsOr503();
+    try {
+      pass.again();
+    } catch (err) {
+      throw new ApiError(409, 'not_now', (err as Error).message);
+    }
+    service.listingsChanged();
+    res.json(service.listingsStatus(service.targetLibrary()));
+  });
+
+  router.get('/cleanup/bookmeter-links/list', (req, res) => {
+    const { service, pass } = listingsOr503();
+    const lib = service.targetLibrary();
+    const q = req.query as Record<string, string | undefined>;
+    const offset = Math.max(0, Number(q.offset ?? 0) || 0);
+    const limit = Math.min(100, Math.max(1, Number(q.limit ?? 20) || 20));
+    const state = (LISTING_STATES as readonly string[]).includes(q.state ?? '')
+      ? (q.state as (typeof LISTING_STATES)[number])
+      : 'change';
+    if (!lib) {
+      res.json({ total: 0, items: [] });
+      return;
+    }
+    res.json(pass.listBooks(lib, pass.state().progress.run, state, offset, limit));
+  });
+
+  router.get('/cleanup/bookmeter-links/spot', (_req, res) => {
+    const { service, pass } = listingsOr503();
+    const lib = service.targetLibrary();
+    res.json({
+      items: lib ? pass.listSpot(lib, pass.state().progress.run) : [],
+      counts: pass.spotCounts(),
+      passed: pass.spotPassed(),
+    });
+  });
+
+  router.put('/cleanup/bookmeter-links/spot/:uuid', (req, res) => {
+    const { service, pass } = listingsOr503();
+    const v = (req.body as { verdict?: unknown } | undefined)?.verdict;
+    if (v !== 'right' && v !== 'wrong' && v !== null)
+      throw new ApiError(400, 'bad_verdict', 'verdict must be right, wrong or null');
+    try {
+      pass.setVerdict(String(req.params.uuid), v);
+    } catch (err) {
+      throw new ApiError(409, 'not_now', (err as Error).message);
+    }
+    service.listingsChanged();
+    res.json({ counts: pass.spotCounts(), passed: pass.spotPassed() });
+  });
+
   // ---- Tier 4, Part 3: series under a short and a full name ----
 
   const seriesPairsOr503 = () => {

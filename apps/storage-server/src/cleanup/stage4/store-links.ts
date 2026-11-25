@@ -19,7 +19,7 @@ import { N, NA, nfkc, pyStrip } from '../title-rules';
 import { decodeIgnore, textOf, unescapeHtml } from './ref-text';
 import { clean } from './rules-v3';
 import { nums, pyQuote } from './pick';
-import { chosenDecision, type ChosenBook } from './bookmeter-rules';
+import { COMIC_LABEL, adaptationListing, chosenDecision, type ChosenBook } from './bookmeter-rules';
 
 // ---------------------------------------------------------------- Bookmeter
 
@@ -35,6 +35,11 @@ export interface BookmeterHit {
   listTitle?: string;
   authors: string[];
   pages: number | null;
+  /**
+   * The listing's 登録 count as the search list shows it (Bookmeter listings, 2026-11-25: the
+   * link goes to the listing readers log). Missing for results stored before then.
+   */
+  registrations?: number | null;
 }
 
 /**
@@ -55,6 +60,25 @@ export const BOOKMETER_AUTHOR_SEARCH_KEY = 'search-jp-au:';
 
 /** The queue key of a Bookmeter search (type=japanese); the old index's were `search:<title>`. */
 export const BOOKMETER_SEARCH_KEY = 'search-jp:';
+
+/**
+ * Bookmeter listings (2026-11-25): the book searched with Bookmeter's author field (its decided
+ * title, the first author without spaces), as the blind sample was searched. The key is More
+ * Bookmeter coverage's Q2 form, so an answer fetched for the same title and author is reused.
+ */
+export function bookmeterListingSearch(
+  title: string,
+  authors: string[],
+): { key: string; url: string; accept: string } | null {
+  const au = (authors[0] ?? '').replace(/\s/gu, '');
+  const t = title.trim();
+  if (!au || au.toLowerCase() === 'unknown' || !t) return null;
+  return {
+    key: `${BOOKMETER_AUTHOR_SEARCH_KEY}${au}\n${t}`,
+    url: bookmeterSearchUrl(t, au),
+    accept: 'text/html, */*; q=0.01',
+  };
+}
 
 /** True for a Bookmeter search address that asked the old index. */
 export function oldBookmeterSearch(url: string): boolean {
@@ -82,12 +106,15 @@ export function parseBookmeterSearch(body: Buffer | string): BookmeterHit[] {
       pyStrip(unescapeHtml(m[1])),
     );
     const pages = /<div class="detail__page">(\d+)<\/div>/.exec(li);
+    const reg =
+      /<dt class="options__title">登録<\/dt>\s*<dd class="options__item">([\d,]+)<\/dd>/.exec(li);
     out.push({
       id: t[1],
       title: whole || listTitle,
       listTitle,
       authors: authors.filter((a) => a !== ''),
       pages: pages ? parseInt(pages[1], 10) : null,
+      registrations: reg ? parseInt(reg[1].replace(/,/g, ''), 10) : null,
     });
   }
   return out;
@@ -175,50 +202,91 @@ export function editionNotes(title: string): string[] {
 export const WHOLE_TITLE_REASON =
   'the whole titles agree (labels, series brackets and a trailing series name set aside), an author and the volume';
 
+/** A hit's 登録 count for the pick (unknown = below every count, so Bookmeter's order decides). */
+const regOf = (h: BookmeterHit): number =>
+  typeof h.registrations === 'number' && h.registrations >= 0 ? h.registrations : -1;
+
 /**
- * Match acceptance for Bookmeter (plan section 6): the title, an author and the volume must all
- * agree with the book's decided values. Bookmeter's titles carry the label ("(GAノベル)"), so
- * both sides go through rules v3's clean(), which drops 【…】 notes. WP20e: a hit whose title
- * holds an edition note (editionNotes) the book itself doesn't have is another edition:
- * rejected, and the next hit is tried. The book's own texts are its titles (file, Calibre), the
- * title of the Amazon record the rules identified, and the file's first and last pages (the
- * colophon prints the edition: 【大活字シリーズ】悪の説得術 is that edition's own e-book).
- *
- * More Bookmeter coverage, step 2 (user, 2026-11-23): this first tier runs on the list's own text
- * (`listTitle`, or `title` for results stored before step 2), so a book decides exactly as before
- * and today's matches stay. When it accepts nothing and `chosen` is given, the second tier runs
- * the rules the user chose (bookmeter-rules.ts CHOSEN_RULES) on the whole titles.
+ * The listing readers log among those that are the book: the most registrations (登録数), on a
+ * tie the first in the order given (Bookmeter's). Bookmeter listings, 2026-11-25 (user: "among
+ * the listings that are this book, the one with the most registrations").
  */
-export function acceptBookmeter(
-  hits: BookmeterHit[],
-  book: {
-    title: string;
-    authors: string[];
-    own?: (string | null | undefined)[];
-    /** The chosen rules' other inputs (stage 4's decided series and format, Calibre's title). */
-    chosen?: Omit<ChosenBook, 'title' | 'authors'>;
-  },
-): { hit: BookmeterHit; reason: string } | { hit: null; reason: string } {
+export function mostRegistered<T extends BookmeterHit>(hits: T[]): T | null {
+  let best: T | null = null;
+  for (const h of hits) if (!best || regOf(h) > regOf(best)) best = h;
+  return best;
+}
+
+export type BookmeterBook = {
+  title: string;
+  authors: string[];
+  own?: (string | null | undefined)[];
+  /** The chosen rules' other inputs (stage 4's decided series and format, Calibre's title). */
+  chosen?: Omit<ChosenBook, 'title' | 'authors'>;
+};
+
+/** Why a hit that is not this book's listing was set aside by a guard. */
+export type BookmeterGuard = 'comic' | 'adaptation';
+
+export interface BookmeterJudged {
+  /** Per hit, in the order given: the tier that takes it as this book (null: neither). */
+  tier: (1 | 2 | null)[];
+  /** Per hit: the guard that set it aside (a comic or an adaptation of a text book). */
+  guard: (BookmeterGuard | null)[];
+  /** A hit set aside only for an edition note the book does not have. */
+  edition: boolean;
+  /** The book has no title to compare. */
+  noTitle: boolean;
+}
+
+/**
+ * Every hit judged as acceptBookmeter judges it, each on its own: today's checks on the list's
+ * text (tier 1), the chosen rules on the whole titles (tier 2, when `chosen` is given), and
+ * (Bookmeter listings, 2026-11-25) two guards on both tiers for a book that is not manga or
+ * image-only: a listing with a comic label the book's own title lacks, and an adaptation (the
+ * book's author named on the listing only as 原作/原案, beside someone else: a manga of the
+ * light novel). Tier 2 keeps its own comic guard (comicFmt) too.
+ */
+export function judgeBookmeter(hits: BookmeterHit[], book: BookmeterBook): BookmeterJudged {
   const own = (book.own ?? [book.title])
     .filter((t): t is string => typeof t === 'string')
     .map((t) => nfkc(t));
   const edOk = (title: string) => !editionNotes(title).some((n) => !own.some((t) => t.includes(n)));
-  let edition = false;
+  const out: BookmeterJudged = {
+    tier: hits.map(() => null),
+    guard: hits.map(() => null),
+    edition: false,
+    noTitle: false,
+  };
   const want = N(clean(book.title)) ?? '';
-  if (!want) return { hit: null, reason: 'no title to compare' };
+  if (!want) {
+    out.noTitle = true;
+    return out;
+  }
+  const fmt = book.chosen ? book.chosen.fmt : undefined;
+  const textBook = book.chosen !== undefined && fmt !== 'manga' && fmt !== 'image-only';
+  const bookComic = COMIC_LABEL.test(nfkc(book.title));
+  const guardOf = (h: BookmeterHit): BookmeterGuard | null => {
+    if (!textBook) return null;
+    if (adaptationListing(book.authors, h.authors)) return 'adaptation';
+    const listed = h.listTitle ?? h.title;
+    if (!bookComic && (COMIC_LABEL.test(nfkc(listed)) || COMIC_LABEL.test(nfkc(h.title))))
+      return 'comic';
+    return null;
+  };
   const authors = new Set(book.authors.map((a) => NA(a)));
   const wantNums = [...nums(book.title)].sort().join(',');
-  for (const h of hits) {
+  hits.forEach((h, i) => {
     const listed = h.listTitle ?? h.title;
-    if ((N(clean(listed)) ?? '') !== want) continue;
-    if (!h.authors.some((a) => authors.has(NA(a)))) continue;
-    if ([...nums(listed)].sort().join(',') !== wantNums) continue;
+    if ((N(clean(listed)) ?? '') !== want) return;
+    if (!h.authors.some((a) => authors.has(NA(a)))) return;
+    if ([...nums(listed)].sort().join(',') !== wantNums) return;
     if (!edOk(listed)) {
-      edition = true;
-      continue;
+      out.edition = true;
+      return;
     }
-    return { hit: h, reason: 'title, author and volume agree' };
-  }
+    out.tier[i] = 1;
+  });
   if (book.chosen && hits.length) {
     const r = chosenDecision(
       hits.map((h) => ({
@@ -229,16 +297,69 @@ export function acceptBookmeter(
       { ...book.chosen, title: book.title, authors: book.authors },
       edOk,
     );
-    const hit = r.hit ? hits.find((h) => h.id === r.hit!.id) : undefined;
-    if (hit) return { hit, reason: WHOLE_TITLE_REASON };
+    r.failed.forEach((f, i) => {
+      if (f.length === 0 && out.tier[i] === null) out.tier[i] = 2;
+    });
+  }
+  hits.forEach((h, i) => {
+    if (out.tier[i] === null) return;
+    const g = guardOf(h);
+    if (g) {
+      out.guard[i] = g;
+      out.tier[i] = null;
+    }
+  });
+  return out;
+}
+
+/**
+ * Match acceptance for Bookmeter (plan section 6): the title, an author and the volume must all
+ * agree with the book's decided values. Bookmeter's titles carry the label ("(GAノベル)"), so
+ * both sides go through rules v3's clean(), which drops 【…】 notes. WP20e: a hit whose title
+ * holds an edition note (editionNotes) the book itself doesn't have is another edition:
+ * rejected. The book's own texts are its titles (file, Calibre), the title of the Amazon record
+ * the rules identified, and the file's first and last pages (the colophon prints the edition:
+ * 【大活字シリーズ】悪の説得術 is that edition's own e-book).
+ *
+ * More Bookmeter coverage, step 2 (user, 2026-11-23): the first tier runs on the list's own text
+ * (`listTitle`, or `title` for results stored before step 2); with `chosen`, the second tier runs
+ * the rules the user chose (bookmeter-rules.ts CHOSEN_RULES) on the whole titles.
+ *
+ * Bookmeter listings (user, 2026-11-25): Bookmeter keeps a listing per edition (paperback, Kindle
+ * 版, sometimes two), and the link must go to the one readers log: of the hits either tier takes
+ * (judgeBookmeter, with its guards), the one with the most registrations (mostRegistered; the
+ * first in Bookmeter's order on a tie or when the counts are not known).
+ */
+export function acceptBookmeter(
+  hits: BookmeterHit[],
+  book: BookmeterBook,
+): { hit: BookmeterHit; reason: string } | { hit: null; reason: string } {
+  const j = judgeBookmeter(hits, book);
+  if (j.noTitle) return { hit: null, reason: 'no title to compare' };
+  const taken = hits.filter((_, i) => j.tier[i] !== null);
+  const hit = mostRegistered(taken);
+  if (hit) {
+    const tier = j.tier[hits.indexOf(hit)];
+    const why = tier === 1 ? 'title, author and volume agree' : WHOLE_TITLE_REASON;
+    return {
+      hit,
+      reason:
+        taken.length > 1 && typeof hit.registrations === 'number'
+          ? `${why}; the most registered of ${taken.length} listings`
+          : why,
+    };
   }
   return {
     hit: null,
-    reason: edition
-      ? 'only another edition (a 【…】 edition note the book itself does not have)'
-      : hits.length
-        ? 'no result with the same title, author and volume'
-        : 'no results',
+    reason: j.guard.includes('adaptation')
+      ? 'only an adaptation (the book’s author named as 原作 beside another author)'
+      : j.guard.includes('comic')
+        ? 'only a comic edition (a comic label the book does not have)'
+        : j.edition
+          ? 'only another edition (a 【…】 edition note the book itself does not have)'
+          : hits.length
+            ? 'no result with the same title, author and volume'
+            : 'no results',
   };
 }
 

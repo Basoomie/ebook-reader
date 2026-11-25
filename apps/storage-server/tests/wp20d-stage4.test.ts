@@ -209,15 +209,30 @@ describe('stage 4: online sources (Preview)', () => {
       // Bookmeter's v2 index misses books its plain one finds (live 2026-11-19).
       if (new URL(u).searchParams.get('type') === 'japanese_v2') return html(bookmeterPartial([]));
       const q = decodeURIComponent(new URL(u).searchParams.get('keyword') ?? '');
+      // Bookmeter listings: the author-field search also shows the paperback readers log.
+      const byAuthor = (new URL(u).searchParams.get('author') ?? '') !== '';
       return html(
         q.startsWith('魔法使いの旅')
           ? bookmeterPartial([
-              { id: '777', title: '魔法使いの旅 1 (テスト文庫)', authors: ['山田太郎'] },
+              { id: '777', title: '魔法使いの旅 1 (テスト文庫)', authors: ['山田太郎'], reg: 3 },
+              ...(byAuthor
+                ? [
+                    {
+                      id: '778',
+                      title: '魔法使いの旅 1 (テスト文庫)',
+                      authors: ['山田太郎'],
+                      reg: 90,
+                    },
+                  ]
+                : []),
             ])
           : bookmeterPartial([]),
       );
     }
-    if (u === 'https://bookmeter.com/api/v1/books/777/external_book_stores.json')
+    if (
+      u === 'https://bookmeter.com/api/v1/books/777/external_book_stores.json' ||
+      u === 'https://bookmeter.com/api/v1/books/778/external_book_stores.json'
+    )
       return json(bookmeterStores('9784000000001', '123'));
     if (u === 'https://learnnatively.com/sitemap.xml')
       return html(nativelySitemap(['nat0000001', 'nat0000002']));
@@ -537,7 +552,7 @@ describe('stage 4: online sources (Preview)', () => {
       amazon_jp: 'B0TESTAAA1',
       ranobedb: '501',
       bookwalker: '11111111-2222-3333-4444-555555555555',
-      bookmeter: '777',
+      bookmeter: '778',
       isbn: '9784000000001',
       honto: '123',
       natively: 'nat0000001',
@@ -593,7 +608,7 @@ describe('stage 4: online sources (Preview)', () => {
     });
     const ev = env.service.analysis4!.loadOnline(env.libraryId(), uuidA)!;
     expect(ev.amazon.product?.asin).toBe('B0TESTAAA1');
-    expect(ev.bookmeter.accepted?.id).toBe('777');
+    expect(ev.bookmeter.accepted?.id).toBe('778');
     // BookWalker missed "魔法使いの旅 1" and was asked once more by the series name.
     expect(ev.bookwalker.retried).toBe('魔法使いの旅');
     expect(seen).toContain(
@@ -605,6 +620,7 @@ describe('stage 4: online sources (Preview)', () => {
         'amazon-dp',
         'ranobedb-book',
         'bookwalker-detail',
+        'bookmeter-listing',
         'bookmeter-stores',
         'cover',
       ]),
@@ -709,7 +725,7 @@ describe('stage 4: online sources (Preview)', () => {
       ) => { bookmeter: Record<string, unknown>; requests: Record<string, number> } | null;
       saveEvidence: (l: string, u: string, kind: string, v: unknown) => void;
     };
-    expect(a4.loadOnline(env.libraryId(), uuidA)!.bookmeter.accepted).toMatchObject({ id: '777' });
+    expect(a4.loadOnline(env.libraryId(), uuidA)!.bookmeter.accepted).toMatchObject({ id: '778' });
 
     // Book A as the v2 index left it (no results, so no Bookmeter id), and a search still queued
     // the old way.
@@ -776,13 +792,13 @@ describe('stage 4: online sources (Preview)', () => {
         }
       ).url,
     ).toMatch(/[?&]type=japanese$/);
-    expect(a4.loadOnline(env.libraryId(), uuidA)!.bookmeter.accepted).toMatchObject({ id: '777' });
+    expect(a4.loadOnline(env.libraryId(), uuidA)!.bookmeter.accepted).toMatchObject({ id: '778' });
     const ident = env.cleanupDb
       .prepare(
         "SELECT new_json FROM proposed_changes WHERE stage = 4 AND calibre_id = ? AND field = 'identifiers'",
       )
       .get(ids.A) as { new_json: string } | undefined;
-    expect(JSON.parse(ident!.new_json)).toMatchObject({ bookmeter: '777', isbn: '9784000000001' });
+    expect(JSON.parse(ident!.new_json)).toMatchObject({ bookmeter: '778', isbn: '9784000000001' });
     expect(
       (getStage(env.cleanupDb, 4).progress as { bookmeterRedo?: { phase: string; books: number } })
         .bookmeterRedo,

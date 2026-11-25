@@ -100,6 +100,7 @@ import {
   NDL_SPARQL,
   acceptBookmeter,
   BOOKMETER_SEARCH_KEY,
+  bookmeterListingSearch,
   bookmeterSearchUrl,
   bookmeterStoresUrl,
   oldBookmeterSearch,
@@ -311,6 +312,12 @@ export interface OnlineEvidence {
     reason?: string;
     stores?: StoreIds;
     failed?: string;
+    /**
+     * Bookmeter listings (2026-11-25): after a match, the same book searched with Bookmeter's
+     * author field (the decided title and first author), and the match picked again over both
+     * answers (the most registered listing that is the book). Its results, or why it failed.
+     */
+    listing?: { hits?: BookmeterHit[]; failed?: string };
   };
   cover: {
     url: string;
@@ -1736,6 +1743,27 @@ export class Stage4Analysis {
         close('bookmeter');
         break;
       }
+      case 'bookmeter-listing': {
+        ev.bookmeter.listing = body
+          ? { hits: parseBookmeterSearch(body) }
+          : { failed: failed ?? req.state };
+        close('listing');
+        const ref = this.loadRef(p.libraryId, book.uuid)?.file;
+        if (ref && ev.bookmeter.accepted) {
+          const rec = this.record(book, ref, ev);
+          const d = decideStage4(rec);
+          const acc = acceptBookmeter(
+            bookmeterAnswers(ev),
+            bookmeterBook(book, ref, d, rec.amazon?.product?.title),
+          );
+          if (acc.hit) {
+            ev.bookmeter.accepted = { id: acc.hit.id, reason: acc.reason };
+            ev.bookmeter.reason = acc.reason;
+          }
+        }
+        if (ev.bookmeter.accepted) this.askBookmeterStores(ev, ev.bookmeter.accepted.id, prio, w);
+        break;
+      }
       case 'bookmeter-stores': {
         if (body) ev.bookmeter.stores = parseBookmeterStores(body);
         else if (failed) ev.bookmeter.failed = failed;
@@ -1751,6 +1779,26 @@ export class Stage4Analysis {
         break;
       }
     }
+  }
+
+  /** The accepted Bookmeter listing's store list (its ISBN, 楽天, honto… ids). */
+  private askBookmeterStores(
+    ev: OnlineEvidence,
+    id: string,
+    priority: number,
+    w: (step: string) => { libraryId: string; uuid: string; step: string },
+  ): void {
+    if (!ev.open.includes('stores')) ev.open.push('stores');
+    this.deps.queue.enqueue(
+      {
+        site: 'bookmeter',
+        key: `stores:${id}`,
+        url: bookmeterStoresUrl(id),
+        accept: 'application/json, text/javascript, */*; q=0.01',
+        priority,
+      },
+      w('bookmeter-stores'),
+    );
   }
 
   /** Follow-up lookups that need the rules' decision (Bookmeter's acceptance, the Amazon cover). */
@@ -1774,19 +1822,13 @@ export class Stage4Analysis {
       );
       ev.bookmeter.accepted = acc.hit ? { id: acc.hit.id, reason: acc.reason } : null;
       ev.bookmeter.reason = acc.reason;
-      if (acc.hit) {
-        ev.open.push('stores');
-        q.enqueue(
-          {
-            site: 'bookmeter',
-            key: `stores:${acc.hit.id}`,
-            url: bookmeterStoresUrl(acc.hit.id),
-            accept: 'application/json, text/javascript, */*; q=0.01',
-            priority: prio,
-          },
-          w('bookmeter-stores'),
-        );
-      }
+      // Bookmeter listings: the book searched with the author field too, before its store list
+      // (the listing readers log is often only there).
+      const listing = acc.hit ? bookmeterListingSearch(d.values.t, d.values.au) : null;
+      if (listing && !ev.bookmeter.listing) {
+        ev.open.push('listing');
+        q.enqueue({ site: 'bookmeter', ...listing, priority: prio }, w('bookmeter-listing'));
+      } else if (acc.hit) this.askBookmeterStores(ev, acc.hit.id, prio, w);
     }
     if (ev.cover === null) {
       const fc = this.loadRef(p.libraryId, book.uuid)?.cover ?? null;
@@ -1858,6 +1900,7 @@ export class Stage4Analysis {
           db.prepare('UPDATE fetch_waiters SET ready = 1 WHERE request_id = ?').run(id);
           // More Bookmeter coverage's own waiters (bookmeter-more.ts).
           db.prepare('UPDATE bookmeter_more_waiters SET ready = 1 WHERE request_id = ?').run(id);
+          db.prepare('UPDATE bookmeter_listing_waiters SET ready = 1 WHERE request_id = ?').run(id);
         }
       })();
     }
@@ -2626,6 +2669,19 @@ export class Stage4Analysis {
   }
 
   // ------------------------------------------------------------ Natively
+
+  /**
+   * Bookmeter listings (bookmeter-listing.ts): every book of the snapshot with a saved
+   * `bookmeter` id, by UUID. Loads the snapshot when it changed.
+   */
+  bookmeterSaved(libraryId: string): { uuid: string; calibreId: number; saved: string }[] {
+    const snap = this.loadSnapshot(libraryId);
+    const out: { uuid: string; calibreId: number; saved: string }[] = [];
+    for (const b of snap.books.values())
+      if (b.identifiers.bookmeter)
+        out.push({ uuid: b.uuid, calibreId: b.calibreId, saved: b.identifiers.bookmeter });
+    return out.sort((a, b) => (a.uuid < b.uuid ? -1 : a.uuid > b.uuid ? 1 : 0));
+  }
 
   /**
    * More Bookmeter coverage, step 2 (bookmeter-more.ts): one book's stored Bookmeter answer and
@@ -3729,6 +3785,22 @@ export function bookmeterBook(
       opfTitle: ref.opf_title ?? null,
     },
   };
+}
+
+/**
+ * Bookmeter listings: a book's Bookmeter results from both searches (stage 4's, then the
+ * author-field one), each listing once, in that order (a later answer's 登録 count kept when the
+ * first had none).
+ */
+export function bookmeterAnswers(ev: { bookmeter: OnlineEvidence['bookmeter'] }): BookmeterHit[] {
+  const out = new Map<string, BookmeterHit>();
+  for (const h of [...(ev.bookmeter.hits ?? []), ...(ev.bookmeter.listing?.hits ?? [])]) {
+    const had = out.get(h.id);
+    if (!had) out.set(h.id, h);
+    else if (typeof had.registrations !== 'number' && typeof h.registrations === 'number')
+      out.set(h.id, { ...had, registrations: h.registrations });
+  }
+  return [...out.values()];
 }
 
 /** The texts that are the book's own for Bookmeter's edition check (acceptBookmeter). */

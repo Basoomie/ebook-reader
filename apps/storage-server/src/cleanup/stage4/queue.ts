@@ -190,6 +190,15 @@ export class FetchQueue {
 
   // -------------------------------------------- requests asked again (store ratings)
 
+  /** True while a request for this site and key waits or is being fetched (uses the due index). */
+  isOpen(site: string, key: string): boolean {
+    return !!this.db
+      .prepare(
+        "SELECT 1 FROM fetch_requests WHERE site = ? AND state IN ('queued', 'leased') AND key = ?",
+      )
+      .get(site, key);
+  }
+
   /** A request's state ('queued', 'leased', 'done', 'gone', 'failed'), or null when unknown. */
   requestState(id: number): string | null {
     const r = this.db.prepare('SELECT state FROM fetch_requests WHERE id = ?').get(id) as
@@ -638,6 +647,10 @@ export class FetchQueue {
         this.db.prepare('UPDATE audio_fetch_waiters SET ready = 1 WHERE request_id = ?').run(id);
         // More Bookmeter coverage (stage4/bookmeter-more.ts) waits in its own table too.
         this.db.prepare('UPDATE bookmeter_more_waiters SET ready = 1 WHERE request_id = ?').run(id);
+        // So does the Bookmeter links pass (stage4/bookmeter-listing.ts).
+        this.db
+          .prepare('UPDATE bookmeter_listing_waiters SET ready = 1 WHERE request_id = ?')
+          .run(id);
       }
       return next.state;
     })();
@@ -729,10 +742,14 @@ export class FetchQueue {
       const readyBm = this.db.prepare(
         'UPDATE bookmeter_more_waiters SET ready = 1 WHERE request_id = ?',
       );
+      const readyBl = this.db.prepare(
+        'UPDATE bookmeter_listing_waiters SET ready = 1 WHERE request_id = ?',
+      );
       for (const id of ids) {
         fail.run(now, now, id);
         ready.run(id);
         readyBm.run(id);
+        readyBl.run(id);
       }
     })();
     return ids;

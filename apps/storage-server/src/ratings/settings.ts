@@ -27,6 +27,12 @@ export interface RatingSettings {
   scoreRatings: number;
   /** Requests waiting in the fetch queue at once, per site (the queue paces them). */
   queuedPerSite: number;
+  /**
+   * A book new to the reader waits this many hours before its first rating is fetched: the
+   * cleanup's stage 4 (new arrivals) fetches the same store pages, and the first fill reads the
+   * rating from its saved copy. Also held while stage 4's own request for the page is open.
+   */
+  newBookWaitHours: number;
 }
 
 export const DEFAULT_RATING_SETTINGS: RatingSettings = {
@@ -38,6 +44,7 @@ export const DEFAULT_RATING_SETTINGS: RatingSettings = {
   openMaxAgeDays: 30,
   scoreRatings: 20,
   queuedPerSite: 20,
+  newBookWaitHours: 48,
 };
 
 export class RatingSettingsError extends Error {}
@@ -49,6 +56,7 @@ const NUMBERS: Partial<Record<keyof RatingSettings, [number, number]>> = {
   openMaxAgeDays: [1, 3650],
   scoreRatings: [0, 1000],
   queuedPerSite: [1, 500],
+  newBookWaitHours: [0, 720],
 };
 const FLAGS: (keyof RatingSettings)[] = ['refresh', 'bookmeter'];
 
