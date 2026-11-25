@@ -755,6 +755,43 @@ describe('moving books to the manga library', () => {
     expect(r.body.error.message).toMatch(/moved to another library/);
   });
 
+  it('a move batch that moved nothing never waits for an index run (none comes)', async () => {
+    await addBooks();
+    const lib = env.libraryId();
+    await indexManga();
+    const now = Date.now() + 60_000; // finished after both libraries' last index
+    const add = env.cleanupDb.prepare(
+      `INSERT INTO batches (id, stage, library_id, kind, state, item_count, created_at, finished_at, updated_at, target_library_id)
+       VALUES (?, ?, ?, 'apply', ?, 1, ?, ?, ?, ?)`,
+    );
+    const ingested = (id: string) =>
+      (
+        env.cleanupDb.prepare('SELECT ingested_at FROM batches WHERE id = ?').get(id) as {
+          ingested_at: number | null;
+        }
+      ).ingested_at;
+    // Its one book skipped (changed in Calibre since the selection): neither library changed.
+    add.run('none', MOVE_STAGE, lib, 'partial', now, now, now, mangaId());
+    env.service.batches.checkIngested(now + 1);
+    expect(ingested('none')).not.toBeNull();
+    // A batch that moved a book still waits for both libraries' next index.
+    add.run('one', MOVE_STAGE, lib, 'applied', now + 2, now + 2, now + 2, mangaId());
+    const mc = env.cleanupDb
+      .prepare(
+        `INSERT INTO proposed_changes (stage, library_id, calibre_id, calibre_uuid, field, source, class, state, created_at, updated_at)
+         VALUES (?, ?, 1, 'u1', 'book', 'move', 'auto', 'applied', ?, ?)`,
+      )
+      .run(MOVE_STAGE, lib, now, now).lastInsertRowid;
+    env.cleanupDb
+      .prepare(
+        `INSERT INTO calibre_moves (change_id, batch_id, from_library_id, from_calibre_id, from_uuid, to_library_id, to_calibre_id, to_uuid, state, moved_at)
+         VALUES (?, 'one', ?, 1, 'u1', ?, 9, 'u9', 'moved', ?)`,
+      )
+      .run(mc, lib, mangaId(), now);
+    env.service.batches.checkIngested(now + 3);
+    expect(ingested('one')).toBeNull();
+  });
+
   it('re-keys every table it names, and back again', async () => {
     const lib = 'L1';
     const to = { libraryId: 'L2', calibreId: 9, uuid: 'new' };
