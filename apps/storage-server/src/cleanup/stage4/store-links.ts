@@ -129,6 +129,30 @@ export function authorWalkGoesOn(
   return typeof last !== 'number' || last > stop;
 }
 
+/**
+ * The pages an author walk still reads after `page` (for the card's time left only; it decides
+ * nothing). The listings come most registered first, so the fall from page 1's first count to
+ * this page's last one, per listing, says how many listings more it takes to reach `stop`.
+ * Unknown counts, no fall or no stop: to the cap.
+ */
+export function walkPagesLeft(
+  firstReg: number | null,
+  lastReg: number | null,
+  page: number,
+  stop: number,
+  maxPages: number,
+): number {
+  const most = Math.max(0, maxPages - page);
+  if (most === 0) return 0;
+  if (typeof firstReg !== 'number' || typeof lastReg !== 'number') return most;
+  if (lastReg <= stop) return 0;
+  const listings = page * BOOKMETER_PAGE_SIZE - 1;
+  if (stop <= 0 || firstReg <= lastReg || lastReg <= 0 || listings <= 0) return most;
+  const fall = Math.log(lastReg / firstReg) / listings; // < 0
+  const more = Math.log(stop / lastReg) / fall; // listings until the count reaches stop
+  return Math.min(most, Math.max(1, Math.ceil(more / BOOKMETER_PAGE_SIZE)));
+}
+
 /** True for a Bookmeter search address that asked the old index. */
 export function oldBookmeterSearch(url: string): boolean {
   return url.includes('type=japanese_v2');

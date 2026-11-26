@@ -3029,6 +3029,18 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
         ON bookmeter_listing_books (library_id, author, state);
     `,
   },
+  {
+    version: 40,
+    name: 'Bookmeter links: each author walk keeps its pages-left estimate (the card’s time left)',
+    // The card's time left was paced by walks ended, which was fast while every author's first
+    // page was read and slow for the authors with many pages. first_reg: page 1's first
+    // listing's registrations; left_pages: pages still to read, estimated from how fast the
+    // counts fall (NULL: not estimated yet).
+    sql: `
+      ALTER TABLE bookmeter_author_walks ADD COLUMN first_reg INTEGER;
+      ALTER TABLE bookmeter_author_walks ADD COLUMN left_pages INTEGER;
+    `,
+  },
 ];
 
 export const CLEANUP_SCHEMA_VERSION = CLEANUP_MIGRATIONS[CLEANUP_MIGRATIONS.length - 1].version;
