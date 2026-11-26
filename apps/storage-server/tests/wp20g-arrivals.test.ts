@@ -21,7 +21,12 @@ import { ArrivalBatches } from '../src/cleanup/arrivals/add-batches';
 import { entrySkip } from '../src/cleanup/arrivals/archives';
 import { classifyName, settled, sniffFormat, walkSource } from '../src/cleanup/arrivals/catalog';
 import { qualityOfFile } from '../src/cleanup/arrivals/compare';
-import { inPool, sameTextNoWinner, type CompareFacts } from '../src/cleanup/arrivals/run';
+import {
+  continueArrivalsStage4,
+  inPool,
+  sameTextNoWinner,
+  type CompareFacts,
+} from '../src/cleanup/arrivals/run';
 import type { SourcePacer } from '../src/cleanup/arrivals/sources-fs';
 import { stage2Pass } from '../src/cleanup/arrivals/stage-passes';
 import { ArrivalStage5, emptyStage5Pass } from '../src/cleanup/arrivals/stage5-pass';
@@ -763,6 +768,59 @@ describe('wp20g: a run end to end', () => {
         .get(),
     ).toEqual({ n: 2 });
   }, 300_000);
+
+  it('a finished run’s books stage 4 never read go on in a run of their own from stage 4 (run 7)', () => {
+    const db = env.cleanupDb;
+    const lib = 'lib-continue';
+    const p = {
+      phase: 'done',
+      libraryId: lib,
+      pairs: [{ key: 'k', source: 's', libraryId: lib, firstRun: false }],
+      scope: { import: [901, 902, 903], hand: [] },
+    };
+    const from = Number(
+      db
+        .prepare(
+          `INSERT INTO calibre_arrival_runs (trigger, mode, state, phase, started_at, finished_at, progress_json)
+           VALUES ('now', 'on', 'done', 'done', 1, 2, ?)`,
+        )
+        .run(JSON.stringify(p)).lastInsertRowid,
+    );
+    // Book 901 was read (its row carries the run's view); 903 is gone from Calibre since.
+    db.prepare(
+      `INSERT INTO stage4_books (library_id, calibre_uuid, calibre_id, analysis_id, labeled, state, updated_at)
+       VALUES (?, 'u901', 901, ?, 0, 'proposed', 1)`,
+    ).run(lib, `arrivals:${from}`);
+    const present = () =>
+      new Map([
+        [901, 'u901'],
+        [902, 'u902'],
+      ]);
+    const prevMode = (
+      db.prepare('SELECT mode FROM calibre_arrivals_state').get() as { mode: string }
+    ).mode;
+    db.prepare(`UPDATE calibre_arrivals_state SET mode = 'on', current_run = NULL`).run();
+    try {
+      const out = continueArrivalsStage4(db, from, present);
+      expect(out.books).toBe(1);
+      const r = db
+        .prepare('SELECT mode, state, phase, progress_json FROM calibre_arrival_runs WHERE id = ?')
+        .get(out.runId) as { mode: string; state: string; phase: string; progress_json: string };
+      expect([r.mode, r.state, r.phase]).toEqual(['on', 'running', 'stage4']);
+      const np = JSON.parse(r.progress_json);
+      expect(np.scope).toEqual({ import: [902], hand: [] });
+      expect(np.libraryId).toBe(lib);
+      expect(np.stage4Read).toBeUndefined();
+      expect(db.prepare('SELECT current_run FROM calibre_arrivals_state').get()).toEqual({
+        current_run: out.runId,
+      });
+      // Never while a run goes on.
+      expect(() => continueArrivalsStage4(db, from, present)).toThrow(/going on/);
+      db.prepare(`UPDATE calibre_arrival_runs SET state = 'stopped' WHERE id = ?`).run(out.runId);
+    } finally {
+      db.prepare('UPDATE calibre_arrivals_state SET mode = ?, current_run = NULL').run(prevMode);
+    }
+  });
 
   it('a book added by hand that is a copy of a library book is proposed for removal (stage 1)', async () => {
     const H = await env.lib.addBook({ title: 'A (hand)', authors: ['作者'], epub: A });
