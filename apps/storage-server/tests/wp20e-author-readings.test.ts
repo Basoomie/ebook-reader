@@ -8,8 +8,10 @@ import { ndlNameReading, ndlReading, type NdlRow } from '../src/cleanup/stage4/s
 import { proposeStage4, type AuthorReading } from '../src/cleanup/stage4/proposals';
 import {
   plainVolume,
+  PART_PLACE,
   RDB_PLACE_SURE,
   SIDE_COUNTED,
+  SIDE_LISTED_SURE,
   type SeriesChoice,
 } from '../src/cleanup/stage4/series-order';
 import type { RefRecord } from '../src/cleanup/stage4/rules-v3';
@@ -298,6 +300,22 @@ describe("the series step's number over a number Calibre has (rules 9)", () => {
       { series: 'とらドラ!', seriesIndex: 2 },
       { se: 'とらドラ!', ix: 2 },
       { index: 9.5, from: `a side book ${SIDE_COUNTED} after volume 9` },
+    );
+    expect(p).toMatchObject({ class: 'auto', new: { index: 9.5 } });
+  });
+  it("a later part's volume on its place in the series list: automatic (rules 12, 24 right of 24)", () => {
+    const p = seriesOf(
+      { series: '本好きの下剋上 〜司書になるためには手段を選んでいられません〜', seriesIndex: 5 },
+      { se: '本好きの下剋上 〜司書になるためには手段を選んでいられません〜', ix: 5 },
+      { index: 17, from: PART_PLACE },
+    );
+    expect(p).toMatchObject({ class: 'auto', new: { index: 17 } });
+  });
+  it('a side book listed and published after the volume before it: automatic (rules 12, 20 of 20)', () => {
+    const p = seriesOf(
+      { series: '賢者の孫', seriesIndex: 12 },
+      { se: '賢者の孫', ix: 12 },
+      { index: 9.5, from: `a side book ${SIDE_LISTED_SURE} after volume 9` },
     );
     expect(p).toMatchObject({ class: 'auto', new: { index: 9.5 } });
   });

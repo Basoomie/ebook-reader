@@ -18,8 +18,12 @@ import {
   arcOf,
   copyBooks,
   printedNumber,
+  laterPart,
+  PART_PLACE,
   RDB_PLACE_SURE,
   SIDE_COUNTED,
+  SIDE_LIST_COUNTED,
+  SIDE_LISTED_SURE,
   type SeriesBook,
 } from '../src/cleanup/stage4/series-order';
 import { firstColophonDate, storeListPlaces } from '../src/cleanup/stage4/analysis';
@@ -956,5 +960,98 @@ describe("RanobeDB's places and side books counted among its volumes (rules 11, 
   it('a book whose own title numbers it is no side book', () => {
     expect(choose('ハード・デイズ・ナイツ')(27413).index).toBe(6); // ハード・デイズ・ナイツ6 アンコール… (was 7.5)
     expect(choose('キネマ探偵カレイドミステリー')(49609).index).toBe(2); // ～再演奇縁のアンコール～ (was 1.5)
+  });
+});
+
+describe('a later part counted straight through (rules 12)', () => {
+  const fx = JSON.parse(
+    readFileSync(join(__dirname, 'fixtures', 'series-held-reviews.json'), 'utf8'),
+  ) as Record<string, SeriesBook[]>;
+  const choose = (series: string) => {
+    const books = fx[series];
+    const byUuid = new Map(orderSeries(books).map((x) => [x.uuid, x]));
+    return (id: number) => {
+      const b = books.find((x) => x.calibreId === id)!;
+      const c = byUuid.get(b.uuid);
+      return { index: c ? c.index : b.index, from: c?.from ?? null, guess: !!c?.guess };
+    };
+  };
+  const HON = '本好きの下剋上 〜司書になるためには手段を選んでいられません〜';
+  it("a later part's volume prints the part's count, the first part's the series'", () => {
+    expect(
+      printedNumber(
+        '本好きの下剋上～司書になるためには手段を選んでいられません～第五部「女神の化身II」',
+        HON,
+      ),
+    ).toBeNull();
+    expect(printedNumber('水属性の魔法使い 第二部 西方諸国編3', '水属性の魔法使い')).toBeNull();
+    expect(printedNumber('水属性の魔法使い 第一部 中央諸国編Ⅲ', '水属性の魔法使い')).toBe(3);
+    expect(printedNumber('本好きの下剋上 第一部 兵士の娘4', '本好きの下剋上')).toBe(4);
+    expect(laterPart('ニンジャスレイヤー第2部-5 ピストルカラテ決死拳', 'ニンジャスレイヤー')).toBe(
+      true,
+    );
+    expect(laterPart('ニンジャスレイヤー第1部 ネオサイタマ炎上2', 'ニンジャスレイヤー')).toBe(
+      false,
+    );
+  });
+  it('本好き: 第四部 and 第五部 on their places in the series list (Amazon and RanobeDB: 1-33)', () => {
+    const c = choose(HON);
+    expect(c(7293)).toMatchObject({ index: 23, from: PART_PLACE }); // 第五部 II (was proposed 2)
+    expect(c(10747)).toMatchObject({ index: 33, from: PART_PLACE }); // 第五部 XII (was 12)
+    expect(c(9116)).toMatchObject({ index: 17, from: PART_PLACE }); // 第四部 V (Calibre 5)
+    expect(c(4955)).toMatchObject({ index: 29, from: PART_PLACE }); // 第五部 VIII (Calibre 8)
+    expect(c(7028).index).toBe(3); // 第一部 III
+  });
+  it("本好き's children's edition: 第二部 1-3 after 第一部's six, as its store list", () => {
+    const c = choose('本好きの下剋上');
+    expect(c(4973)).toMatchObject({ index: 7, from: PART_PLACE });
+    expect(c(4966)).toMatchObject({ index: 9, from: PART_PLACE });
+    expect(c(4978).index).toBe(1); // 第一部 兵士の娘1 stays
+    expect(c(4977).index).toBe(6);
+  });
+  it('水属性の魔法使い and ニンジャスレイヤー count their parts straight through', () => {
+    const w = choose('水属性の魔法使い');
+    expect(w(69106).index).toBe(8); // 第二部 1
+    expect(w(68750).index).toBe(12); // 第二部 5 (was proposed 5)
+    expect(w(16394).index).toBe(3); // 第一部 Ⅲ stays
+    const n = choose('ニンジャスレイヤー');
+    expect(n(31929)).toMatchObject({ index: 5, from: PART_PLACE }); // 第2部-1 (was 1.8)
+    expect(n(31930).index).toBe(12); // 第2部-8
+    expect(n(31932).index).toBe(2); // 第1部 2 stays
+  });
+});
+
+describe('side books placed by the series list (rules 12, 90 labeled side books)', () => {
+  const fx = JSON.parse(
+    readFileSync(join(__dirname, 'fixtures', 'series-held-reviews.json'), 'utf8'),
+  ) as Record<string, SeriesBook[]>;
+  const choose = (series: string) => {
+    const books = fx[series];
+    const byUuid = new Map(orderSeries(books).map((x) => [x.uuid, x]));
+    return (id: number) => {
+      const b = books.find((x) => x.calibreId === id)!;
+      const c = byUuid.get(b.uuid);
+      return { index: c ? c.index : b.index, from: c?.from ?? null };
+    };
+  };
+  const SURE = `a side book ${SIDE_LISTED_SURE} after volume `;
+  it('listed after the volume just before it, dates agreeing: sure', () => {
+    // KADOKAWA: クインヴェールの翼1 2016-04-25 (after 10), 2 2017-03-25 (after 11).
+    const a = choose('学戦都市アスタリスク');
+    expect(a(5321)).toMatchObject({ index: 11.5, from: `${SURE}11` });
+    expect(a(5333)).toMatchObject({ index: 14.5, from: `${SURE}14` });
+    const k = choose('賢者の孫');
+    expect(k(6160)).toMatchObject({ index: 9.5, from: `${SURE}9` }); // 賢者の孫SP (was 12)
+  });
+  it('not sure where the volume it follows was moved, or the next volume is a title (99.9)', () => {
+    // ウィザーズ・ブレイン アンコール (2024-02-09, after X): another choice moved VII下 to 23.
+    expect(choose('ウィザーズ・ブレイン')(26326).from).not.toMatch(SIDE_LISTED_SURE);
+    // 「安達としまむら99.9」 is a book's title: SS2 was placed after "volume 99".
+    expect(choose('安達としまむら')(13912).from).not.toMatch(SIDE_LISTED_SURE);
+  });
+  it('a side book between volumes on their list places is counted as a volume', () => {
+    expect(choose('バッカーノ!')(31091)).toMatchObject({ index: 14, from: SIDE_LIST_COUNTED });
+    // Spin-offs a store numbers by their far places are no neighbours: SP stays a side book.
+    expect(choose('はたらく魔王さま!')(20640).from).not.toBe(SIDE_LIST_COUNTED);
   });
 });

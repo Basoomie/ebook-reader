@@ -61,7 +61,14 @@ const garbled = (v: unknown): boolean =>
         : false;
 import type { StoreIds } from './store-links';
 import { seriesKey, spellingOf } from './series-spelling';
-import { RDB_PLACE_SURE, SIDE_COUNTED, plainVolume, type SeriesChoice } from './series-order';
+import {
+  PART_PLACE,
+  RDB_PLACE_SURE,
+  SIDE_COUNTED,
+  SIDE_LISTED_SURE,
+  plainVolume,
+  type SeriesChoice,
+} from './series-order';
 import type { Stage4Extras } from './snapshot4';
 
 export const STAGE4_FIELDS = [
@@ -694,11 +701,18 @@ export function proposeStage4(input: ProposalInput): Stage4Proposal[] {
     // Also RanobeDB's places where two other volumes of the list sit on theirs, and side books
     // after the count of the list's main volumes before them (rules 11: the census of all 214
     // held RanobeDB and side-book reviews, 2026-11-25: 18 and 8 right, none wrong).
+    // And a later part's volume on its place in the series list beside two volumes on theirs
+    // (rules 12: every book of the library it places, 24 in 4 series, right; 本好き 第五部).
+    // And a side book listed after the volume just before it, none missing between them, its
+    // date agreeing and both neighbours on their numbers (rules 12: the 20 books of the library
+    // it moves, 19 right by the labels or before and after, 1 by its publisher's date).
     const convention =
       !!so &&
       ((/^the reading order/u.test(so.from) && decidedN !== null && decidedN === oldSeries.index) ||
         so.from === 'its own title (上/中/下)' ||
         so.from === RDB_PLACE_SURE ||
+        so.from === PART_PLACE ||
+        so.from.startsWith(`a side book ${SIDE_LISTED_SURE} after volume `) ||
         so.from.startsWith(`a side book ${SIDE_COUNTED} after volume `) ||
         /^the reading order \(the series list/u.test(so.from));
     // A number written as a best guess is not kept against a confirmed one ((仮)花嫁 3 and 8).

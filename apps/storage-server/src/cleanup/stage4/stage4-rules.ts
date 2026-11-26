@@ -60,8 +60,13 @@ import {
  * Also: RanobeDB's places beside two volumes on theirs, and side books after the count of the
  * list's main volumes, are automatic; parts in another store list are another edition; deciding
  * again deletes only stage 4's own open proposals.
+ * 12 (2026-11-25, 本好き's 第五部 II-XII proposed as 2-12): a volume of a later part (「第五部「女神
+ * の化身II」」) prints the part's own count, not the series'; its place in the series list is its
+ * number where two volumes of the list sit on theirs (automatic). A side book between two volumes
+ * on their list places is counted as a volume; one listed after the volume just before it, none
+ * missing between, its date agreeing and both neighbours on their numbers, is automatic.
  */
-export const STAGE4_RULES_VERSION = 11;
+export const STAGE4_RULES_VERSION = 12;
 
 /** The gold labels' names for the kinds. */
 export type Kind = 'full' | 'sample' | 'bonus' | 'special edition' | 'omnibus';
