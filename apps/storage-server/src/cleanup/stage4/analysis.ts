@@ -2560,9 +2560,15 @@ export class Stage4Analysis {
     // ~0.6 s per book mid-run and 1.9 s per book at the library's size (10 fields, PC), against
     // 0.1 ms by the book index; the final pass (8 h 38 min on the page) and every proposal during
     // the lookups blocked the server that long.
+    // Only stage 4's own rows (its analysis, the new-arrivals runs' views): the passes over stage
+    // 4's answers (Bookmeter links, More direct links, …) keep their open proposals under their
+    // own "<pass>:<run>" ids, and deciding again (a rules version) must not delete them
+    // (rehearsal of rules 11, 2026-11-25: 6,671 of the Bookmeter links Preview's 6,859 proposals
+    // were deleted).
     const del = db.prepare(
       `DELETE FROM proposed_changes INDEXED BY proposed_changes_book
-       WHERE stage = 4 AND library_id = ? AND calibre_uuid = ? AND state = 'proposed' AND field = ?`,
+       WHERE stage = 4 AND library_id = ? AND calibre_uuid = ? AND state = 'proposed' AND field = ?
+         AND (analysis_id = ? OR analysis_id IS NULL OR analysis_id NOT LIKE '%:%' OR analysis_id LIKE 'arrivals:%')`,
     );
     const ins = db.prepare(
       `INSERT INTO proposed_changes (stage, library_id, calibre_id, calibre_uuid, field, old_json, new_json, source,
@@ -2587,7 +2593,7 @@ export class Stage4Analysis {
             'author_sort',
           ]),
       );
-    for (const f of all) del.run(p.libraryId, book.uuid, f);
+    for (const f of all) del.run(p.libraryId, book.uuid, f, p.analysisId);
     for (const x of proposals) {
       if (fields && !fields.has(x.field)) continue;
       ins.run(

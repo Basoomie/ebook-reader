@@ -54,8 +54,14 @@ import {
  * a best guess yields to a confirmed one (titles, authors and illustrators keep rules 7: their
  * confirmed values measured worse); after a write, the series step proposes again a book whose
  * review proposal disagrees with its choice, and no title only loses its volume number.
+ * 11 (2026-11-25, the held series reviews measured): 「Ep.N」/「level.N」 are volume numbers, 「N+」
+ * is no number and 「N+M」 an omnibus; a book whose own title, part mark or list place backs its
+ * number is not moved by date or by another list; a side book nothing places keeps its number.
+ * Also: RanobeDB's places beside two volumes on theirs, and side books after the count of the
+ * list's main volumes, are automatic; parts in another store list are another edition; deciding
+ * again deletes only stage 4's own open proposals.
  */
-export const STAGE4_RULES_VERSION = 10;
+export const STAGE4_RULES_VERSION = 11;
 
 /** The gold labels' names for the kinds. */
 export type Kind = 'full' | 'sample' | 'bonus' | 'special edition' | 'omnibus';
