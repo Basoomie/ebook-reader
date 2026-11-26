@@ -181,9 +181,13 @@ export function listingsLines(s: ListingsStatus | null): string[] {
   if (!s.stage4Done && s.mode !== 'off')
     out.push('Waits for stage 4 (its analysis and the AI check) to finish.');
   if (s.siteWait && p.phase === 'search') out.push(`読書メーター's requests wait: ${s.siteWait}.`);
+  // A run made before the second look (no author walks) keeps its own line.
+  const walks = p.search.authors !== undefined || p.search.decided !== undefined;
   if (p.search.looked > 0)
     out.push(
-      `Looked at ${n(p.search.looked)} of ${n(p.books)} books with a saved link; ${n(p.search.asked)} wait for their author’s listings, ${n(p.search.decided ?? 0)} decided.`
+      walks
+        ? `Looked at ${n(p.search.looked)} of ${n(p.books)} books with a saved link; ${n(p.search.asked)} wait for their author’s listings, ${n(p.search.decided ?? 0)} decided.`
+        : `Looked at ${n(p.search.looked)} of ${n(p.books)} books with a saved link; ${n(p.search.asked)} searched again, ${n(p.search.answered)} answered.`
     );
   if (p.search.enqueued && p.search.authors)
     out.push(

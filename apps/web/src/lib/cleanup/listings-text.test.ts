@@ -94,6 +94,20 @@ describe('Bookmeter links: the card', () => {
     expect(lines).toContain('Links: 1,690 to write, 0 written.');
   });
 
+  it('keeps the line of a run made before the author walks', () => {
+    const s = status();
+    const lines = listingsLines({
+      ...s,
+      progress: {
+        ...s.progress,
+        search: { looked: 39922, asked: 35904, answered: 35904, enqueued: true, failed: 0 }
+      }
+    });
+    expect(lines).toContain(
+      'Looked at 39,922 of 40,775 books with a saved link; 35,904 searched again, 35,904 answered.'
+    );
+  });
+
   it('says that refused pages are asked again, never decided', () => {
     const lines = listingsLines(status({ refusedOpen: 12 }));
     expect(lines).toContain(
