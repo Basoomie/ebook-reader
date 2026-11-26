@@ -170,7 +170,7 @@
                   <div class="mt-2">
                     <input
                       type="search"
-                      class="w-full"
+                      class="c-input w-full"
                       placeholder="Search the library by title"
                       aria-label="Search the library by title"
                       bind:value={query}

@@ -410,7 +410,7 @@
       <div class="flex flex-wrap gap-2">
         <input
           type="text"
-          class="min-w-0 grow"
+          class="c-input min-w-0 grow"
           placeholder="https://bookmeter.com/users/1234567"
           aria-label="読書メーター profile link or number"
           data-testid="bookmeter-add-user"
@@ -454,7 +454,7 @@
             type="number"
             min="10"
             max="1440"
-            class="w-24"
+            class="c-input w-24"
             value={draft.quickMinutes}
             on:change={(e) =>
               draft && (draft = { ...draft, quickMinutes: num(e, 10, 1440, draft.quickMinutes) })}
@@ -467,7 +467,7 @@
             type="number"
             min="1"
             max="168"
-            class="w-24"
+            class="c-input w-24"
             value={draft.fullHours}
             on:change={(e) =>
               draft && (draft = { ...draft, fullHours: num(e, 1, 168, draft.fullHours) })}
@@ -480,7 +480,7 @@
             type="number"
             min="0"
             max="10000"
-            class="w-24"
+            class="c-input w-24"
             value={draft.askAbove}
             on:change={(e) =>
               draft && (draft = { ...draft, askAbove: num(e, 0, 10000, draft.askAbove) })}
