@@ -147,9 +147,28 @@ export function twinsOf(c: FormatCandidate, byTitle: Map<string, Twin[]>, max: n
     .map((x) => x.t);
 }
 
+/** The UUIDs of a snapshot's books without an EPUB (one indexed query: the `done` phase's check). */
+export function nonEpubUuids(file: string): string[] {
+  const db = new Database(file, { readonly: true, fileMustExist: true });
+  try {
+    return (
+      db
+        .prepare(
+          `SELECT b.uuid FROM books b WHERE b.uuid IS NOT NULL AND b.uuid <> ''
+             AND NOT EXISTS (SELECT 1 FROM data d WHERE d.book = b.id AND d.format = 'EPUB')`,
+        )
+        .all() as { uuid: string }[]
+    ).map((r) => r.uuid);
+  } finally {
+    db.close();
+  }
+}
+
 /**
- * The library's books without an EPUB, and its EPUB books by title key (for the twins), from a
- * metadata.db snapshot (read only).
+ * The library's books without an EPUB, and the EPUB books with one of their title keys (the
+ * twins), from a metadata.db snapshot (read only). Only those books' authors, formats and tags
+ * are read (the rehearsal on the live snapshot: reading all 61,000 books' took 1.9 s, which would
+ * hold the server; the books without an EPUB are about 1,000).
  */
 export function readFormatCandidates(file: string): {
   books: FormatCandidate[];
@@ -157,46 +176,11 @@ export function readFormatCandidates(file: string): {
 } {
   const db = new Database(file, { readonly: true, fileMustExist: true });
   try {
-    const authors = new Map<number, string[]>();
-    for (const r of db
+    const rows = db
       .prepare(
-        `SELECT l.book, a.name FROM books_authors_link l JOIN authors a ON a.id = l.author ORDER BY l.id`,
-      )
-      .all() as { book: number; name: string }[]) {
-      const list = authors.get(r.book);
-      if (list) list.push(r.name);
-      else authors.set(r.book, [r.name]);
-    }
-    const formats = new Map<number, FormatFile[]>();
-    for (const r of db
-      .prepare('SELECT book, format, name, uncompressed_size FROM data ORDER BY format')
-      .all() as {
-      book: number;
-      format: string;
-      name: string;
-      uncompressed_size: number | null;
-    }[]) {
-      const f = { format: r.format.toUpperCase(), name: r.name, size: r.uncompressed_size };
-      const list = formats.get(r.book);
-      if (list) list.push(f);
-      else formats.set(r.book, [f]);
-    }
-    const tags = new Map<number, string[]>();
-    for (const r of db
-      .prepare(
-        `SELECT l.book, t.name FROM books_tags_link l JOIN tags t ON t.id = l.tag ORDER BY t.name`,
-      )
-      .all() as { book: number; name: string }[]) {
-      const list = tags.get(r.book);
-      if (list) list.push(r.name);
-      else tags.set(r.book, [r.name]);
-    }
-    const books: FormatCandidate[] = [];
-    const byTitle = new Map<string, Twin[]>();
-    for (const b of db
-      .prepare(
-        `SELECT id, uuid, title, path, last_modified FROM books
-         WHERE uuid IS NOT NULL AND uuid <> '' ORDER BY id`,
+        `SELECT b.id, b.uuid, b.title, b.path, b.last_modified,
+                EXISTS (SELECT 1 FROM data d WHERE d.book = b.id AND d.format = 'EPUB') AS epub
+         FROM books b WHERE b.uuid IS NOT NULL AND b.uuid <> '' ORDER BY b.id`,
       )
       .all() as {
       id: number;
@@ -204,35 +188,80 @@ export function readFormatCandidates(file: string): {
       title: string;
       path: string;
       last_modified: string | null;
-    }[]) {
+      epub: number;
+    }[];
+    const without = rows.filter((r) => r.epub === 0);
+    const keys = new Set(without.map((r) => titleKey(r.title)).filter(Boolean));
+    const twins = rows.filter((r) => r.epub === 1 && keys.has(titleKey(r.title)));
+    const ids = [...without, ...twins].map((r) => r.id);
+    const authors = new Map<number, string[]>();
+    const formats = new Map<number, FormatFile[]>();
+    const tags = new Map<number, string[]>();
+    const push = <T>(m: Map<number, T[]>, k: number, v: T) => {
+      const list = m.get(k);
+      if (list) list.push(v);
+      else m.set(k, [v]);
+    };
+    for (let i = 0; i < ids.length; i += 500) {
+      const chunk = ids.slice(i, i + 500);
+      const marks = chunk.map(() => '?').join(',');
+      for (const r of db
+        .prepare(
+          `SELECT l.book, a.name FROM books_authors_link l JOIN authors a ON a.id = l.author
+           WHERE l.book IN (${marks}) ORDER BY l.id`,
+        )
+        .all(...chunk) as { book: number; name: string }[])
+        push(authors, r.book, r.name);
+      for (const r of db
+        .prepare(
+          `SELECT book, format, name, uncompressed_size FROM data WHERE book IN (${marks}) ORDER BY format`,
+        )
+        .all(...chunk) as {
+        book: number;
+        format: string;
+        name: string;
+        uncompressed_size: number | null;
+      }[])
+        push(formats, r.book, {
+          format: r.format.toUpperCase(),
+          name: r.name,
+          size: r.uncompressed_size,
+        });
+      for (const r of db
+        .prepare(
+          `SELECT l.book, t.name FROM books_tags_link l JOIN tags t ON t.id = l.tag
+           WHERE l.book IN (${marks}) ORDER BY t.name`,
+        )
+        .all(...chunk) as { book: number; name: string }[])
+        push(tags, r.book, r.name);
+    }
+    const byTitle = new Map<string, Twin[]>();
+    for (const b of twins) {
       const fs = formats.get(b.id) ?? [];
       const epub = fs.find((f) => f.format === 'EPUB');
-      if (epub) {
-        const key = titleKey(b.title);
-        if (!key) continue;
-        const twin: Twin = {
-          calibreId: b.id,
-          uuid: b.uuid,
-          title: b.title,
-          authors: authors.get(b.id) ?? [],
-          formats: fs.map((f) => f.format),
-          epubPath: `${b.path}/${epub.name}.epub`,
-        };
-        const list = byTitle.get(key);
-        if (list) list.push(twin);
-        else byTitle.set(key, [twin]);
-        continue;
-      }
-      books.push({
+      if (!epub) continue;
+      const twin: Twin = {
         calibreId: b.id,
         uuid: b.uuid,
         title: b.title,
         authors: authors.get(b.id) ?? [],
-        tags: tags.get(b.id) ?? [],
-        lastModified: b.last_modified,
-        formats: fs,
-      });
+        formats: fs.map((f) => f.format),
+        epubPath: `${b.path}/${epub.name}.epub`,
+      };
+      const key = titleKey(b.title);
+      const list = byTitle.get(key);
+      if (list) list.push(twin);
+      else byTitle.set(key, [twin]);
     }
+    const books: FormatCandidate[] = without.map((b) => ({
+      calibreId: b.id,
+      uuid: b.uuid,
+      title: b.title,
+      authors: authors.get(b.id) ?? [],
+      tags: tags.get(b.id) ?? [],
+      lastModified: b.last_modified,
+      formats: formats.get(b.id) ?? [],
+    }));
     return { books, byTitle };
   } finally {
     db.close();

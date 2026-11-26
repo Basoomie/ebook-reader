@@ -7,6 +7,10 @@
  *   the user's numbers were based on; お兄ちゃんだけど… at 93-95 % stays in review)
  *                                              -> folded into the twin's record;
  *   wholly inside the twin (the twin has more) -> folded too;
+ *   and for both: stage 3's review principle (a copy goes only if the book kept has everything
+ *   it has): the copy's text that the twin lacks is at most `copyExtraMax` of the copy (the
+ *   real-calibre e2e: お兄ちゃんだけど… 8 is 99.7 % / 99.3 % by stage 3's exact measure, a
+ *   duplicate by stage 3's rules, but has 192 characters its twin lacks: review, as decided);
  *   part of the text in common                 -> review (the "near" ones);
  *   different                                  -> a book of its own (converted).
  * A sample or bonus story never folds into a full book (stage 3: never a duplicate), and a book
@@ -45,6 +49,7 @@ export function decideCopy(
   measures: TwinMeasure[],
   s: DuplicateSettings,
   sameMin: number,
+  copyExtraMax = 0.001,
 ): CopyVerdict {
   if (measures.length === 0) return { verdict: 'convert', reason: 'No EPUB book with this title' };
   if (copyChars < s.imageOnlyMaxChars)
@@ -69,7 +74,10 @@ export function decideCopy(
       s,
     );
     const overlap = `${pct(m.copyInTwin)} of the copy in the EPUB book, ${pct(m.twinInCopy)} of the EPUB book in the copy`;
-    if (v.cls === 'duplicate' && Math.min(m.copyInTwin, m.twinInCopy) >= sameMin)
+    // The copy's own text the twin lacks (its extra text, counted as the reader counts).
+    const extra = m.extraCopy ? m.extraCopy.extraChars : copyChars * (1 - m.copyInTwin);
+    const nothingLost = extra <= copyExtraMax * copyChars;
+    if (v.cls === 'duplicate' && Math.min(m.copyInTwin, m.twinInCopy) >= sameMin && nothingLost)
       return { verdict: 'fold', how: 'same', twin: m, reason: `Same text (${overlap})` };
     if (v.cls === 'never') continue;
     // Wholly inside: the copy's text in the twin, the twin clearly more (below the "same" line),
@@ -79,6 +87,7 @@ export function decideCopy(
       v.cls !== 'keep_both' &&
       m.copyInTwin >= s.superset &&
       m.twinInCopy < sameMin &&
+      nothingLost &&
       v.container !== 'a'
     )
       inside = {
@@ -88,7 +97,13 @@ export function decideCopy(
         reason: `Wholly inside the EPUB book, which has more (${overlap})`,
       };
     else if (!near && Math.max(m.copyInTwin, m.twinInCopy) >= s.reviewFloor)
-      near = { verdict: 'near', twin: m, reason: `Part of the text in common (${overlap})` };
+      near = {
+        verdict: 'near',
+        twin: m,
+        reason: nothingLost
+          ? `Part of the text in common (${overlap})`
+          : `Nearly the same, but the copy has ${Math.round(extra).toLocaleString('en-US')} characters the EPUB book lacks (${overlap})`,
+      };
   }
   if (inside) return inside;
   if (near) return near;

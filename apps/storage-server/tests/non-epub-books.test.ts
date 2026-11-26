@@ -243,18 +243,41 @@ describe('the pass rules (server, pure)', () => {
     });
     const d = (m: ReturnType<typeof t>[]) =>
       decideCopy('物語', 50_000, m, DEFAULT_DUPLICATE_SETTINGS, 0.95).verdict;
-    expect(d([t(0.999, 0.998)])).toBe('fold');
+    expect(d([t(1, 0.9995)])).toBe('fold');
     // お兄ちゃんだけど愛さえあれば関係ないよねっ at 93-95 %: review, not folded
     expect(d([t(0.94, 0.93)])).toBe('near');
     expect(
-      decideCopy('物語', 50_000, [t(0.97, 0.6)], DEFAULT_DUPLICATE_SETTINGS, 0.95),
-    ).toMatchObject({ verdict: 'fold', how: 'inside' });
+      decideCopy('物語', 50_000, [t(0.9995, 0.6)], DEFAULT_DUPLICATE_SETTINGS, 0.95),
+    ).toMatchObject({
+      verdict: 'fold',
+      how: 'inside',
+    });
     expect(d([t(0.68, 0.7)])).toBe('near');
+    // 97 % inside: 3 % of the copy is not in its twin (not wholly inside): review.
+    expect(d([t(0.97, 0.6)])).toBe('near');
     expect(d([t(0.02, 0.01)])).toBe('convert');
     expect(d([])).toBe('convert');
     // A picture book is not compared by text.
     expect(decideCopy('画集', 10, [t(1, 1)], DEFAULT_DUPLICATE_SETTINGS, 0.95).verdict).toBe(
       'convert',
+    );
+    // Stage 3's review principle: a copy with text its twin lacks is not folded (お兄ちゃんだけど…
+    // 8 in the real-calibre e2e: 99.7 % / 99.3 %, 192 characters the twin lacks).
+    const extra = (chars: number) => ({
+      ...t(0.997, 0.993),
+      extraCopy: {
+        extraChars: chars,
+        runs: [],
+        interleavedRuns: 0,
+        interleavedChars: 0,
+        interleavedShare: 0,
+      },
+    });
+    expect(decideCopy('物語', 97_119, [extra(192)], DEFAULT_DUPLICATE_SETTINGS, 0.95).verdict).toBe(
+      'near',
+    );
+    expect(decideCopy('物語', 97_119, [extra(20)], DEFAULT_DUPLICATE_SETTINGS, 0.95).verdict).toBe(
+      'fold',
     );
     // A free preview never folds into the full book.
     expect(

@@ -40,6 +40,7 @@ import { EpubStoreError, type EpubStore } from './epub-store';
 import {
   chooseFile,
   LISTED_TEXT,
+  nonEpubUuids,
   readFormatCandidates,
   twinsOf,
   type FormatFile,
@@ -247,6 +248,13 @@ export class FormatsPass {
         if (await this.deps.writes.verifyStored()) return 'more';
         return 'idle';
       }
+      // A newer snapshot: one indexed query for books without an EPUB the pass doesn't know
+      // (books added by hand since); the full select only when there are some.
+      if (!this.hasNewBooks(lib)) {
+        p.snapshotMtimeMs = mtime;
+        saveFormatsProgress(this.db, p);
+        return 'idle';
+      }
       this.next(p, 'select');
     }
     p.startedAt ??= Date.now();
@@ -300,10 +308,8 @@ export class FormatsPass {
     return 'more';
   }
 
-  /** Rows of books new to the pass; returns how many. Pure on the snapshot and the database. */
-  select(lib: string, run: number, snapshot: string, now = Date.now()): number {
-    const settings = getSettings(this.db).formats;
-    const { books, byTitle } = readFormatCandidates(snapshot);
+  /** The UUIDs the pass knows (selected, or a write undone: never selected again). */
+  private knownUuids(lib: string): Set<string> {
     const known = new Set(
       (
         this.db
@@ -311,7 +317,6 @@ export class FormatsPass {
           .all(lib) as { calibre_uuid: string }[]
       ).map((r) => r.calibre_uuid),
     );
-    // Never again: a book (or a copy brought back under a new UUID) whose write was undone.
     for (const r of this.db
       .prepare(
         `SELECT calibre_uuid, back_uuid FROM calibre_format_writes WHERE library_id = ? AND state = 'undone'`,
@@ -320,6 +325,25 @@ export class FormatsPass {
       known.add(r.calibre_uuid);
       if (r.back_uuid) known.add(r.back_uuid);
     }
+    return known;
+  }
+
+  /** Whether the library's snapshot has a book without an EPUB the pass doesn't know. */
+  hasNewBooks(lib: string): boolean {
+    const known = this.knownUuids(lib);
+    try {
+      return nonEpubUuids(snapshotFile(this.deps.cacheDir, lib)).some((u) => !known.has(u));
+    } catch {
+      return false;
+    }
+  }
+
+  /** Rows of books new to the pass; returns how many. Pure on the snapshot and the database. */
+  select(lib: string, run: number, snapshot: string, now = Date.now()): number {
+    const settings = getSettings(this.db).formats;
+    const { books, byTitle } = readFormatCandidates(snapshot);
+    // Never again: a book (or a copy brought back under a new UUID) whose write was undone.
+    const known = this.knownUuids(lib);
     const insert = this.db.prepare(
       `INSERT INTO calibre_format_books (library_id, calibre_uuid, calibre_id, run, title, authors_json,
          tags_json, formats_json, last_modified, source_format, state, listed_reason, detail, twins_json,
@@ -671,6 +695,7 @@ export class FormatsPass {
         : measures,
       settings.duplicates,
       settings.formats.sameMin,
+      settings.formats.copyExtraMax,
     );
     this.db
       .prepare(

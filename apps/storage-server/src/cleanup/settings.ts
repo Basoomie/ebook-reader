@@ -508,6 +508,12 @@ export interface FormatSettings {
    * line, 95 %; below it, but still sharing text: review).
    */
   sameMin: number;
+  /**
+   * A copy folds only when its text that the twin lacks is at most this share of it (stage 3's
+   * review principle: the book kept has everything the copy has; its file stays in the twin's
+   * record either way).
+   */
+  copyExtraMax: number;
   /** Books per write batch. */
   batchSize: number;
 }
@@ -672,6 +678,7 @@ export const DEFAULT_SETTINGS: CleanupSettings = {
     maxAttempts: 2,
     maxTwins: 5,
     sameMin: 0.95,
+    copyExtraMax: 0.001,
     batchSize: 100,
   },
   move: {
@@ -1263,6 +1270,12 @@ function validate(key: Key, value: unknown, current: CleanupSettings): unknown {
         ),
         maxTwins: num('EPUB books with the same title compared, at most', v.maxTwins, 1, 50, true),
         sameMin: num('Same text: at least this share both ways (0-1)', v.sameMin, 0.8, 1),
+        copyExtraMax: num(
+          "A copy's own text its EPUB book lacks: at most this share (0-1)",
+          v.copyExtraMax,
+          0,
+          0.2,
+        ),
         batchSize: num('Books per write batch', v.batchSize, 1, 2000, true),
       } satisfies FormatSettings;
     }
