@@ -11,6 +11,7 @@ import { existsSync } from 'fs';
 import path from 'path';
 import { snapshotFile } from '../calibre/indexer';
 import { getIndexState, getLibrary, listLibraries } from '../calibre/libraries';
+import { LibraryParts } from './library-parts';
 import { COUNTER_BUNDLE, readCounterInfo } from '../counts/counter-bundle';
 import { BatchService, REMOVAL_STAGES } from './batches';
 import { EditService } from './edits/edits';
@@ -122,6 +123,18 @@ export const CHECK_LABELS: Record<string, { label: string; required: boolean }> 
   },
 };
 
+/**
+ * Manga part B: the checks about one Calibre library, made per library (the rest are about the
+ * content server, the sidecar or the settings). A library's stages write only when its own
+ * checks and the shared ones pass.
+ */
+export const PER_LIBRARY_CHECKS: readonly string[] = [
+  'library_found',
+  'target_library',
+  'library_indexed',
+  'illustrator_column',
+];
+
 /** Sidecar results older than this count as not checked. */
 export const CHECK_MAX_AGE_MS = 5 * 60 * 1000;
 export const SIDECAR_OFFLINE_MS = 90 * 1000;
@@ -211,12 +224,8 @@ export class CleanupService {
   /** One disk-heavy job at a time across the Calibre and audiobook cleanups (WP21a). */
   readonly diskLock: DiskLock;
   readonly batches: BatchService;
-  readonly analysis: Stage1Analysis | null;
-  readonly analysis2: Stage2Analysis | null;
-  readonly analysis3: Stage3Analysis | null;
   /** Stage 4 (WP20d): the fetch queue and the online-sources analysis (Preview only). */
   readonly fetchQueue: FetchQueue;
-  readonly analysis4: Stage4Analysis | null;
   /**
    * The AI framework's runner, one for every cleanup stage that asks the models (Calibre
    * stage 4 here, audiobook stage 5 through AudioCleanupService): one spending limit, one
@@ -225,30 +234,11 @@ export class CleanupService {
   readonly aiRunner: AiRunner;
   /** The shared AI layer the runner asks through (keys, provider settings, the limit). */
   readonly aiCore: AiCore;
-  /** Stage 4's AI check (WP20e), after the rules' analysis. */
-  readonly stage4Ai: Stage4Ai | null;
-  /** Stage 5 (WP20f): genres and tags, after stage 4's AI check. */
-  readonly stage5: Stage5 | null;
   /** WP20g: the Calibre library's new arrivals and the import. */
   readonly arrivals: BookArrivals;
-  /** More Bookmeter coverage, step 2: the pass over stage 4's stored Bookmeter answers. */
-  readonly bookmeter: BookmeterMore | null;
-  private bookmeterRunning: Promise<void> | null = null;
-  /** Series under a short and a full name (tier 4, Part 3): the merges and the review list. */
-  readonly seriesPairs: SeriesPairs | null;
-  private seriesPairsRunning: Promise<void> | null = null;
   /** Manga part A: moving the manga and image-only books to the manga library. */
   readonly move: MovePass;
   private moveRunning: Promise<void> | null = null;
-  /** More direct links: the pass over stage 4's stored answers (link-discovery.md). */
-  readonly links: LinkDiscovery | null;
-  private linksRunning: Promise<void> | null = null;
-  private linksCache: { at: number; value: unknown } | null = null;
-  /** Bookmeter links: saved ids checked against the listing readers log (bookmeter-listings.md). */
-  readonly listings: BookmeterListings | null;
-  private listingsRunning: Promise<void> | null = null;
-  private listingsCache: { at: number; value: unknown } | null = null;
-  private bookmeterCache: { at: number; value: unknown } | null = null;
   /** Calibre metadata editing from the reader: the user's edits, their history and Undo. */
   readonly edits: EditService;
   /** What the reader's index saw change in Calibre, sorted out (whose change it was). */
@@ -259,48 +249,18 @@ export class CleanupService {
   readonly storeCovers: StoreCovers;
   private attributing: Promise<void> | null = null;
   private arriving: Promise<void> | null = null;
-  /** Until when the arrivals asked the reader's index to copy metadata.db at once. */
-  private arrivalsIngestUntil = 0;
+  /** Until when the arrivals asked the reader's index to copy a library's metadata.db at once. */
+  private readonly arrivalsIngestUntil = new Map<string, number>();
   /** The linking sidecar's last heartbeat (the audiobook cleanup tells; archives need it). */
   private linkSeen: () => boolean = () => false;
-  private analysing5: Promise<void> | null = null;
-  /** Why stage 5 is not working right now. */
-  waiting5: string | null = null;
-  private status5Cache: { at: number; value: unknown } | null = null;
-  /** Stage 5's books written (each once) and the finished batches already counted. */
-  private batchBooks5: { analysisId: string | null; counted: Set<string>; books: number } = {
-    analysisId: null,
-    counted: new Set(),
-    books: 0,
-  };
-  private analysing4: Promise<void> | null = null;
-  /** Why stage 4 is not working right now. */
-  waiting4: string | null = null;
-  private status4Cache: { at: number; value: unknown } | null = null;
   /** Books written per finished stage-4 batch (counted once each; write-progress.ts). */
   private batchBooks = new Map<string, number>();
-  /** Books read at each status (the reading's measured rate over the last minutes). */
-  private readMarks: { at: number; n: number; analysisId: string }[] = [];
-  private labeled4Cache: { at: number; value: { site: string; n: number }[] } | null = null;
-  private fields4Cache: {
-    at: number;
-    value: { field: string; class: string; n: number }[];
-  } | null = null;
   private reader3: Stage3Reader | null = null;
-  private analysing3: Promise<void> | null = null;
-  /** Why stage 3 is not applying right now. */
-  waiting3: string | null = null;
   private timer: NodeJS.Timeout | null = null;
   private ticking: Promise<void> | null = null;
-  private analysing: Promise<void> | null = null;
-  private analysing2: Promise<void> | null = null;
   private stopped = false;
   private readonly log: (m: string) => void;
   private readonly logError: (m: string, err?: unknown) => void;
-  /** Why stage 1 is not applying right now (not a pause; it clears by itself). */
-  waiting: string | null = null;
-  /** The same for stage 2. */
-  waiting2: string | null = null;
 
   constructor(private readonly opts: CleanupServiceOptions) {
     this.log = opts.log ?? console.log;
@@ -347,73 +307,12 @@ export class CleanupService {
       calibreLibraryOf: (lib) => this.calibreLibraryOf(lib),
       defaultCalibreLibrary: () => this.resolvedLibraryId().id,
     });
-    this.analysis = opts.calibreDir
-      ? new Stage1Analysis({
-          cleanup: opts.cleanup,
-          main: opts.main,
-          calibreDir: opts.calibreDir,
-          cacheDir: opts.cacheDir,
-          log: this.log,
-        })
-      : null;
-    this.analysis2 = opts.calibreDir
-      ? new Stage2Analysis({
-          cleanup: opts.cleanup,
-          main: opts.main,
-          calibreDir: opts.calibreDir,
-          cacheDir: opts.cacheDir,
-          dbDir: opts.dbDir ?? null,
-          log: this.log,
-        })
-      : null;
-    this.analysis3 = opts.calibreDir
-      ? new Stage3Analysis({
-          cleanup: opts.cleanup,
-          main: opts.main,
-          calibreDir: opts.calibreDir,
-          cacheDir: opts.cacheDir,
-          dbDir: opts.dbDir ?? null,
-          reader: () => this.stage3Reader(),
-          counterBuild: opts.counterBuild ?? counterBuild(),
-          log: this.log,
-        })
-      : null;
     this.fetchQueue = new FetchQueue(
       opts.cleanup,
       opts.cacheDir + '/cleanup',
       () => getSettings(this.db).fetch,
       this.log,
     );
-    this.analysis4 = opts.calibreDir
-      ? new Stage4Analysis({
-          cleanup: opts.cleanup,
-          main: opts.main,
-          calibreDir: opts.calibreDir,
-          cacheDir: opts.cacheDir,
-          dbDir: opts.dbDir ?? null,
-          queue: this.fetchQueue,
-          log: this.log,
-        })
-      : null;
-    this.stage4Ai = this.analysis4
-      ? new Stage4Ai({
-          db: opts.cleanup,
-          runner: this.aiRunner,
-          analysis: this.analysis4,
-          log: this.log,
-        })
-      : null;
-    this.stage5 =
-      this.analysis4 && this.stage4Ai
-        ? new Stage5({
-            db: opts.cleanup,
-            runner: this.aiRunner,
-            analysis: this.analysis4,
-            stage4Ai: this.stage4Ai,
-            dbDir: opts.dbDir ?? null,
-            log: this.log,
-          })
-        : null;
     // Book covers: every picture a cover had before it was replaced, in DB_DIR/covers.
     this.coverArchive = new CoverArchive(
       opts.cleanup,
@@ -471,23 +370,24 @@ export class CleanupService {
       sourcesDir: opts.bookSourcesDir ?? null,
       diskLock: this.diskLock,
       batches: this.batches,
-      stage2: this.analysis2,
+      stage2: (lib) => this.lp(lib).analysis2,
       stage2Batches: this.batches.stage2,
       stage4Batches: this.batches.stage4,
       stage5Batches: this.batches.stage5,
-      analysis4: this.analysis4,
+      analysis4: (lib) => this.lp(lib).analysis4,
       runner: this.aiRunner,
       reader: () => this.stage3Reader(),
       counterBuild: opts.counterBuild ?? counterBuild(),
       targetLibrary: () => this.targetLibrary(),
+      libraries: () => this.cleanupLibraries(),
       libraryBusy: () => this.libraryBusy(),
-      wantIngest: () => {
-        this.arrivalsIngestUntil = Date.now() + 10 * 60_000;
+      wantIngest: (lib) => {
+        this.arrivalsIngestUntil.set(lib, Date.now() + 10 * 60_000);
       },
       linkSidecarOnline: () => this.linkSeen(),
       carry: (libraryId, from, to) => this.edits.carry(libraryId, from, to),
       requireReadOnlySources: opts.bookSourcesReadOnly,
-      checksPass: () => this.checksPass(),
+      checksPass: (lib) => this.checksPass(lib),
       // Manga part A: the run's manga move in the same run (built below; read when the run gets there).
       move: () =>
         this.move
@@ -495,35 +395,6 @@ export class CleanupService {
           : null,
       log: this.log,
     });
-    this.bookmeter =
-      this.analysis4 && this.stage4Ai
-        ? new BookmeterMore({
-            db: opts.cleanup,
-            analysis: this.analysis4,
-            queue: this.fetchQueue,
-            runner: this.aiRunner,
-            batches: this.batches.stage4,
-            targetLibrary: () => this.targetLibrary(),
-            stage4Done: () => stage4Finished(this.db, this.stage4Ai?.isDone() ?? false),
-            writeWait: (lib) => this.bookmeterWriteWait(lib),
-            referenceFile: () => this.analysis4?.referenceFile() ?? null,
-            log: this.log,
-          })
-        : null;
-    const a4 = this.analysis4;
-    this.seriesPairs = a4
-      ? new SeriesPairs({
-          db: opts.cleanup,
-          source: {
-            books: (lib) => a4.seriesPairBooks(lib),
-            facts: (lib, uuid) => a4.seriesPairFacts(lib, uuid),
-          },
-          batches: this.batches.stage4,
-          targetLibrary: () => this.targetLibrary(),
-          writeWait: (lib) => this.bookmeterWriteWait(lib),
-          log: this.log,
-        })
-      : null;
     this.move = new MovePass({
       db: opts.cleanup,
       main: opts.main,
@@ -534,31 +405,6 @@ export class CleanupService {
       withData: (ids) => booksWithReaderData(opts.main, ids),
       log: this.log,
     });
-    this.links = a4
-      ? new LinkDiscovery({
-          db: opts.cleanup,
-          analysis: a4,
-          batches: this.batches.stage4,
-          targetLibrary: () => this.targetLibrary(),
-          stage4Done: () => stage4Finished(this.db, this.stage4Ai?.isDone() ?? false),
-          writeWait: (lib) => this.bookmeterWriteWait(lib),
-          referenceFile: () => a4.referenceFile(),
-          log: this.log,
-        })
-      : null;
-    this.listings = a4
-      ? new BookmeterListings({
-          db: opts.cleanup,
-          analysis: a4,
-          queue: this.fetchQueue,
-          batches: this.batches.stage4,
-          targetLibrary: () => this.targetLibrary(),
-          stage4Done: () => stage4Finished(this.db, this.stage4Ai?.isDone() ?? false),
-          writeWait: (lib) => this.bookmeterWriteWait(lib),
-          referenceFile: () => a4.referenceFile(),
-          log: this.log,
-        })
-      : null;
     // Stage 4's covers are the stores' pictures, read from the fetch cache.
     this.batches.stage4.setStoreCover((url) => {
       const r = opts.cleanup
@@ -568,6 +414,228 @@ export class CleanupService {
         .get(url) as { id: number } | undefined;
       return r ? this.fetchQueue.readAnswer(r.id) : null;
     });
+  }
+
+  /** Manga part B: the library's own stage objects and round state, made when first needed. */
+  private readonly partsByLibrary = new Map<string, LibraryParts>();
+
+  /** Without a library: parts with no stage objects (every stage reads as not set up). */
+  private readonly noParts = new LibraryParts(
+    '',
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+  );
+
+  /** The parts of a library (made on first use); without a library, parts with nothing in them. */
+  lp(libraryId: string | null): LibraryParts {
+    if (!libraryId) return this.noParts;
+    let parts = this.partsByLibrary.get(libraryId);
+    if (!parts) {
+      parts = this.makeParts(libraryId);
+      this.partsByLibrary.set(libraryId, parts);
+    }
+    return parts;
+  }
+
+  /**
+   * The primary library's stage objects and round state (tools and tests that work on one
+   * library). The service itself always names a library (lp()).
+   */
+  get analysis(): Stage1Analysis | null {
+    return this.lp(this.targetLibrary()).analysis;
+  }
+  get analysis2(): Stage2Analysis | null {
+    return this.lp(this.targetLibrary()).analysis2;
+  }
+  get analysis3(): Stage3Analysis | null {
+    return this.lp(this.targetLibrary()).analysis3;
+  }
+  get analysis4(): Stage4Analysis | null {
+    return this.lp(this.targetLibrary()).analysis4;
+  }
+  get stage4Ai(): Stage4Ai | null {
+    return this.lp(this.targetLibrary()).stage4Ai;
+  }
+  get stage5(): Stage5 | null {
+    return this.lp(this.targetLibrary()).stage5;
+  }
+  get bookmeter(): BookmeterMore | null {
+    return this.lp(this.targetLibrary()).bookmeter;
+  }
+  get seriesPairs(): SeriesPairs | null {
+    return this.lp(this.targetLibrary()).seriesPairs;
+  }
+  get links(): LinkDiscovery | null {
+    return this.lp(this.targetLibrary()).links;
+  }
+  get listings(): BookmeterListings | null {
+    return this.lp(this.targetLibrary()).listings;
+  }
+  get waiting(): string | null {
+    return this.lp(this.targetLibrary()).waiting;
+  }
+  get waiting2(): string | null {
+    return this.lp(this.targetLibrary()).waiting2;
+  }
+  get waiting3(): string | null {
+    return this.lp(this.targetLibrary()).waiting3;
+  }
+  get waiting4(): string | null {
+    return this.lp(this.targetLibrary()).waiting4;
+  }
+  get waiting5(): string | null {
+    return this.lp(this.targetLibrary()).waiting5;
+  }
+
+  /** Every library whose parts exist (the ones worked on since the server started). */
+  private allParts(): LibraryParts[] {
+    return [...this.partsByLibrary.values()];
+  }
+
+  private makeParts(libraryId: string): LibraryParts {
+    const opts = this.opts;
+    const analysis = opts.calibreDir
+      ? new Stage1Analysis({
+          cleanup: opts.cleanup,
+          libraryId,
+          main: opts.main,
+          calibreDir: opts.calibreDir,
+          cacheDir: opts.cacheDir,
+          log: this.log,
+        })
+      : null;
+    const analysis2 = opts.calibreDir
+      ? new Stage2Analysis({
+          cleanup: opts.cleanup,
+          libraryId,
+          main: opts.main,
+          calibreDir: opts.calibreDir,
+          cacheDir: opts.cacheDir,
+          dbDir: opts.dbDir ?? null,
+          log: this.log,
+        })
+      : null;
+    const analysis3 = opts.calibreDir
+      ? new Stage3Analysis({
+          cleanup: opts.cleanup,
+          libraryId,
+          main: opts.main,
+          calibreDir: opts.calibreDir,
+          cacheDir: opts.cacheDir,
+          dbDir: opts.dbDir ?? null,
+          reader: () => this.stage3Reader(),
+          counterBuild: opts.counterBuild ?? counterBuild(),
+          log: this.log,
+        })
+      : null;
+    const analysis4 = opts.calibreDir
+      ? new Stage4Analysis({
+          cleanup: opts.cleanup,
+          libraryId,
+          main: opts.main,
+          calibreDir: opts.calibreDir,
+          cacheDir: opts.cacheDir,
+          dbDir: opts.dbDir ?? null,
+          queue: this.fetchQueue,
+          log: this.log,
+        })
+      : null;
+    const stage4Ai = analysis4
+      ? new Stage4Ai({
+          db: opts.cleanup,
+          libraryId,
+          runner: this.aiRunner,
+          analysis: analysis4,
+          log: this.log,
+        })
+      : null;
+    const stage5 =
+      analysis4 && stage4Ai
+        ? new Stage5({
+            db: opts.cleanup,
+            libraryId,
+            runner: this.aiRunner,
+            analysis: analysis4,
+            stage4Ai: stage4Ai,
+            dbDir: opts.dbDir ?? null,
+            log: this.log,
+          })
+        : null;
+    const bookmeter =
+      analysis4 && stage4Ai
+        ? new BookmeterMore({
+            db: opts.cleanup,
+            analysis: analysis4,
+            queue: this.fetchQueue,
+            runner: this.aiRunner,
+            batches: this.batches.stage4,
+            targetLibrary: () => libraryId,
+            stage4Done: () => stage4Finished(this.db, libraryId, stage4Ai?.isDone() ?? false),
+            writeWait: (lib) => this.bookmeterWriteWait(lib),
+            referenceFile: () => analysis4?.referenceFile() ?? null,
+            log: this.log,
+          })
+        : null;
+    const a4 = analysis4;
+    const seriesPairs = a4
+      ? new SeriesPairs({
+          db: opts.cleanup,
+          source: {
+            books: (lib) => a4.seriesPairBooks(lib),
+            facts: (lib, uuid) => a4.seriesPairFacts(lib, uuid),
+          },
+          batches: this.batches.stage4,
+          targetLibrary: () => libraryId,
+          writeWait: (lib) => this.bookmeterWriteWait(lib),
+          log: this.log,
+        })
+      : null;
+    const links = a4
+      ? new LinkDiscovery({
+          db: opts.cleanup,
+          analysis: a4,
+          batches: this.batches.stage4,
+          targetLibrary: () => libraryId,
+          stage4Done: () => stage4Finished(this.db, libraryId, stage4Ai?.isDone() ?? false),
+          writeWait: (lib) => this.bookmeterWriteWait(lib),
+          referenceFile: () => a4.referenceFile(),
+          log: this.log,
+        })
+      : null;
+    const listings = a4
+      ? new BookmeterListings({
+          db: opts.cleanup,
+          analysis: a4,
+          queue: this.fetchQueue,
+          batches: this.batches.stage4,
+          targetLibrary: () => libraryId,
+          stage4Done: () => stage4Finished(this.db, libraryId, stage4Ai?.isDone() ?? false),
+          writeWait: (lib) => this.bookmeterWriteWait(lib),
+          referenceFile: () => a4.referenceFile(),
+          log: this.log,
+        })
+      : null;
+    return new LibraryParts(
+      libraryId,
+      analysis,
+      analysis2,
+      analysis3,
+      analysis4,
+      stage4Ai,
+      stage5,
+      bookmeter,
+      seriesPairs,
+      links,
+      listings,
+    );
   }
 
   /**
@@ -587,11 +655,14 @@ export class CleanupService {
     // More Bookmeter coverage's pass waits on its own answers, and so does Bookmeter links'.
     this.runBookmeter();
     this.runListings();
-    if (this.stopped || this.analysing4) return;
-    try {
-      this.round4(this.targetLibrary());
-    } catch (err) {
-      this.logError('Cleanup: stage 4 wake-up failed:', err);
+    if (this.stopped) return;
+    for (const lib of this.cleanupLibraries()) {
+      if (this.lp(lib).analysing4) continue;
+      try {
+        void this.round4(lib);
+      } catch (err) {
+        this.logError('Cleanup: stage 4 wake-up failed:', err);
+      }
     }
   }
 
@@ -751,12 +822,16 @@ export class CleanupService {
     this.stopped = true;
     if (this.timer) clearInterval(this.timer);
     await this.ticking;
-    await this.analysing;
-    await this.analysing2;
+    for (const P of this.allParts()) {
+      await P.analysing;
+      await P.analysing2;
+    }
     this.reader3?.close();
-    await this.analysing3;
-    this.analysis3?.close();
-    await this.analysing4;
+    for (const P of this.allParts()) {
+      await P.analysing3;
+      P.analysis3?.close();
+      await P.analysing4;
+    }
     this.arrivals.stop();
     await this.arriving;
   }
@@ -771,21 +846,51 @@ export class CleanupService {
    * the words for the page; null when none runs.
    */
   libraryBusy(): string | null {
-    if (this.analysing) return "stage 1's analysis";
-    if (this.analysing2) return "stage 2's analysis";
-    if (this.analysing3) return "stage 3's analysis";
-    if (this.analysing4) return "stage 4's analysis";
-    if (this.analysing5) return "stage 5's analysis";
+    // Manga part B: one library's analysis at a time, and no run beside any of them.
+    for (const P of this.allParts()) {
+      const busy = P.busy();
+      if (busy)
+        return this.allParts().length > 1 ? `${busy} of ${this.libraryName(P.libraryId)}` : busy;
+    }
     return null;
+  }
+
+  /** The reader's name of a library (its folder), for the page's words. */
+  libraryName(libraryId: string): string {
+    const lib = getLibrary(this.opts.main, libraryId);
+    return lib?.name || lib?.folder || libraryId;
+  }
+
+  /**
+   * Manga part B: the Calibre libraries the cleanup works on, primary first: the primary library
+   * (targetLibrary()) and the move's target (manga-library), when the reader has them.
+   */
+  cleanupLibraries(): string[] {
+    const out: string[] = [];
+    const primary = this.targetLibrary();
+    if (primary) out.push(primary);
+    const second = this.move?.targetLibrary() ?? null;
+    if (second && !out.includes(second)) out.push(second);
+    return out;
+  }
+
+  /** The library a request names (?library=), else the primary library. */
+  libraryOr(libraryId: unknown): string | null {
+    if (typeof libraryId === 'string' && libraryId) {
+      if (!this.cleanupLibraries().includes(libraryId))
+        throw new Error('The cleanup does not work on that library');
+      return libraryId;
+    }
+    return this.targetLibrary();
   }
 
   /** A finished removal batch waits for the reader's index of this library (index it now). */
   wantsIngest(libraryId: string): boolean {
     try {
-      if (Date.now() < this.arrivalsIngestUntil && libraryId === this.targetLibrary()) return true;
+      if (Date.now() < (this.arrivalsIngestUntil.get(libraryId) ?? 0)) return true;
       const move = this.batches.awaitingIngest(MOVE_STAGE);
       if (move && (move.libraryId === libraryId || move.targetLibraryId === libraryId)) return true;
-      return REMOVAL_STAGES.some((st) => this.batches.awaitingIngest(st)?.libraryId === libraryId);
+      return REMOVAL_STAGES.some((st) => this.batches.awaitingIngest(st, libraryId) !== null);
     } catch {
       return false;
     }
@@ -835,16 +940,31 @@ export class CleanupService {
     }
     if (Array.isArray(body.checks)) {
       const put = this.db.prepare(
-        `INSERT INTO preflight (name, ok, detail, source, checked_at) VALUES (?, ?, ?, 'sidecar', ?)
-         ON CONFLICT(name) DO UPDATE SET ok = excluded.ok, detail = excluded.detail,
+        `INSERT INTO preflight (name, library_id, ok, detail, source, checked_at)
+         VALUES (?, ?, ?, ?, 'sidecar', ?)
+         ON CONFLICT(name, library_id) DO UPDATE SET ok = excluded.ok, detail = excluded.detail,
            source = excluded.source, checked_at = excluded.checked_at`,
       );
+      // Manga part B: a per-library check names its content-server library (sidecar 1.7.0); an
+      // older sidecar checks only its own library, the primary one.
+      const byCalibre = new Map<string, string>();
+      for (const lib of this.cleanupLibraries()) {
+        const c = this.calibreLibraryOf(lib);
+        if (c) byCalibre.set(c, lib);
+      }
+      const primary = this.targetLibrary() ?? '';
       this.db.transaction(() => {
         for (const c of body.checks as unknown[]) {
-          const check = c as { name?: unknown; ok?: unknown; detail?: unknown };
+          const check = c as { name?: unknown; ok?: unknown; detail?: unknown; library?: unknown };
           const name = str(check.name, 50);
           if (!name || !(name in CHECK_LABELS)) continue;
-          put.run(name, check.ok === true ? 1 : 0, str(check.detail, 1000), now);
+          let lib = '';
+          if (PER_LIBRARY_CHECKS.includes(name)) {
+            const calibre = str(check.library, 200);
+            lib = calibre ? (byCalibre.get(calibre) ?? '') : primary;
+            if (!lib) continue;
+          }
+          put.run(name, lib, check.ok === true ? 1 : 0, str(check.detail, 1000), now);
         }
       })();
     }
@@ -927,11 +1047,20 @@ export class CleanupService {
    * present: the reader's count of the library's books, when the caller already has it; null
    * leaves it out of the detail (no check depends on it, and counting reads 60,000+ rows).
    */
-  checks(now = Date.now(), present?: number | null): CheckResult[] {
+  checks(now = Date.now(), present?: number | null, libraryId?: string | null): CheckResult[] {
     const sidecar = this.sidecar(now);
-    const target = this.targetLibrary();
+    // Manga part B: the per-library checks are those of the library asked about (the primary
+    // library when none is named); the others are shared.
+    const target = libraryId ?? this.targetLibrary();
+    const primary = target !== null && target === this.targetLibrary();
     const login = this.sidecarConfig();
-    const lib = this.resolvedLibraryId();
+    const lib = primary
+      ? this.resolvedLibraryId()
+      : {
+          id: target ? this.calibreLibraryIdOf(target) : null,
+          auto: true,
+          libraries: this.calibreLibraries(),
+        };
     const server: Record<string, { ok: boolean; detail: string | null }> = {
       sidecar_online: {
         ok: sidecar.online,
@@ -967,13 +1096,18 @@ export class CleanupService {
     };
     const sidecarRows = new Map(
       (
-        this.db.prepare(`SELECT * FROM preflight WHERE source = 'sidecar'`).all() as {
+        this.db
+          .prepare(`SELECT * FROM preflight WHERE source = 'sidecar' AND library_id IN ('', ?)`)
+          .all(target ?? '') as {
           name: string;
+          library_id: string;
           ok: number;
           detail: string | null;
           checked_at: number;
         }[]
-      ).map((r) => [r.name, r]),
+      )
+        .filter((r) => PER_LIBRARY_CHECKS.includes(r.name) === (r.library_id !== ''))
+        .map((r) => [r.name, r]),
     );
     return Object.entries(CHECK_LABELS).map(([name, { label, required }]) => {
       if (name in server) {
@@ -1001,7 +1135,8 @@ export class CleanupService {
   }
 
   private referenceLabels(): { ok: boolean; detail: string | null } {
-    const file = this.analysis2?.referenceFile() ?? null;
+    const primary = this.targetLibrary();
+    const file = primary ? (this.lp(primary).analysis2?.referenceFile() ?? null) : null;
     if (!file) return { ok: false, detail: 'No labeled-books file is set' };
     const { gold, error } = loadGold(file);
     return gold
@@ -1031,14 +1166,14 @@ export class CleanupService {
   }
 
   /** Whether the required checks pass (each round of every stage asks; no book count needed). */
-  checksPass(now = Date.now()): { ok: boolean; failing: string[] } {
-    const failing = this.checks(now, null)
+  checksPass(libraryId: string | null, now = Date.now()): { ok: boolean; failing: string[] } {
+    const failing = this.checks(now, null, libraryId)
       .filter((c) => c.required && !c.ok)
       .map((c) => c.label);
     return { ok: failing.length === 0, failing };
   }
 
-  setMode(stage: number, mode: StageMode): void {
+  setMode(libraryId: string | null, stage: number, mode: StageMode): void {
     if (stage < 1 || stage > 5) throw new Error('No such stage');
     if (mode !== 'off' && !BUILT_STAGES.includes(stage)) {
       throw new Error('This stage is not built yet');
@@ -1046,38 +1181,33 @@ export class CleanupService {
     if (mode === 'on' && PREVIEW_ONLY_STAGES.includes(stage)) {
       throw new Error('Stage 4 is Preview only for now: its writes come with the AI check (WP20e)');
     }
-    setStageMode(this.db, stage, mode);
-    if (stage === 1 && mode !== 'off') {
-      const target = this.targetLibrary();
-      const p = this.analysis?.progress();
-      if (target && this.analysis && (!p || p.libraryId !== target)) this.analysis.restart(target);
-    }
-    if (stage === 2 && mode !== 'off') {
-      const target = this.targetLibrary();
-      const p = this.analysis2?.progress();
-      if (target && this.analysis2 && (!p || p.libraryId !== target))
-        this.analysis2.restart(target);
-    }
-    if (stage === 3 && mode !== 'off') {
-      const target = this.targetLibrary();
-      const p = this.analysis3?.progress();
-      if (target && this.analysis3 && (!p || p.libraryId !== target))
-        this.analysis3.restart(target);
-    }
-    if (stage === 4 && mode !== 'off') {
-      const target = this.targetLibrary();
-      const p = this.analysis4?.progress();
-      if (target && this.analysis4 && (!p || p.libraryId !== target))
-        this.analysis4.restart(target);
+    const target = this.libraryOr(libraryId);
+    if (!target) throw new Error('Choose the library first');
+    setStageMode(this.db, target, stage, mode);
+    const P = this.lp(target);
+    const analysis =
+      stage === 1
+        ? P.analysis
+        : stage === 2
+          ? P.analysis2
+          : stage === 3
+            ? P.analysis3
+            : stage === 4
+              ? P.analysis4
+              : null;
+    if (analysis && mode !== 'off') {
+      const p = analysis.progress();
+      if (!p || p.libraryId !== target) analysis.restart(target);
     }
     void this.tick();
   }
 
   /** "Analyse again". */
   reanalyse(
+    libraryId: string | null,
     stage = 1,
   ): Stage1Progress | Stage2Progress | Stage3Progress | Stage4Progress | Stage5Progress {
-    const target = this.targetLibrary();
+    const target = this.libraryOr(libraryId);
     // WP20g: a new-arrivals run and a stage's own analysis never overlap.
     const arrivalRun = this.arrivals.currentRun();
     if (
@@ -1087,46 +1217,50 @@ export class CleanupService {
       throw new Error(
         'A new-arrivals run is working on its books; run the analysis again after it',
       );
+    if (!target) throw new Error('Choose the library first');
+    const P = this.lp(target);
     if (stage === 5) {
-      if (!target) throw new Error('Choose the library first');
-      const p5 = this.stage5?.restart(target);
+      const p5 = P.stage5?.restart(target);
       if (!p5) throw new Error("Stage 5 starts after stage 4's analysis");
-      if (getStage(this.db, 5).pauseReason === 'library_changed') resumeStage(this.db, 5);
-      this.status5Cache = null;
+      if (getStage(this.db, target, 5).pauseReason === 'library_changed')
+        resumeStage(this.db, target, 5);
+      P.status5Cache = null;
       void this.tick();
       return p5;
     }
     const analysis =
       stage === 4
-        ? this.analysis4
+        ? P.analysis4
         : stage === 3
-          ? this.analysis3
+          ? P.analysis3
           : stage === 2
-            ? this.analysis2
+            ? P.analysis2
             : stage === 1
-              ? this.analysis
+              ? P.analysis
               : null;
     if (!analysis)
       throw new Error(stage >= 1 && stage <= 4 ? 'Choose the library first' : 'No such stage');
-    if (!target) throw new Error('Choose the library first');
     const p = analysis.restart(target);
     // These pauses ask for a new analysis; it is running now.
-    const pause = getStage(this.db, stage).pauseReason;
-    if (pause === 'library_changed' || pause === 'not_identical') resumeStage(this.db, stage);
+    const pause = getStage(this.db, target, stage).pauseReason;
+    if (pause === 'library_changed' || pause === 'not_identical')
+      resumeStage(this.db, target, stage);
     void this.tick();
     return p;
   }
 
   /** Resume one paused field of stage 2. A gate pause lifts only when a new analysis passes. */
-  resumeField(stage: number, field: string): void {
-    const pause = listFieldPauses(this.db, stage).find((p) => p.field === field);
+  resumeField(libraryId: string | null, stage: number, field: string): void {
+    const target = this.libraryOr(libraryId);
+    if (!target) throw new Error('Choose the library first');
+    const pause = listFieldPauses(this.db, target, stage).find((p) => p.field === field);
     if (!pause) return;
     if (pause.reason === 'gate' || pause.reason === 'no_labels') {
       throw new Error(
         'This field is paused by the gate on the labeled books; it resumes by itself when a new analysis passes',
       );
     }
-    resumeField(this.db, stage, field);
+    resumeField(this.db, target, stage, field);
     void this.tick();
   }
 
@@ -1150,12 +1284,15 @@ export class CleanupService {
     this.batches.expireLeases();
     this.batches.checkIngested();
     this.sortChanges();
-    const target = this.targetLibrary();
-    await this.round1(target);
-    await this.round2(target);
-    await this.round3(target);
-    await this.round4(target);
-    await this.round5(target);
+    // Manga part B: every library the cleanup works on, the primary one first.
+    for (const target of this.cleanupLibraries()) {
+      if (this.stopped) return;
+      await this.round1(target);
+      await this.round2(target);
+      await this.round3(target);
+      await this.round4(target);
+      await this.round5(target);
+    }
     this.runArrivals();
     this.runBookmeter();
     this.runSeriesPairs();
@@ -1218,6 +1355,13 @@ export class CleanupService {
     return this.calibreLibraries().includes(id) ? id : null;
   }
 
+  /** The content server's id a library would have (from its folder), listed by the server or not. */
+  private calibreLibraryIdOf(readerLibraryId: string): string | null {
+    if (readerLibraryId === this.targetLibrary()) return this.resolvedLibraryId().id;
+    const folder = getLibrary(this.opts.main, readerLibraryId)?.folder;
+    return folder === undefined ? null : libraryIdFromFolder(folder);
+  }
+
   /**
    * Why the move's write must wait now: a batch open, an earlier stage still writing, the
    * safety checks, and the move's own: the target library on the content server with the same
@@ -1233,10 +1377,10 @@ export class CleanupService {
       [4, () => this.remaining4(lib)],
       [5, () => this.remaining5(lib)],
     ] as [number, () => number][]) {
-      if (getStage(this.db, s).mode === 'on' && left() > 0)
+      if (getStage(this.db, lib, s).mode === 'on' && left() > 0)
         return `Waiting for stage ${s} to finish writing`;
     }
-    const checks = this.checksPass();
+    const checks = this.checksPass(lib);
     if (!checks.ok) return `Waiting for the safety checks: ${checks.failing.join('; ')}`;
     if (!this.batches.sidecarAtLeast(MOVE_SIDECAR_VERSION))
       return `The cleanup sidecar is older than ${MOVE_SIDECAR_VERSION}: rebuild ttsu-cleanup-apply`;
@@ -1324,10 +1468,15 @@ export class CleanupService {
    * has finished (the pass reads stage 4's stored answers). Woken by the 5 s round.
    */
   runSeriesPairs(): void {
-    if (this.seriesPairsRunning || this.stopped || !this.seriesPairs) return;
-    if (!stage4Finished(this.db, this.stage4Ai?.isDone() ?? false)) return;
-    const pass = this.seriesPairs;
-    this.seriesPairsRunning = (async () => {
+    for (const lib of this.cleanupLibraries()) this.runSeriesPairsOf(lib);
+  }
+
+  private runSeriesPairsOf(target: string): void {
+    const P = this.lp(target);
+    const pass = P.seriesPairs;
+    if (P.seriesPairsRunning || this.stopped || !pass) return;
+    if (!stage4Finished(this.db, target, P.stage4Ai?.isDone() ?? false)) return;
+    P.seriesPairsRunning = (async () => {
       try {
         for (let i = 0; i < 100_000; i++) {
           if (this.stopped) break;
@@ -1338,14 +1487,16 @@ export class CleanupService {
       } catch (err) {
         this.logError('Cleanup: series under two names failed:', err);
       } finally {
-        this.seriesPairsRunning = null;
+        P.seriesPairsRunning = null;
       }
     })();
   }
 
   /** The card's status: mode, phase, bar with the time left, counts. */
   seriesPairsStatus(target: string | null, now = Date.now()): unknown {
-    const pass = this.seriesPairs;
+    const P = this.lp(target);
+    if (!target) return null;
+    const pass = P.seriesPairs;
     if (!pass) return null;
     const st = pass.state();
     const p = st.progress;
@@ -1374,7 +1525,7 @@ export class CleanupService {
     return {
       mode: st.mode,
       pausedReason: st.pausedReason,
-      stage4Done: stage4Finished(this.db, this.stage4Ai?.isDone() ?? false),
+      stage4Done: stage4Finished(this.db, target, P.stage4Ai?.isDone() ?? false),
       analysisId: seriesPairsAnalysisId(p.run),
       progress: p,
       bar: bar ? { ...bar, leftMs: left } : null,
@@ -1383,8 +1534,8 @@ export class CleanupService {
   }
 
   /** After the user's change on the page: work at once. */
-  seriesPairsChanged(): void {
-    this.runSeriesPairs();
+  seriesPairsChanged(target: string | null): void {
+    if (target) this.runSeriesPairsOf(target);
   }
 
   /**
@@ -1392,9 +1543,14 @@ export class CleanupService {
    * blocks a round; each step works about 25 ms). Woken by the 5 s round and by answers.
    */
   runBookmeter(): void {
-    if (this.bookmeterRunning || this.stopped || !this.bookmeter) return;
-    const pass = this.bookmeter;
-    this.bookmeterRunning = (async () => {
+    for (const lib of this.cleanupLibraries()) this.runBookmeterOf(lib);
+  }
+
+  private runBookmeterOf(target: string): void {
+    const P = this.lp(target);
+    const pass = P.bookmeter;
+    if (P.bookmeterRunning || this.stopped || !pass) return;
+    P.bookmeterRunning = (async () => {
       try {
         for (let i = 0; i < 100_000; i++) {
           if (this.stopped) break;
@@ -1405,7 +1561,7 @@ export class CleanupService {
       } catch (err) {
         this.logError('Cleanup: More Bookmeter matches failed:', err);
       } finally {
-        this.bookmeterRunning = null;
+        P.bookmeterRunning = null;
       }
     })();
   }
@@ -1415,9 +1571,14 @@ export class CleanupService {
    * round; each step works about 25 ms). Woken by the 5 s round and by the user's changes.
    */
   runLinks(): void {
-    if (this.linksRunning || this.stopped || !this.links) return;
-    const pass = this.links;
-    this.linksRunning = (async () => {
+    for (const lib of this.cleanupLibraries()) this.runLinksOf(lib);
+  }
+
+  private runLinksOf(target: string): void {
+    const P = this.lp(target);
+    const pass = P.links;
+    if (P.linksRunning || this.stopped || !pass) return;
+    P.linksRunning = (async () => {
       try {
         for (let i = 0; i < 1_000_000; i++) {
           if (this.stopped) break;
@@ -1428,26 +1589,30 @@ export class CleanupService {
       } catch (err) {
         this.logError('Cleanup: More direct links failed:', err);
       } finally {
-        this.linksRunning = null;
-        this.linksCache = null;
+        P.linksRunning = null;
+        P.linksCache = null;
       }
     })();
   }
 
   /** More direct links' card; cached 5 s (its counts read two covering indexes). */
   linksStatus(target: string | null, now = Date.now()): unknown {
-    const pass = this.links;
+    const P = this.lp(target);
+    if (!target) return null;
+    const pass = P.links;
     if (!pass) return null;
-    if (this.linksCache && now - this.linksCache.at < 5_000) return this.linksCache.value;
+    if (P.linksCache && now - P.linksCache.at < 5_000) return P.linksCache.value;
     const value = pass.status(target, now);
-    this.linksCache = { at: now, value };
+    P.linksCache = { at: now, value };
     return value;
   }
 
   /** Drops the card's cached status (after the user's change on the page) and works at once. */
-  linksChanged(): void {
-    this.linksCache = null;
-    this.runLinks();
+  linksChanged(target: string | null): void {
+    const P = this.lp(target);
+    if (!target) return;
+    P.linksCache = null;
+    this.runLinksOf(target);
   }
 
   /**
@@ -1455,9 +1620,14 @@ export class CleanupService {
    * round; each step works about 25 ms). Woken by the 5 s round, by answers and by the card.
    */
   runListings(): void {
-    if (this.listingsRunning || this.stopped || !this.listings) return;
-    const pass = this.listings;
-    this.listingsRunning = (async () => {
+    for (const lib of this.cleanupLibraries()) this.runListingsOf(lib);
+  }
+
+  private runListingsOf(target: string): void {
+    const P = this.lp(target);
+    const pass = P.listings;
+    if (P.listingsRunning || this.stopped || !pass) return;
+    P.listingsRunning = (async () => {
       try {
         for (let i = 0; i < 1_000_000; i++) {
           if (this.stopped) break;
@@ -1468,41 +1638,45 @@ export class CleanupService {
       } catch (err) {
         this.logError('Cleanup: Bookmeter links failed:', err);
       } finally {
-        this.listingsRunning = null;
+        P.listingsRunning = null;
       }
     })();
   }
 
   /** Bookmeter links' card; cached 5 s (its counts read one covering index). */
   listingsStatus(target: string | null, now = Date.now()): unknown {
-    const pass = this.listings;
+    const P = this.lp(target);
+    if (!target) return null;
+    const pass = P.listings;
     if (!pass) return null;
-    if (this.listingsCache && now - this.listingsCache.at < 5_000) return this.listingsCache.value;
+    if (P.listingsCache && now - P.listingsCache.at < 5_000) return P.listingsCache.value;
     const b = this.fetchQueue.blocked('bookmeter', now);
     const value = pass.status(target, now, b && b.reason !== 'pace' ? b.reason : null);
-    this.listingsCache = { at: now, value };
+    P.listingsCache = { at: now, value };
     return value;
   }
 
   /** Drops the card's cached status (after the user's change on the page) and works at once. */
-  listingsChanged(): void {
-    this.listingsCache = null;
-    this.runListings();
+  listingsChanged(target: string | null): void {
+    const P = this.lp(target);
+    if (!target) return;
+    P.listingsCache = null;
+    this.runListingsOf(target);
   }
 
   /** Why the pass's write must wait now (as stage 4 On's own: apply4), else null. */
   private bookmeterWriteWait(target: string): string | null {
-    if (getStage(this.db, 4).pauseReason) return 'Stage 4 is paused';
+    if (getStage(this.db, target, 4).pauseReason) return 'Stage 4 is paused';
     if (this.batches.open()) return 'A batch is being applied';
     for (const [s, left] of [
       [1, () => this.remaining(target)],
       [2, () => this.remaining2(target)],
       [3, () => this.remaining3(target)],
     ] as [number, () => number][]) {
-      if (getStage(this.db, s).mode === 'on' && left() > 0)
+      if (getStage(this.db, target, s).mode === 'on' && left() > 0)
         return `Waiting for stage ${s} to finish writing`;
     }
-    const checks = this.checksPass();
+    const checks = this.checksPass(target);
     if (!checks.ok) return `Waiting for the safety checks: ${checks.failing.join('; ')}`;
     return null;
   }
@@ -1513,10 +1687,11 @@ export class CleanupService {
    * pass's covering index and the proposals' count index).
    */
   bookmeterStatus(target: string | null, now = Date.now()): unknown {
-    const pass = this.bookmeter;
+    const P = this.lp(target);
+    if (!target) return null;
+    const pass = P.bookmeter;
     if (!pass) return null;
-    if (this.bookmeterCache && now - this.bookmeterCache.at < 30_000)
-      return this.bookmeterCache.value;
+    if (P.bookmeterCache && now - P.bookmeterCache.at < 30_000) return P.bookmeterCache.value;
     const st = pass.state();
     const p = st.progress;
     const lib = target;
@@ -1545,7 +1720,7 @@ export class CleanupService {
       mode: st.mode,
       pausedReason: st.pausedReason,
       pausedDetail: st.pausedDetail,
-      stage4Done: stage4Finished(this.db, this.stage4Ai?.isDone() ?? false),
+      stage4Done: stage4Finished(this.db, target, P.stage4Ai?.isDone() ?? false),
       progress: p,
       bar,
       books: lib ? pass.bookCounts(lib) : {},
@@ -1560,14 +1735,16 @@ export class CleanupService {
         this.fetchQueue.blocked('bookmeter', now),
       ),
     };
-    this.bookmeterCache = { at: now, value };
+    P.bookmeterCache = { at: now, value };
     return value;
   }
 
   /** Drops the card's cached status (after the user's change on the page). */
-  bookmeterChanged(): void {
-    this.bookmeterCache = null;
-    this.runBookmeter();
+  bookmeterChanged(target: string | null): void {
+    const P = this.lp(target);
+    if (!target) return;
+    P.bookmeterCache = null;
+    this.runBookmeterOf(target);
   }
 
   /**
@@ -1696,10 +1873,11 @@ export class CleanupService {
    * the reader's snapshot only (no disk lock). On writes its proposals through stage 2's
    * field-write path after stages 1-4 have nothing left to write.
    */
-  private async round5(target: string | null): Promise<void> {
-    const stage = getStage(this.db, 5);
-    if (stage.mode === 'off' || !target || !this.stage5) {
-      this.waiting5 =
+  private async round5(target: string): Promise<void> {
+    const P = this.lp(target);
+    const stage = getStage(this.db, target, 5);
+    if (stage.mode === 'off' || !target || !P.stage5) {
+      P.waiting5 =
         stage.mode === 'off'
           ? null
           : target
@@ -1707,33 +1885,34 @@ export class CleanupService {
             : 'Choose the library';
       return;
     }
-    if (!this.stage5.stage4Ready()) {
-      this.waiting5 = "Waiting for stage 4's analysis and AI check";
+    if (!P.stage5.stage4Ready()) {
+      P.waiting5 = "Waiting for stage 4's analysis and AI check";
       return;
     }
-    if (this.stage5.needsWork(target)) {
-      this.waiting5 = null;
+    if (P.stage5.needsWork(target)) {
+      P.waiting5 = null;
       this.runAnalysis5(target);
       return;
     }
-    const p = this.stage5.progress();
+    const p = P.stage5.progress();
     if (p?.error) {
-      this.waiting5 = `Stage 5 failed: ${p.error}`;
+      P.waiting5 = `Stage 5 failed: ${p.error}`;
       return;
     }
     await this.apply5(target, stage.mode);
   }
 
   private runAnalysis5(target: string): void {
-    if (this.analysing5 || !this.stage5) return;
-    const s5 = this.stage5;
-    this.analysing5 = (async () => {
+    const P = this.lp(target);
+    if (P.analysing5 || !P.stage5) return;
+    const s5 = P.stage5;
+    P.analysing5 = (async () => {
       try {
         for (;;) {
-          const stop5 = () => this.stopped || getStage(this.db, 5).mode === 'off';
+          const stop5 = () => this.stopped || getStage(this.db, target, 5).mode === 'off';
           if (stop5() || !s5.needsWork(target)) break;
           const r = await s5.step(target, stop5);
-          this.status5Cache = null;
+          P.status5Cache = null;
           if (r === 'wait') {
             for (let i = 0; i < 10 && !stop5(); i++)
               await new Promise((res) => setTimeout(res, 500));
@@ -1742,27 +1921,28 @@ export class CleanupService {
       } catch (err) {
         this.logError('Cleanup: stage 5 failed:', err);
       } finally {
-        this.analysing5 = null;
+        P.analysing5 = null;
       }
     })();
   }
 
   private async apply5(target: string, mode: StageMode): Promise<void> {
+    const P = this.lp(target);
     if (mode !== 'on') {
-      this.waiting5 = 'Preview: nothing is changed in Calibre';
+      P.waiting5 = 'Preview: nothing is changed in Calibre';
       return;
     }
-    if (getStage(this.db, 5).pauseReason) {
-      this.waiting5 = null;
+    if (getStage(this.db, target, 5).pauseReason) {
+      P.waiting5 = null;
       return;
     }
-    const p = this.stage5?.progress();
+    const p = P.stage5?.progress();
     if (!p?.gate || (p.gate.books.genres === 0 && p.gate.books.tags === 0)) {
-      this.waiting5 = 'No labeled books for the gate: nothing is written';
+      P.waiting5 = 'No labeled books for the gate: nothing is written';
       return;
     }
     if (this.batches.open()) {
-      this.waiting5 = 'A batch is being applied';
+      P.waiting5 = 'A batch is being applied';
       return;
     }
     for (const [s, left] of [
@@ -1771,25 +1951,25 @@ export class CleanupService {
       [3, () => this.remaining3(target)],
       [4, () => this.remaining4(target)],
     ] as [number, () => number][]) {
-      if (getStage(this.db, s).mode === 'on' && left() > 0) {
-        this.waiting5 = `Waiting for stage ${s} to finish writing`;
+      if (getStage(this.db, target, s).mode === 'on' && left() > 0) {
+        P.waiting5 = `Waiting for stage ${s} to finish writing`;
         return;
       }
     }
-    const checks = this.checksPass();
+    const checks = this.checksPass(target);
     if (!checks.ok) {
-      this.waiting5 = `Waiting for the safety checks: ${checks.failing.join('; ')}`;
+      P.waiting5 = `Waiting for the safety checks: ${checks.failing.join('; ')}`;
       return;
     }
     const { batch, reason } = await this.batches.stage5.plan(target);
-    this.waiting5 = batch
+    P.waiting5 = batch
       ? 'A batch is being applied'
       : (reason ?? (this.remaining5(target) === 0 ? 'Done: nothing left to write' : null));
   }
 
   /** Stage 5's automatic changes still to write (one per book). */
   private remaining5(target: string): number {
-    const id = currentAnalysisId(this.db, 5);
+    const id = currentAnalysisId(this.db, target, 5);
     if (!id) return 0;
     return (
       this.db
@@ -1804,6 +1984,7 @@ export class CleanupService {
 
   /** Stage 5 On's progress: books written, still to write, the time left (as stage 4's). */
   private write5(target: string, analysisId: string, now: number): Stage4Write | null {
+    const P = this.lp(target);
     const n = (state: string, cls: string | null) =>
       (
         this.db
@@ -1817,19 +1998,21 @@ export class CleanupService {
     const doneChanges = n('applied', null);
     const queued = n('queued', null);
     const leftChanges = n('proposed', 'auto') + queued;
-    if (doneChanges === 0 && queued === 0 && getStage(this.db, 5).mode !== 'on') return null;
+    if (doneChanges === 0 && queued === 0 && getStage(this.db, target, 5).mode !== 'on')
+      return null;
     const finished = this.db
       .prepare(
         `SELECT id, claimed_at AS claimedAt, finished_at AS finishedAt, item_count AS items FROM batches
-         WHERE stage = 5 AND kind = 'apply' AND state IN ('applied', 'partial') ORDER BY created_at DESC`,
+         WHERE stage = 5 AND library_id = ? AND kind = 'apply' AND state IN ('applied', 'partial')
+         ORDER BY created_at DESC`,
       )
-      .all() as (WriteBatchRow & { id: string })[];
+      .all(target) as (WriteBatchRow & { id: string })[];
     // Books written, each once: a book written again after stage 5 decided again (a newer
     // proposal) is not counted twice (the 2026-11-22 run showed 53,258 books for 53,229).
     // Counted in full once (355 ms on the live 53,258 rows; also when a batch was undone), then
     // per finished batch, only its books not written before (at most 80 ms a batch). Counting
     // every batch that way at once after a restart held the server 2.5 s.
-    const c = this.batchBooks5;
+    const c = P.batchBooks5;
     const ids = new Set(finished.map((b) => b.id));
     if (c.analysisId !== analysisId || [...c.counted].some((id) => !ids.has(id))) {
       c.analysisId = analysisId;
@@ -1875,15 +2058,17 @@ export class CleanupService {
 
   /** Stage 5's card (cached 10 s: the bar's per-model count reads ai_requests' run index). */
   stage5Status(target: string | null, now = Date.now()): unknown {
-    if (this.status5Cache && now - this.status5Cache.at < 10_000) return this.status5Cache.value;
-    const p = this.stage5?.progress() ?? null;
+    target = target ?? this.targetLibrary();
+    const P = this.lp(target);
+    if (P.status5Cache && now - P.status5Cache.at < 10_000) return P.status5Cache.value;
+    const p = P.stage5?.progress() ?? null;
     const value = {
-      waiting: this.waiting5,
-      ready: this.stage5?.stage4Ready() ?? false,
+      waiting: P.waiting5,
+      ready: P.stage5?.stage4Ready() ?? false,
       progress: p
         ? {
             phase: p.phase,
-            bar: this.stage5?.bar(now) ?? null,
+            bar: P.stage5?.bar(now) ?? null,
             startedAt: p.startedAt,
             finishedAt: p.finishedAt,
             total: p.total,
@@ -1903,7 +2088,7 @@ export class CleanupService {
             times: p.times,
           }
         : null,
-      fieldPauses: listFieldPauses(this.db, 5),
+      fieldPauses: target ? listFieldPauses(this.db, target, 5) : [],
       write: target && p ? this.write5(target, p.analysisId, now) : null,
       // The vocabulary's labels (the page shows counts by id with these).
       terms: [...STAGE5_TERMS.entries()].map(([id, t]) => ({
@@ -1914,30 +2099,37 @@ export class CleanupService {
       })),
       cachedAt: now,
     };
-    this.status5Cache = { at: now, value };
+    P.status5Cache = { at: now, value };
     return value;
   }
 
   /** Stage 4's books whose changes were all undone, proposed again (the stage-4 card's button). */
-  async reproposeStage4Undone(): Promise<{ books: number }> {
-    const books = (await this.stage4Ai?.reproposeUndone()) ?? 0;
-    this.status4Cache = null;
+  async reproposeStage4Undone(target: string | null): Promise<{ books: number }> {
+    target = target ?? this.targetLibrary();
+    const P = this.lp(target);
+    const books = (await P.stage4Ai?.reproposeUndone()) ?? 0;
+    P.status4Cache = null;
     if (books > 0) void this.tick();
     return { books };
   }
 
   /** Stage 5's given-up AI questions asked again (the card's button). */
-  askStage5AiAgain(): { questions: number } {
-    const questions = this.stage5?.askAgain() ?? 0;
-    this.status5Cache = null;
+  askStage5AiAgain(target: string | null): { questions: number } {
+    target = target ?? this.targetLibrary();
+    const P = this.lp(target);
+    const questions = P.stage5?.askAgain() ?? 0;
+    P.status5Cache = null;
     if (questions > 0) void this.tick();
     return { questions };
   }
 
   /** Stage 5's proposals for the page (paged, in the order they were made). */
-  stage5Proposals(f: { state: string; outside: boolean | null; offset: number; limit: number }) {
-    const target = this.targetLibrary();
-    const id = currentAnalysisId(this.db, 5);
+  stage5Proposals(
+    target: string | null,
+    f: { state: string; outside: boolean | null; offset: number; limit: number },
+  ) {
+    target = target ?? this.targetLibrary();
+    const id = target ? currentAnalysisId(this.db, target, 5) : null;
     if (!target || !id) return { total: 0, rows: [] };
     const where = `stage = 5 AND library_id = ? AND state = ? AND field = 'tags' AND analysis_id = ?${
       f.outside === null
@@ -1996,10 +2188,11 @@ export class CleanupService {
   }
 
   /** Stage 4 (WP20d): Preview only; the analysis (reading, lookups, proposals) runs while not Off. */
-  private async round4(target: string | null): Promise<void> {
-    const stage = getStage(this.db, 4);
-    if (stage.mode === 'off' || !target || !this.analysis4) {
-      this.waiting4 =
+  private async round4(target: string): Promise<void> {
+    const P = this.lp(target);
+    const stage = getStage(this.db, target, 4);
+    if (stage.mode === 'off' || !target || !P.analysis4) {
+      P.waiting4 =
         stage.mode === 'off'
           ? null
           : target
@@ -2007,46 +2200,47 @@ export class CleanupService {
             : 'Choose the library';
       return;
     }
-    const p = this.analysis4.progress();
+    const p = P.analysis4.progress();
     if (!p || p.libraryId !== target) {
-      this.analysis4.restart(target);
+      P.analysis4.restart(target);
     } else if (p.phase === 'done') {
       if (p.error) {
-        this.waiting4 = `The analysis failed: ${p.error}`;
+        P.waiting4 = `The analysis failed: ${p.error}`;
         return;
       }
       // The one-time passes (Bookmeter's edition check, the fixed picker's picks), then the AI
       // check (WP20e). A pass that reopens books sends the analysis back to its lookups, which
       // wait for the fetcher like any lookup (the round above, next time).
-      if (!oneTimePassesDone(p) || this.stage4Ai?.needsWork()) {
-        this.waiting4 = null;
-        this.runAnalysis4();
+      if (!oneTimePassesDone(p) || P.stage4Ai?.needsWork()) {
+        P.waiting4 = null;
+        this.runAnalysis4(target);
         return;
       }
       await this.apply4(target, stage.mode);
       return;
     }
-    this.waiting4 = this.fetcher().online
+    P.waiting4 = this.fetcher().online
       ? null
       : 'The fetch container is not running (or has no token yet)';
-    this.runAnalysis4();
+    this.runAnalysis4(target);
   }
 
-  private runAnalysis4(): void {
-    if (this.analysing4 || !this.analysis4) return;
-    const analysis = this.analysis4;
-    this.analysing4 = (async () => {
+  private runAnalysis4(target: string): void {
+    const P = this.lp(target);
+    if (P.analysing4 || !P.analysis4) return;
+    const analysis = P.analysis4;
+    P.analysing4 = (async () => {
       try {
         for (;;) {
           if (this.stopped) break;
-          if (getStage(this.db, 4).mode === 'off') break;
-          const stop4 = () => this.stopped || getStage(this.db, 4).mode === 'off';
+          if (getStage(this.db, target, 4).mode === 'off') break;
+          const stop4 = () => this.stopped || getStage(this.db, target, 4).mode === 'off';
           if (!(await this.diskFor(4, analysis.progress()?.phase, stop4))) break;
           const before = analysis.progress();
           const done = await analysis.step(stop4);
           if (done) {
             // The AI check after the rules (WP20e). It holds no disk: it reads cleanup.db.
-            const ai = this.stage4Ai;
+            const ai = P.stage4Ai;
             if (!ai || !ai.needsWork()) break;
             this.diskLock.release(DISK_OWNERS.calibre4);
             const r = await ai.step(stop4);
@@ -2064,14 +2258,14 @@ export class CleanupService {
             JSON.stringify({ ...a, times: undefined }) ===
             JSON.stringify({ ...b, times: undefined });
           if (after && after.phase !== 'read' && same(after, before)) {
-            if (!this.stage4HasWork()) break;
+            if (!this.stage4HasWork(target)) break;
           }
         }
       } catch (err) {
         this.logError('Cleanup: stage 4 analysis failed:', err);
       } finally {
         this.diskLock.release(DISK_OWNERS.calibre4);
-        this.analysing4 = null;
+        P.analysing4 = null;
       }
     })();
   }
@@ -2081,20 +2275,21 @@ export class CleanupService {
    * rules, Bookmeter's edition pass and the AI check are done for the current analysis.
    */
   private async apply4(target: string, mode: StageMode): Promise<void> {
+    const P = this.lp(target);
     if (mode !== 'on') {
-      this.waiting4 = 'Preview: nothing is changed in Calibre';
+      P.waiting4 = 'Preview: nothing is changed in Calibre';
       return;
     }
-    if (getStage(this.db, 4).pauseReason) {
-      this.waiting4 = null;
+    if (getStage(this.db, target, 4).pauseReason) {
+      P.waiting4 = null;
       return;
     }
-    if (!this.stage4Ai?.isDone()) {
-      this.waiting4 = 'Waiting for the AI check';
+    if (!P.stage4Ai?.isDone()) {
+      P.waiting4 = 'Waiting for the AI check';
       return;
     }
     if (this.batches.open()) {
-      this.waiting4 = 'A batch is being applied';
+      P.waiting4 = 'A batch is being applied';
       return;
     }
     for (const [s, left] of [
@@ -2102,18 +2297,18 @@ export class CleanupService {
       [2, () => this.remaining2(target)],
       [3, () => this.remaining3(target)],
     ] as [number, () => number][]) {
-      if (getStage(this.db, s).mode === 'on' && left() > 0) {
-        this.waiting4 = `Waiting for stage ${s} to finish writing`;
+      if (getStage(this.db, target, s).mode === 'on' && left() > 0) {
+        P.waiting4 = `Waiting for stage ${s} to finish writing`;
         return;
       }
     }
-    const checks = this.checksPass();
+    const checks = this.checksPass(target);
     if (!checks.ok) {
-      this.waiting4 = `Waiting for the safety checks: ${checks.failing.join('; ')}`;
+      P.waiting4 = `Waiting for the safety checks: ${checks.failing.join('; ')}`;
       return;
     }
     const { batch, reason } = await this.batches.stage4.plan(target);
-    this.waiting4 = batch
+    P.waiting4 = batch
       ? 'A batch is being applied'
       : (reason ?? (this.remaining4(target) === 0 ? 'Done: nothing left to write' : null));
   }
@@ -2121,7 +2316,7 @@ export class CleanupService {
   /** Stage 4's automatic changes still to write (the fields it writes, not paused). */
   private remaining4(target: string): number {
     const paused = new Set(
-      listFieldPauses(this.db, 4).flatMap((p) =>
+      listFieldPauses(this.db, target, 4).flatMap((p) =>
         p.field === 'illustrators'
           ? ['illustrator']
           : p.field === 'number'
@@ -2134,7 +2329,7 @@ export class CleanupService {
         `SELECT field, COUNT(*) AS n FROM proposed_changes WHERE stage = 4 AND library_id = ?
          AND state = 'proposed' AND class = 'auto' AND analysis_id = ? GROUP BY field`,
       )
-      .all(target, currentAnalysisId(this.db, 4)) as { field: string; n: number }[];
+      .all(target, currentAnalysisId(this.db, target, 4)) as { field: string; n: number }[];
     const written = new Set<string>(STAGE4_WRITTEN_FIELDS);
     return rows
       .filter((r) => written.has(r.field) && !paused.has(r.field))
@@ -2148,6 +2343,7 @@ export class CleanupService {
    * size); the page's status caches it 30 s.
    */
   private write4(target: string, analysisId: string, now: number): Stage4Write | null {
+    const P = this.lp(target);
     const fields = [...STAGE4_WRITTEN_FIELDS];
     const inList = fields.map(() => '?').join(', ');
     const n = (state: string, cls: string | null) =>
@@ -2163,18 +2359,20 @@ export class CleanupService {
     // A planned batch's changes are queued until written: still to write.
     const queued = n('queued', null);
     const leftChanges = n('proposed', 'auto') + queued;
-    if (doneChanges === 0 && queued === 0 && getStage(this.db, 4).mode !== 'on') return null;
+    if (doneChanges === 0 && queued === 0 && getStage(this.db, target, 4).mode !== 'on')
+      return null;
     // Books per finished batch, counted once each (a few ms by the batch's items): counting
     // distinct books over all proposals held the server 1.4 s at the run's size (measured).
     const finished = this.db
       .prepare(
         `SELECT id, claimed_at AS claimedAt, finished_at AS finishedAt, item_count AS items FROM batches
-         WHERE stage = 4 AND kind = 'apply' AND state IN ('applied', 'partial') ORDER BY created_at DESC`,
+         WHERE stage = 4 AND library_id = ? AND kind = 'apply' AND state IN ('applied', 'partial')
+         ORDER BY created_at DESC`,
       )
-      .all() as (WriteBatchRow & { id: string })[];
+      .all(target) as (WriteBatchRow & { id: string })[];
     let doneBooks = 0;
     for (const bt of finished) {
-      let k = this.batchBooks.get(bt.id);
+      let k = P.batchBooks.get(bt.id);
       if (k === undefined) {
         k = (
           this.db
@@ -2184,7 +2382,7 @@ export class CleanupService {
             )
             .get(bt.id, analysisId) as { n: number }
         ).n;
-        this.batchBooks.set(bt.id, k);
+        P.batchBooks.set(bt.id, k);
       }
       doneBooks += k;
     }
@@ -2203,10 +2401,16 @@ export class CleanupService {
   }
 
   /** Stage 4 work that needs no answer from the fetcher (answered requests, books to plan or propose). */
-  private stage4HasWork(): boolean {
-    const p = this.analysis4?.progress();
+  private stage4HasWork(target: string): boolean {
+    const P = this.lp(target);
+    const p = P.analysis4?.progress();
     if (!p) return false;
-    const ready = this.db.prepare('SELECT 1 FROM fetch_waiters WHERE ready = 1 LIMIT 1').get();
+    // Manga part B: this library's answered waiters (each library's analysis takes its own).
+    const ready = this.db
+      .prepare(
+        `SELECT 1 FROM fetch_waiters WHERE ready = 1 AND library_id IN (?, 'natively') LIMIT 1`,
+      )
+      .get(target);
     if (ready) return true;
     const books = this.db
       .prepare(
@@ -2217,8 +2421,14 @@ export class CleanupService {
   }
 
   /** "Ask again" for a site: its given-up requests go back to the queue and their books are planned again. */
-  retryStage4Site(site: string, now = Date.now()): { requests: number; books: number } {
-    const p = this.analysis4?.progress();
+  retryStage4Site(
+    target: string | null,
+    site: string,
+    now = Date.now(),
+  ): { requests: number; books: number } {
+    target = target ?? this.targetLibrary();
+    const P = this.lp(target);
+    const p = P.analysis4?.progress();
     const requests = this.fetchQueue.retryFailed(site, now);
     const books = p
       ? this.db
@@ -2230,34 +2440,40 @@ export class CleanupService {
       : 0;
     if (p && p.phase !== 'lookups' && p.phase !== 'read' && books > 0) {
       p.phase = 'lookups';
-      updateStage(this.db, 4, {
+      updateStage(this.db, p.libraryId, 4, {
         progress: p as unknown as Record<string, unknown>,
         state: 'analysing',
       });
     }
-    this.status4Cache = null;
+    P.status4Cache = null;
     void this.tick();
     return { requests, books };
   }
 
   /** Stage 4's AI questions that were given up, asked again (the stage-4 card's button). */
-  askStage4AiAgain(): { questions: number } {
-    const questions = this.stage4Ai?.askAgain() ?? 0;
-    this.status4Cache = null;
+  askStage4AiAgain(target: string | null): { questions: number } {
+    target = target ?? this.targetLibrary();
+    const P = this.lp(target);
+    const questions = P.stage4Ai?.askAgain() ?? 0;
+    P.status4Cache = null;
     if (questions > 0) void this.tick();
     return { questions };
   }
 
   /** Stage 4's proposals for the page's list (paged). */
-  stage4Proposals(f: {
-    field: string | null;
-    cls: 'auto' | 'review' | null;
-    source: string | null;
-    offset: number;
-    limit: number;
-  }) {
-    const p = this.analysis4?.progress();
-    const target = this.targetLibrary();
+  stage4Proposals(
+    target: string | null,
+    f: {
+      field: string | null;
+      cls: 'auto' | 'review' | null;
+      source: string | null;
+      offset: number;
+      limit: number;
+    },
+  ) {
+    target = target ?? this.targetLibrary();
+    const P = this.lp(target);
+    const p = P.analysis4?.progress();
     if (!p || !target) return { total: 0, items: [] };
     const where = ['stage = 4', 'library_id = ?', "state = 'proposed'", 'analysis_id = ?'];
     const args: unknown[] = [target, p.analysisId];
@@ -2296,7 +2512,7 @@ export class CleanupService {
       review_reason: string | null;
       evidence_json: string;
     }[];
-    const snap = this.analysis4!.loadSnapshot(target);
+    const snap = P.analysis4!.loadSnapshot(target);
     return {
       total,
       items: rows.map((r) => ({
@@ -2319,8 +2535,8 @@ export class CleanupService {
    * The Best guesses list (series-order follow-up): series with a best guess or a problem for
    * review, each whole and in order, or the books outside a series with a best guess.
    */
-  stage4Guesses(kind: 'series' | 'other', offset: number, limit: number) {
-    const target = this.targetLibrary();
+  stage4Guesses(target: string | null, kind: 'series' | 'other', offset: number, limit: number) {
+    target = target ?? this.targetLibrary();
     if (!target) return kind === 'series' ? { total: 0, series: [] } : { total: 0, books: [] };
     return kind === 'series'
       ? listSeriesGuesses(this.db, target, offset, limit)
@@ -2328,8 +2544,8 @@ export class CleanupService {
   }
 
   /** The titles shortened or cut to fit Calibre's folder names (cleanup.db v26), newest first. */
-  titleFits(offset: number, limit: number) {
-    const target = this.targetLibrary();
+  titleFits(target: string | null, offset: number, limit: number) {
+    target = target ?? this.targetLibrary();
     if (!target) return { total: 0, items: [] };
     return listTitleFits(this.db, this.opts.main, target, offset, limit);
   }
@@ -2353,8 +2569,10 @@ export class CleanupService {
 
   /** Stage 4's status for the page (cached 30 s: some counts read the whole queue). */
   stage4Status(target: string | null, now = Date.now()): unknown {
-    if (this.status4Cache && now - this.status4Cache.at < 30_000) return this.status4Cache.value;
-    const p = this.analysis4?.progress() ?? null;
+    target = target ?? this.targetLibrary();
+    const P = this.lp(target);
+    if (P.status4Cache && now - P.status4Cache.at < 30_000) return P.status4Cache.value;
+    const p = P.analysis4?.progress() ?? null;
     const s = getSettings(this.db).fetch;
     const counts = this.db
       .prepare('SELECT site, state, COUNT(*) AS n FROM fetch_requests GROUP BY site, state')
@@ -2463,7 +2681,7 @@ export class CleanupService {
     const amazonSlot = pace(['amazon-dp', 'amazon-search']);
     const eta =
       p && p.phase !== 'done'
-        ? this.stage4TimeLeft(p, sites, books, readings, now, amazonSlot)
+        ? this.stage4TimeLeft(p.libraryId, p, sites, books, readings, now, amazonSlot)
         : null;
     for (const site of sites) {
       const t = eta?.result.sites[site.site];
@@ -2492,8 +2710,8 @@ export class CleanupService {
     ).n;
     // The proposals' counts read every stage-4 proposal (41 ms on the PC at the library's size):
     // counted at most every 5 minutes.
-    if (!this.fields4Cache || now - this.fields4Cache.at > 300_000) {
-      this.fields4Cache = {
+    if (!P.fields4Cache || now - P.fields4Cache.at > 300_000) {
+      P.fields4Cache = {
         at: now,
         value:
           target && p
@@ -2506,10 +2724,10 @@ export class CleanupService {
             : [],
       };
     }
-    const fields = this.fields4Cache.value;
-    const ai = this.stage4Ai?.progress() ?? null;
+    const fields = P.fields4Cache.value;
+    const ai = P.stage4Ai?.progress() ?? null;
     const value = {
-      waiting: this.waiting4,
+      waiting: P.waiting4,
       fetcher: this.fetcher(now),
       amazonPace:
         s.amazonPace === 'trial' ? `trial (now ${this.fetchQueue.amazonPace(now)})` : s.amazonPace,
@@ -2525,7 +2743,7 @@ export class CleanupService {
         ? {
             phase: ai.phase,
             // The progress bar and the time left of the running phase (WP20e follow-up).
-            bar: this.stage4Ai?.bar(now) ?? null,
+            bar: P.stage4Ai?.bar(now) ?? null,
             items: ai.items,
             labeledItems: ai.labeledItems,
             decided: ai.decided,
@@ -2561,9 +2779,9 @@ export class CleanupService {
             finishedAt: ai.finishedAt,
           }
         : null,
-      fieldPauses: listFieldPauses(this.db, 4),
+      fieldPauses: target ? listFieldPauses(this.db, target, 4) : [],
       // Books whose changes were all undone (the test batches): written on the card's button.
-      undoneBooks: this.stage4Ai?.isDone() ? this.stage4Ai.undoneBooks().length : 0,
+      undoneBooks: P.stage4Ai?.isDone() ? P.stage4Ai.undoneBooks().length : 0,
       // Stage 4 On: books and changes written, what is left, the time left (WP20e).
       write: target && p ? this.write4(target, p.analysisId, now) : null,
       read: p
@@ -2576,7 +2794,7 @@ export class CleanupService {
       timeLeft: eta?.result ?? null,
       cachedAt: now,
     };
-    this.status4Cache = { at: now, value };
+    P.status4Cache = { at: now, value };
     return value;
   }
 
@@ -2586,6 +2804,7 @@ export class CleanupService {
    * come at its measured pace, and the final pass at the measured time per proposed book.
    */
   private stage4TimeLeft(
+    target: string,
     p: Stage4Progress,
     sites: {
       site: FetchSite;
@@ -2602,16 +2821,16 @@ export class CleanupService {
     now: number,
     amazonSlot: number | null = null,
   ) {
+    const P = this.lp(target);
     const s = getSettings(this.db).fetch;
     const count = (states: string[]) =>
       books.filter((b) => states.includes(b.state)).reduce((a, b) => a + b.n, 0);
     const booksRead = count(['read', 'waiting', 'ready', 'proposed', 'error']);
-    this.readMarks = this.readMarks.filter(
+    P.readMarks = P.readMarks.filter(
       (m) => m.analysisId === p.analysisId && now - m.at <= 20 * 60_000,
     );
-    if (p.phase === 'read')
-      this.readMarks.push({ at: now, n: booksRead, analysisId: p.analysisId });
-    const first = this.readMarks[0];
+    if (p.phase === 'read') P.readMarks.push({ at: now, n: booksRead, analysisId: p.analysisId });
+    const first = P.readMarks[0];
     const readPerSecond =
       first && now - first.at >= 120_000 && booksRead > first.n
         ? (booksRead - first.n) / ((now - first.at) / 1000)
@@ -2621,8 +2840,8 @@ export class CleanupService {
     // Also while reopened labeled books are checked again: their earlier ratios still hold.
     const labeledKnown = p.labeledDoneAt !== null || p.labeledCheckedOnce === true;
     if (labeledKnown) {
-      if (!this.labeled4Cache || now - this.labeled4Cache.at > 600_000) {
-        this.labeled4Cache = {
+      if (!P.labeled4Cache || now - P.labeled4Cache.at > 600_000) {
+        P.labeled4Cache = {
           at: now,
           value: this.db
             .prepare(
@@ -2631,7 +2850,7 @@ export class CleanupService {
             .all(LABELED_PRIORITY) as { site: string; n: number }[],
         };
       }
-      labeled = this.labeled4Cache.value;
+      labeled = P.labeled4Cache.value;
     }
     const per = p.times?.['propose: book'];
     const unreadable = count(['error']);
@@ -2672,10 +2891,11 @@ export class CleanupService {
    * Stage 3: analysis (after stage 1's and 2's), then (On, gate passed) one removal batch at a
    * time once stages 1 and 2 have nothing left to apply.
    */
-  private async round3(target: string | null): Promise<void> {
-    const stage = getStage(this.db, 3);
-    if (stage.mode === 'off' || !target || !this.analysis3) {
-      this.waiting3 =
+  private async round3(target: string): Promise<void> {
+    const P = this.lp(target);
+    const stage = getStage(this.db, target, 3);
+    if (stage.mode === 'off' || !target || !P.analysis3) {
+      P.waiting3 =
         stage.mode === 'off'
           ? null
           : target
@@ -2683,64 +2903,75 @@ export class CleanupService {
             : 'Choose the library';
       return;
     }
-    let progress = this.analysis3.progress();
-    if (!progress || progress.libraryId !== target) progress = this.analysis3.restart(target);
+    let progress = P.analysis3.progress();
+    if (!progress || progress.libraryId !== target) progress = P.analysis3.restart(target);
     if (progress.phase !== 'done') {
       if (!this.snapshotExists(target)) {
-        this.waiting3 = "Waiting for the reader's index of the library";
+        P.waiting3 = "Waiting for the reader's index of the library";
         return;
       }
-      if (this.analysing || this.analysing2) {
-        this.waiting3 = "Waiting for stage 1's or stage 2's analysis to finish";
+      if (P.analysing || P.analysing2) {
+        P.waiting3 = "Waiting for stage 1's or stage 2's analysis to finish";
         return;
       }
-      this.waiting3 = 'Analysing';
-      this.runAnalysis3();
+      P.waiting3 = 'Analysing';
+      this.runAnalysis3(target);
       return;
     }
     if (progress.error) {
-      this.waiting3 = `The analysis failed: ${progress.error}`;
+      P.waiting3 = `The analysis failed: ${progress.error}`;
       return;
     }
     // New rules or new limits in the settings: the measured pairs are classified again
     // (nothing read again), then the copies are chosen again.
-    if (this.analysis3.needsReclassify(progress) && !this.batches.open()) {
-      this.analysis3.reclassify();
-      this.waiting3 = 'Analysing';
-      this.runAnalysis3();
+    if (P.analysis3.needsReclassify(progress) && !this.batches.open()) {
+      P.analysis3.reclassify();
+      P.waiting3 = 'Analysing';
+      this.runAnalysis3(target);
       return;
     }
     if (stage.mode !== 'on') {
-      this.waiting3 = 'Preview: nothing is changed in Calibre';
+      P.waiting3 = 'Preview: nothing is changed in Calibre';
       return;
     }
-    if (getStage(this.db, 3).pauseReason) {
-      this.waiting3 = null;
+    if (getStage(this.db, target, 3).pauseReason) {
+      P.waiting3 = null;
       return;
     }
     if (!progress.gate?.passed) {
-      this.waiting3 = `Not applying: the gate hasn't passed (${(progress.gate?.problems ?? ['not checked']).join('; ')})`;
+      P.waiting3 = `Not applying: the gate hasn't passed (${(progress.gate?.problems ?? ['not checked']).join('; ')})`;
       return;
+    }
+    // Manga part B: one gate across the libraries. The measured pairs and labeled books live in
+    // the library they were labeled in; another library's stage 3 applies only while that
+    // library's gate passes too.
+    for (const lib of this.cleanupLibraries()) {
+      if (lib === target) continue;
+      const other = this.lp(lib).analysis3?.progress();
+      if (other?.gate && !other.gate.passed) {
+        P.waiting3 = `Not applying: stage 3's gate of ${this.libraryName(lib)} hasn't passed`;
+        return;
+      }
     }
     if (this.batches.open()) {
-      this.waiting3 = 'A batch is being applied';
+      P.waiting3 = 'A batch is being applied';
       return;
     }
-    if (getStage(this.db, 1).mode === 'on' && this.remaining(target) > 0) {
-      this.waiting3 = 'Waiting for stage 1 to finish removing identical copies';
+    if (getStage(this.db, target, 1).mode === 'on' && this.remaining(target) > 0) {
+      P.waiting3 = 'Waiting for stage 1 to finish removing identical copies';
       return;
     }
-    if (getStage(this.db, 2).mode === 'on' && this.remaining2(target) > 0) {
-      this.waiting3 = 'Waiting for stage 2 to finish writing';
+    if (getStage(this.db, target, 2).mode === 'on' && this.remaining2(target) > 0) {
+      P.waiting3 = 'Waiting for stage 2 to finish writing';
       return;
     }
-    const checks = this.checksPass();
+    const checks = this.checksPass(target);
     if (!checks.ok) {
-      this.waiting3 = `Waiting for the safety checks: ${checks.failing.join('; ')}`;
+      P.waiting3 = `Waiting for the safety checks: ${checks.failing.join('; ')}`;
       return;
     }
     const { batch, reason } = await this.batches.planStage3(target, () => this.stopped);
-    this.waiting3 = batch
+    P.waiting3 = batch
       ? 'A batch is being applied'
       : (reason ?? (this.remaining3(target) === 0 ? 'Done: nothing left to remove' : null));
   }
@@ -2753,19 +2984,20 @@ export class CleanupService {
   calibreApplying(): string | null {
     const open = this.batches.open() as { stage?: number } | null;
     if (open) return `Calibre stage ${open.stage ?? ''} (applying a batch)`;
-    const target = this.targetLibrary();
-    if (!target) return null;
-    const left: [number, () => number][] = [
-      [1, () => this.remaining(target)],
-      [2, () => this.remaining2(target)],
-      [3, () => this.remaining3(target)],
-      [4, () => this.remaining4(target)],
-      [5, () => this.remaining5(target)],
-    ];
-    for (const [stage, count] of left) {
-      const st = getStage(this.db, stage);
-      if (st.mode === 'on' && !st.pauseReason && count() > 0) {
-        return `Calibre stage ${stage} (between batches)`;
+    // Manga part B: any library's stage that is On with work left.
+    for (const target of this.cleanupLibraries()) {
+      const left: [number, () => number][] = [
+        [1, () => this.remaining(target)],
+        [2, () => this.remaining2(target)],
+        [3, () => this.remaining3(target)],
+        [4, () => this.remaining4(target)],
+        [5, () => this.remaining5(target)],
+      ];
+      for (const [stage, count] of left) {
+        const st = getStage(this.db, target, stage);
+        if (st.mode === 'on' && !st.pauseReason && count() > 0) {
+          return `Calibre stage ${stage} (between batches)`;
+        }
       }
     }
     return null;
@@ -2778,7 +3010,7 @@ export class CleanupService {
           `SELECT COUNT(*) AS n FROM proposed_changes WHERE stage = 3 AND library_id = ?
            AND state = 'proposed' AND class = 'auto' AND analysis_id = ?`,
         )
-        .get(target, currentAnalysisId(this.db, 3)) as { n: number }
+        .get(target, currentAnalysisId(this.db, target, 3)) as { n: number }
     ).n;
   }
 
@@ -2800,15 +3032,16 @@ export class CleanupService {
     return true;
   }
 
-  private runAnalysis3(): void {
-    if (this.analysing3 || !this.analysis3) return;
-    const analysis = this.analysis3;
-    this.analysing3 = (async () => {
+  private runAnalysis3(target: string): void {
+    const P = this.lp(target);
+    if (P.analysing3 || !P.analysis3) return;
+    const analysis = P.analysis3;
+    P.analysing3 = (async () => {
       try {
         for (;;) {
           if (this.stopped) break;
-          if (getStage(this.db, 3).mode === 'off') break;
-          const stop3 = () => this.stopped || getStage(this.db, 3).mode === 'off';
+          if (getStage(this.db, target, 3).mode === 'off') break;
+          const stop3 = () => this.stopped || getStage(this.db, target, 3).mode === 'off';
           if (!(await this.diskFor(3, analysis.progress()?.phase, stop3))) break;
           const done = await analysis.step(stop3);
           if (done) break;
@@ -2817,17 +3050,22 @@ export class CleanupService {
         this.logError('Cleanup: stage 3 analysis failed:', err);
       } finally {
         this.diskLock.release(DISK_OWNERS.calibre3);
-        this.analysing3 = null;
+        P.analysing3 = null;
         void this.tick();
       }
     })();
   }
 
   /** Your decision on a stage-3 pair (keep both, remove one, or none); the sets are worked out again. */
-  decidePair(pairId: number, decision: 'keep_both' | 'remove_a' | 'remove_b' | 'clear'): void {
-    const target = this.targetLibrary();
-    const p = this.analysis3?.progress();
-    if (!target || !p || !this.analysis3) throw new Error('Stage 3 has no analysis');
+  decidePair(
+    target: string | null,
+    pairId: number,
+    decision: 'keep_both' | 'remove_a' | 'remove_b' | 'clear',
+  ): void {
+    target = target ?? this.targetLibrary();
+    const P = this.lp(target);
+    const p = P.analysis3?.progress();
+    if (!target || !p || !P.analysis3) throw new Error('Stage 3 has no analysis');
     const pair = this.db
       .prepare('SELECT * FROM content_pairs WHERE id = ? AND analysis_id = ?')
       .get(pairId, p.analysisId) as PairRow | undefined;
@@ -2852,7 +3090,7 @@ export class CleanupService {
     if (p.phase === 'done' && !p.error) {
       p.phase = 'group';
       p.finishedAt = null;
-      updateStage(this.db, 3, {
+      updateStage(this.db, target, 3, {
         progress: p as unknown as Record<string, unknown>,
         state: 'analysing',
       });
@@ -2861,10 +3099,11 @@ export class CleanupService {
   }
 
   /** Stage 2: analysis, then (On) one batch at a time once stage 1 has nothing left to remove. */
-  private async round2(target: string | null): Promise<void> {
-    const stage = getStage(this.db, 2);
-    if (stage.mode === 'off' || !target || !this.analysis2) {
-      this.waiting2 =
+  private async round2(target: string): Promise<void> {
+    const P = this.lp(target);
+    const stage = getStage(this.db, target, 2);
+    if (stage.mode === 'off' || !target || !P.analysis2) {
+      P.waiting2 =
         stage.mode === 'off'
           ? null
           : target
@@ -2872,73 +3111,74 @@ export class CleanupService {
             : 'Choose the library';
       return;
     }
-    let progress = this.analysis2.progress();
-    if (!progress || progress.libraryId !== target) progress = this.analysis2.restart(target);
+    let progress = P.analysis2.progress();
+    if (!progress || progress.libraryId !== target) progress = P.analysis2.restart(target);
     if (progress.phase !== 'done') {
       if (!this.snapshotExists(target)) {
-        this.waiting2 = "Waiting for the reader's index of the library";
+        P.waiting2 = "Waiting for the reader's index of the library";
         return;
       }
-      if (this.analysing) {
-        this.waiting2 = "Waiting for stage 1's analysis to finish";
+      if (P.analysing) {
+        P.waiting2 = "Waiting for stage 1's analysis to finish";
         return;
       }
-      this.waiting2 = 'Analysing';
-      this.runAnalysis2();
+      P.waiting2 = 'Analysing';
+      this.runAnalysis2(target);
       return;
     }
     if (progress.error) {
-      this.waiting2 = `The analysis failed: ${progress.error}`;
+      P.waiting2 = `The analysis failed: ${progress.error}`;
       return;
     }
     if (stage.mode !== 'on') {
-      this.waiting2 = 'Preview: nothing is changed in Calibre';
+      P.waiting2 = 'Preview: nothing is changed in Calibre';
       return;
     }
-    if (getStage(this.db, 2).pauseReason) {
-      this.waiting2 = null;
+    if (getStage(this.db, target, 2).pauseReason) {
+      P.waiting2 = null;
       return;
     }
     if (this.batches.open()) {
-      this.waiting2 = 'A batch is being applied';
+      P.waiting2 = 'A batch is being applied';
       return;
     }
-    if (getStage(this.db, 1).mode === 'on' && this.remaining(target) > 0) {
-      this.waiting2 = 'Waiting for stage 1 to finish removing identical copies';
+    if (getStage(this.db, target, 1).mode === 'on' && this.remaining(target) > 0) {
+      P.waiting2 = 'Waiting for stage 1 to finish removing identical copies';
       return;
     }
-    const checks = this.checksPass();
+    const checks = this.checksPass(target);
     if (!checks.ok) {
-      this.waiting2 = `Waiting for the safety checks: ${checks.failing.join('; ')}`;
+      P.waiting2 = `Waiting for the safety checks: ${checks.failing.join('; ')}`;
       return;
     }
     const { batch, reason } = await this.batches.stage2.plan(target);
-    this.waiting2 = batch
+    P.waiting2 = batch
       ? 'A batch is being applied'
       : (reason ?? (this.remaining2(target) === 0 ? 'Done: nothing left to write' : null));
   }
 
   private remaining2(target: string): number {
-    const paused = listFieldPauses(this.db, 2).map((p) => p.field);
+    const paused = listFieldPauses(this.db, target, 2).map((p) => p.field);
     const rows = this.db
       .prepare(
         `SELECT field, COUNT(*) AS n FROM proposed_changes WHERE stage = 2 AND library_id = ?
          AND state = 'proposed' AND class = 'auto' AND (analysis_id = ? OR decided_by IS NOT NULL)
          GROUP BY field`,
       )
-      .all(target, currentAnalysisId(this.db, 2)) as { field: string; n: number }[];
+      .all(target, currentAnalysisId(this.db, target, 2)) as { field: string; n: number }[];
     return rows.filter((r) => !paused.includes(r.field)).reduce((a, r) => a + r.n, 0);
   }
 
-  private runAnalysis2(): void {
-    if (this.analysing2 || !this.analysis2) return;
-    const analysis = this.analysis2;
-    this.analysing2 = (async () => {
+  private runAnalysis2(target: string): void {
+    const P = this.lp(target);
+    if (P.analysing2 || !P.analysis2) return;
+    const analysis = P.analysis2;
+    P.analysing2 = (async () => {
       try {
         for (;;) {
           if (this.stopped) break;
-          if (getStage(this.db, 2).mode === 'off') break;
-          const stop2 = () => this.stopped || getStage(this.db, 2).mode === 'off';
+          if (getStage(this.db, target, 2).mode === 'off') break;
+          const stop2 = () => this.stopped || getStage(this.db, target, 2).mode === 'off';
           if (!(await this.diskFor(2, analysis.progress()?.phase, stop2))) break;
           const done = await analysis.step(stop2);
           if (done) break;
@@ -2947,7 +3187,7 @@ export class CleanupService {
         this.logError('Cleanup: stage 2 analysis failed:', err);
       } finally {
         this.diskLock.release(DISK_OWNERS.calibre2);
-        this.analysing2 = null;
+        P.analysing2 = null;
         void this.tick();
       }
     })();
@@ -2957,13 +3197,14 @@ export class CleanupService {
   stage2Counts(
     target: string | null,
   ): { field: string; class: string; state: string; n: number }[] {
+    target = target ?? this.targetLibrary();
     if (!target) return [];
     return this.db
       .prepare(
         `SELECT field, class, state, COUNT(*) AS n FROM proposed_changes WHERE stage = 2 AND library_id = ?
          AND (${CURRENT_PROPOSALS_SQL} OR decided_by IS NOT NULL) GROUP BY field, class, state`,
       )
-      .all(target, currentAnalysisId(this.db, 2)) as {
+      .all(target, currentAnalysisId(this.db, target, 2)) as {
       field: string;
       class: string;
       state: string;
@@ -2972,6 +3213,7 @@ export class CleanupService {
   }
 
   stage2SkipReasons(target: string | null): { reason: string; count: number }[] {
+    target = target ?? this.targetLibrary();
     if (!target) return [];
     return this.db
       .prepare(
@@ -2979,25 +3221,27 @@ export class CleanupService {
          FROM proposed_changes WHERE stage = 2 AND library_id = ? AND state = 'skipped' AND analysis_id = ?
          GROUP BY reason ORDER BY count DESC, reason LIMIT 20`,
       )
-      .all(target, currentAnalysisId(this.db, 2)) as { reason: string; count: number }[];
+      .all(target, currentAnalysisId(this.db, target, 2)) as { reason: string; count: number }[];
   }
 
   /** Books written in the recent window (for the page's time left). */
-  stage2Pace(now = Date.now()): { written: number; firstAt: number | null } {
+  stage2Pace(target: string | null, now = Date.now()): { written: number; firstAt: number | null } {
     const row = this.db
       .prepare(
         `SELECT COUNT(DISTINCT c.calibre_id) AS n, MIN(i.updated_at) AS first FROM batch_items i
          JOIN batches b ON b.id = i.batch_id JOIN proposed_changes c ON c.id = i.change_id
-         WHERE b.kind = 'apply' AND b.stage = 2 AND i.state = 'written' AND i.updated_at >= ?`,
+         WHERE b.kind = 'apply' AND b.stage = 2 AND b.library_id = ? AND i.state = 'written'
+           AND i.updated_at >= ?`,
       )
-      .get(now - PACE_WINDOW_MS) as { n: number; first: number | null };
+      .get(target ?? '', now - PACE_WINDOW_MS) as { n: number; first: number | null };
     return { written: row.n, firstAt: row.first };
   }
 
   /** Books left to write (auto, not paused). */
   stage2BooksLeft(target: string | null): number {
+    target = target ?? this.targetLibrary();
     if (!target) return 0;
-    const paused = listFieldPauses(this.db, 2).map((p) => p.field);
+    const paused = listFieldPauses(this.db, target, 2).map((p) => p.field);
     const placeholders = paused.map(() => '?').join(',');
     return (
       this.db
@@ -3006,15 +3250,16 @@ export class CleanupService {
            AND state = 'proposed' AND class = 'auto' AND (analysis_id = ? OR decided_by IS NOT NULL)
            ${paused.length ? `AND field NOT IN (${placeholders})` : ''}`,
         )
-        .get(target, currentAnalysisId(this.db, 2), ...paused) as { n: number }
+        .get(target, currentAnalysisId(this.db, target, 2), ...paused) as { n: number }
     ).n;
   }
 
   /** Stage 1: removing identical copies. */
-  private async round1(target: string | null): Promise<void> {
-    const stage = getStage(this.db, 1);
-    if (stage.mode === 'off' || !target || !this.analysis) {
-      this.waiting =
+  private async round1(target: string): Promise<void> {
+    const P = this.lp(target);
+    const stage = getStage(this.db, target, 1);
+    if (stage.mode === 'off' || !target || !P.analysis) {
+      P.waiting =
         stage.mode === 'off'
           ? null
           : target
@@ -3023,41 +3268,41 @@ export class CleanupService {
       return;
     }
     this.checkMassMissing(target);
-    let progress = this.analysis.progress();
-    if (!progress || progress.libraryId !== target) progress = this.analysis.restart(target);
+    let progress = P.analysis.progress();
+    if (!progress || progress.libraryId !== target) progress = P.analysis.restart(target);
     if (progress.phase !== 'done') {
       if (!this.snapshotExists(target)) {
-        this.waiting = "Waiting for the reader's index of the library";
+        P.waiting = "Waiting for the reader's index of the library";
         return;
       }
-      this.waiting = 'Analysing';
-      this.runAnalysis();
+      P.waiting = 'Analysing';
+      this.runAnalysis(target);
       return;
     }
     if (progress.error) {
-      this.waiting = `The analysis failed: ${progress.error}`;
+      P.waiting = `The analysis failed: ${progress.error}`;
       return;
     }
     if (stage.mode !== 'on') {
-      this.waiting = 'Preview: nothing is changed in Calibre';
+      P.waiting = 'Preview: nothing is changed in Calibre';
       return;
     }
-    const current = getStage(this.db, 1);
+    const current = getStage(this.db, target, 1);
     if (current.pauseReason) {
-      this.waiting = null;
+      P.waiting = null;
       return;
     }
     if (this.batches.open()) {
-      this.waiting = 'A batch is being applied';
+      P.waiting = 'A batch is being applied';
       return;
     }
-    const checks = this.checksPass();
+    const checks = this.checksPass(target);
     if (!checks.ok) {
-      this.waiting = `Waiting for the safety checks: ${checks.failing.join('; ')}`;
+      P.waiting = `Waiting for the safety checks: ${checks.failing.join('; ')}`;
       return;
     }
     const { batch, reason } = await this.batches.planStage1(target, () => this.stopped);
-    this.waiting = batch
+    P.waiting = batch
       ? 'A batch is being applied'
       : (reason ?? (this.remaining(target) === 0 ? this.doneText() : null));
   }
@@ -3077,7 +3322,7 @@ export class CleanupService {
           `SELECT COUNT(*) AS n FROM proposed_changes WHERE stage = 1 AND library_id = ?
            AND state = 'proposed' AND class = 'auto' AND analysis_id = ?`,
         )
-        .get(target, currentAnalysisId(this.db)) as { n: number }
+        .get(target, currentAnalysisId(this.db, target, 1)) as { n: number }
     ).n;
   }
 
@@ -3099,9 +3344,13 @@ export class CleanupService {
       if (last.t !== null && state.lastWarningAt >= last.t) {
         // Every removing stage stops: the index refused a batch's missing copies.
         for (const st of REMOVAL_STAGES) {
-          if (getStage(this.db, st).mode === 'on' && !getStage(this.db, st).pauseReason) {
+          if (
+            getStage(this.db, target, st).mode === 'on' &&
+            !getStage(this.db, target, st).pauseReason
+          ) {
             pauseStage(
               this.db,
+              target,
               st,
               'mass_missing',
               `The reader's index reported: ${state.lastWarning}`,
@@ -3114,15 +3363,16 @@ export class CleanupService {
     }
   }
 
-  private runAnalysis(): void {
-    if (this.analysing || this.analysing2 || !this.analysis) return;
-    const analysis = this.analysis;
-    this.analysing = (async () => {
+  private runAnalysis(target: string): void {
+    const P = this.lp(target);
+    if (P.analysing || P.analysing2 || !P.analysis) return;
+    const analysis = P.analysis;
+    P.analysing = (async () => {
       try {
         for (;;) {
           if (this.stopped) break;
-          if (getStage(this.db, 1).mode === 'off') break;
-          const stop1 = () => this.stopped || getStage(this.db, 1).mode === 'off';
+          if (getStage(this.db, target, 1).mode === 'off') break;
+          const stop1 = () => this.stopped || getStage(this.db, target, 1).mode === 'off';
           if (!(await this.diskFor(1, analysis.progress()?.phase, stop1))) break;
           const done = await analysis.step(stop1);
           if (done) break;
@@ -3131,25 +3381,27 @@ export class CleanupService {
         this.logError('Cleanup: analysis failed:', err);
       } finally {
         this.diskLock.release(DISK_OWNERS.calibre1);
-        this.analysing = null;
+        P.analysing = null;
         void this.tick();
       }
     })();
   }
 
   stage1Counts(target: string | null): Record<string, number> {
+    target = target ?? this.targetLibrary();
     if (!target) return {};
     const rows = this.db
       .prepare(
         `SELECT state, COUNT(*) AS n FROM proposed_changes WHERE stage = 1 AND library_id = ?
          AND ${CURRENT_PROPOSALS_SQL} GROUP BY state`,
       )
-      .all(target, currentAnalysisId(this.db)) as { state: string; n: number }[];
+      .all(target, currentAnalysisId(this.db, target, 1)) as { state: string; n: number }[];
     return Object.fromEntries(rows.map((r) => [r.state, r.n]));
   }
 
   /** Why copies were skipped, most common first (for the page). */
   stage1SkipReasons(target: string | null): { reason: string; count: number }[] {
+    target = target ?? this.targetLibrary();
     if (!target) return [];
     return this.db
       .prepare(
@@ -3158,7 +3410,7 @@ export class CleanupService {
            AND analysis_id = ?
          GROUP BY reason ORDER BY count DESC, reason`,
       )
-      .all(target, currentAnalysisId(this.db)) as { reason: string; count: number }[];
+      .all(target, currentAnalysisId(this.db, target, 1)) as { reason: string; count: number }[];
   }
 
   /**
@@ -3166,14 +3418,15 @@ export class CleanupService {
    * PACE_WINDOW_MS and when the first of them was removed. The pace of the whole run would
    * be thrown off by a slow start or an earlier run.
    */
-  stage1Pace(now = Date.now()): { removed: number; firstAt: number | null } {
+  stage1Pace(target: string | null, now = Date.now()): { removed: number; firstAt: number | null } {
     const row = this.db
       .prepare(
         `SELECT COUNT(*) AS n, MIN(i.updated_at) AS first FROM batch_items i
          JOIN batches b ON b.id = i.batch_id
-         WHERE b.kind = 'apply' AND b.stage = 1 AND i.state = 'removed' AND i.updated_at >= ?`,
+         WHERE b.kind = 'apply' AND b.stage = 1 AND b.library_id = ? AND i.state = 'removed'
+           AND i.updated_at >= ?`,
       )
-      .get(now - PACE_WINDOW_MS) as { n: number; first: number | null };
+      .get(target ?? '', now - PACE_WINDOW_MS) as { n: number; first: number | null };
     return { removed: row.n, firstAt: row.first };
   }
 
@@ -3184,12 +3437,14 @@ export class CleanupService {
    * measure) or examples (30 random pairs of one class).
    */
   stage3Pairs(
+    target: string | null,
     view: string,
     { cls, offset = 0, limit = 50 }: { cls?: string; offset?: number; limit?: number } = {},
   ): { total: number; items: Record<string, unknown>[] } {
-    const target = this.targetLibrary();
-    const p = this.analysis3?.progress();
-    if (!target || !p || !this.analysis3) return { total: 0, items: [] };
+    target = target ?? this.targetLibrary();
+    const P = this.lp(target);
+    const p = P.analysis3?.progress();
+    if (!target || !p || !P.analysis3) return { total: 0, items: [] };
     const where = ['p.analysis_id = ?'];
     const params: unknown[] = [p.analysisId];
     let order = 'p.a_id, p.b_id';
@@ -3231,7 +3486,7 @@ export class CleanupService {
         `SELECT p.* FROM content_pairs p WHERE ${where.join(' AND ')} ORDER BY ${order} LIMIT ? OFFSET ?`,
       )
       .all(...params, limit, offset) as PairRow[];
-    const books = this.analysis3.loadBooks(target);
+    const books = P.analysis3.loadBooks(target);
     const fact = this.db.prepare(
       `SELECT calibre_id, chars, reader_chars, kind, kind_marker, kind_by, ruby, toc_entries, vertical,
               cover_side, json_array_length(images_json) AS images, image_entries, error, quality_error
@@ -3285,11 +3540,13 @@ export class CleanupService {
 
   /** Stage 3's books of one sort: omnibus files, unreadable files, image-only books. */
   stage3Books(
+    target: string | null,
     view: string,
     { offset = 0, limit = 50 }: { offset?: number; limit?: number } = {},
   ): { total: number; items: Record<string, unknown>[] } {
-    const target = this.targetLibrary();
-    if (!target || !this.analysis3) return { total: 0, items: [] };
+    target = target ?? this.targetLibrary();
+    const P = this.lp(target);
+    if (!target || !P.analysis3) return { total: 0, items: [] };
     const where =
       view === 'omnibus'
         ? `kind = 'omnibus'`
@@ -3299,7 +3556,7 @@ export class CleanupService {
             ? 'image_only = 1'
             : null;
     if (!where) throw new Error('No such list');
-    const books = this.analysis3.loadBooks(target);
+    const books = P.analysis3.loadBooks(target);
     const rows = (
       this.db
         .prepare(
@@ -3319,13 +3576,17 @@ export class CleanupService {
   }
 
   /** The gate's result per measured pair. */
-  stage3Gate() {
-    return this.analysis3?.progress()?.gate ?? null;
+  stage3Gate(target: string | null) {
+    target = target ?? this.targetLibrary();
+    const P = this.lp(target);
+    return P.analysis3?.progress()?.gate ?? null;
   }
 
   /** Stage 3's line on the page (the gate's per-pair results come from their own route). */
   stage3Status(target: string | null, now = Date.now()) {
-    const p = this.analysis3?.progress() ?? null;
+    target = target ?? this.targetLibrary();
+    const P = this.lp(target);
+    const p = P.analysis3?.progress() ?? null;
     const counts: Record<string, number> = {};
     if (target) {
       for (const r of this.db
@@ -3333,7 +3594,7 @@ export class CleanupService {
           `SELECT state, COUNT(*) AS n FROM proposed_changes WHERE stage = 3 AND library_id = ?
            AND ${CURRENT_PROPOSALS_SQL} GROUP BY state`,
         )
-        .all(target, currentAnalysisId(this.db, 3)) as { state: string; n: number }[]) {
+        .all(target, currentAnalysisId(this.db, target, 3)) as { state: string; n: number }[]) {
         counts[r.state] = r.n;
       }
     }
@@ -3341,9 +3602,10 @@ export class CleanupService {
       .prepare(
         `SELECT COUNT(*) AS n, MIN(i.updated_at) AS first FROM batch_items i
          JOIN batches b ON b.id = i.batch_id
-         WHERE b.kind = 'apply' AND b.stage = 3 AND i.state = 'removed' AND i.updated_at >= ?`,
+         WHERE b.kind = 'apply' AND b.stage = 3 AND b.library_id = ? AND i.state = 'removed'
+           AND i.updated_at >= ?`,
       )
-      .get(now - PACE_WINDOW_MS) as { n: number; first: number | null };
+      .get(target ?? '', now - PACE_WINDOW_MS) as { n: number; first: number | null };
     const gate = p?.gate
       ? {
           ...p.gate,
@@ -3351,7 +3613,7 @@ export class CleanupService {
         }
       : null;
     return {
-      waiting: this.waiting3,
+      waiting: P.waiting3,
       progress: p ? { ...p, gate: undefined } : null,
       gate,
       counts,
@@ -3362,24 +3624,30 @@ export class CleanupService {
                FROM proposed_changes WHERE stage = 3 AND library_id = ? AND state = 'skipped'
                  AND analysis_id = ? GROUP BY reason ORDER BY count DESC, reason LIMIT 20`,
             )
-            .all(target, currentAnalysisId(this.db, 3)) as { reason: string; count: number }[])
+            .all(target, currentAnalysisId(this.db, target, 3)) as {
+            reason: string;
+            count: number;
+          }[])
         : [],
       pace: { removed: pace.n, firstAt: pace.first },
       awaitingIngest: this.batches.awaitingIngest(3),
     };
   }
 
-  status(now = Date.now()) {
-    const target = this.targetLibrary();
+  status(libraryId: string | null = null, now = Date.now()) {
+    // Manga part B: the stages of one library (the primary one unless the page names another),
+    // and a line per library for the page's picker or columns.
+    const target = this.libraryOr(libraryId);
     const lib = target ? getLibrary(this.opts.main, target) : null;
     // Counted once: the reader's index of 60,000+ books is read row by row (0.3 s on the PC).
     const present = lib ? presentBookCount(this.opts.main, lib.id) : undefined;
     return {
-      stages: listStages(this.db),
+      stages: target ? listStages(this.db, target) : [],
+      cleanupLibraries: this.cleanupLibraries().map((id) => this.librarySummary(id)),
       // The disk lock shared with the audiobook cleanup (WP21a).
       disk: this.diskLock.state(),
-      waiting: this.waiting,
-      checks: this.checks(now, present),
+      waiting: this.lp(target).waiting,
+      checks: this.checks(now, present, target),
       sidecar: this.sidecar(now),
       target: lib
         ? {
@@ -3395,25 +3663,63 @@ export class CleanupService {
         folder: l.folder,
       })),
       // The content server's name for the library to clean (found automatically if possible).
-      calibre: this.resolvedLibraryId(),
+      calibre:
+        target && target !== this.targetLibrary()
+          ? {
+              id: this.calibreLibraryIdOf(target),
+              auto: true,
+              libraries: this.calibreLibraries(),
+            }
+          : this.resolvedLibraryId(),
       stage1: {
         counts: this.stage1Counts(target),
         skipReasons: this.stage1SkipReasons(target),
-        pace: this.stage1Pace(now),
+        pace: this.stage1Pace(target, now),
         openBatch: this.batches.open(),
-        awaitingIngest: this.batches.awaitingIngest(1),
+        awaitingIngest: target ? this.batches.awaitingIngest(1, target) : null,
       },
       stage3: this.stage3Status(target, now),
       stage4: this.stage4Status(target, now),
       stage5: this.stage5Status(target, now),
       stage2: {
-        waiting: this.waiting2,
+        waiting: this.lp(target).waiting2,
         counts: this.stage2Counts(target),
         skipReasons: this.stage2SkipReasons(target),
-        fieldPauses: listFieldPauses(this.db, 2),
-        pace: this.stage2Pace(now),
+        fieldPauses: target ? listFieldPauses(this.db, target, 2) : [],
+        pace: this.stage2Pace(target, now),
         booksLeft: this.stage2BooksLeft(target),
       },
+    };
+  }
+
+  /**
+   * One library's line for the page (the picker's buttons, the columns' headings): its name,
+   * its books in the reader's index, how many stages are On or in Preview, whether one is
+   * paused. The count is cached per library by the reader's index version (presentBookCount).
+   */
+  librarySummary(id: string): {
+    id: string;
+    name: string;
+    folder: string;
+    primary: boolean;
+    present: number;
+    on: number;
+    preview: number;
+    paused: boolean;
+  } {
+    const lib = getLibrary(this.opts.main, id);
+    const stages = listStages(this.db, id).filter((s) => s.stage >= 1 && s.stage <= 5);
+    return {
+      id,
+      name: lib?.name || lib?.folder || id,
+      folder: lib?.folder ?? '',
+      primary: id === this.targetLibrary(),
+      present: lib ? presentBookCount(this.opts.main, id) : 0,
+      on: stages.filter((s) => s.mode === 'on').length,
+      preview: stages.filter((s) => s.mode === 'analyse').length,
+      paused:
+        stages.some((s) => s.pauseReason !== null) ||
+        [2, 4, 5].some((st) => listFieldPauses(this.db, id, st).length > 0),
     };
   }
 }

@@ -295,10 +295,12 @@ describe('stage 1, batches, handoff and Undo', () => {
       .expect(200);
     for (let i = 0; i < 50; i++) {
       await env.service.tick();
-      if (getStage(env.cleanupDb, 1).state === 'ready') return;
+      if (getStage(env.cleanupDb, env.libraryId(), 1).state === 'ready') return;
       await new Promise((r) => setTimeout(r, 20));
     }
-    throw new Error(`analysis did not finish: ${JSON.stringify(getStage(env.cleanupDb, 1))}`);
+    throw new Error(
+      `analysis did not finish: ${JSON.stringify(getStage(env.cleanupDb, env.libraryId(), 1))}`,
+    );
   }
 
   async function ready() {
@@ -423,7 +425,7 @@ describe('stage 1, batches, handoff and Undo', () => {
     const c1 = res.body.items.find((i: { calibre_id: number }) => i.calibre_id === ids.C1);
     expect(c1.evidence.removed.extraFormats).toEqual(['AZW3']);
     expect(c1.evidence.kept.calibreId).toBe(ids.C2);
-    const p = getStage(env.cleanupDb, 1).progress as Record<string, number>;
+    const p = getStage(env.cleanupDb, env.libraryId(), 1).progress as Record<string, number>;
     expect(p.duplicateSets).toBe(3);
     expect(p.toRemove).toBe(4);
     expect(p.extraFormat).toBe(1);
@@ -647,7 +649,7 @@ describe('stage 1, batches, handoff and Undo', () => {
     // A2's bytes change behind Calibre's back (same last_modified).
     fs.writeFileSync(env.lib.epubFile(ids.A2), bytes('z'));
     await env.service.tick();
-    const stage = getStage(env.cleanupDb, 1);
+    const stage = getStage(env.cleanupDb, env.libraryId(), 1);
     expect(stage.pauseReason).toBe('not_identical');
     expect(env.service.batches.list()).toEqual([]);
     await request(env.app).post('/api/v1/cleanup/stages/1/resume').set(auth(user)).expect(200);
@@ -672,7 +674,7 @@ describe('stage 1, batches, handoff and Undo', () => {
       .send({ mode: 'on' })
       .expect(200);
     await env.service.tick();
-    const stage = getStage(env.cleanupDb, 1);
+    const stage = getStage(env.cleanupDb, env.libraryId(), 1);
     expect(stage.pauseReason).toBe('library_changed');
     expect(stage.pauseDetail).toMatch(/has no EPUB in Calibre any more/);
     expect(stage.pauseDetail).toMatch(/Nothing was removed or skipped/);
@@ -684,11 +686,11 @@ describe('stage 1, batches, handoff and Undo', () => {
     // Resuming alone pauses again: the analysis is out of date.
     await request(env.app).post('/api/v1/cleanup/stages/1/resume').set(auth(user)).expect(200);
     await env.service.tick();
-    expect(getStage(env.cleanupDb, 1).pauseReason).toBe('library_changed');
+    expect(getStage(env.cleanupDb, env.libraryId(), 1).pauseReason).toBe('library_changed');
     // "Run the analysis again" clears the pause; the new analysis no longer has those copies.
     await request(env.app).post('/api/v1/cleanup/stages/1/analyse').set(auth(user)).expect(200);
-    expect(getStage(env.cleanupDb, 1).pauseReason).toBeNull();
-    for (let i = 0; i < 50 && getStage(env.cleanupDb, 1).state !== 'ready'; i++) {
+    expect(getStage(env.cleanupDb, env.libraryId(), 1).pauseReason).toBeNull();
+    for (let i = 0; i < 50 && getStage(env.cleanupDb, env.libraryId(), 1).state !== 'ready'; i++) {
       await env.service.tick();
       await new Promise((r) => setTimeout(r, 20));
     }
@@ -718,7 +720,7 @@ describe('stage 1, batches, handoff and Undo', () => {
       .send({ mode: 'on' })
       .expect(200);
     await env.service.tick();
-    expect(getStage(env.cleanupDb, 1).pauseReason).toBeNull();
+    expect(getStage(env.cleanupDb, env.libraryId(), 1).pauseReason).toBeNull();
     const a2 = env.cleanupDb
       .prepare('SELECT state, review_reason FROM proposed_changes WHERE calibre_id = ?')
       .get(ids.A2);
@@ -740,7 +742,7 @@ describe('stage 1, batches, handoff and Undo', () => {
       )
       .run();
     await request(env.app).post('/api/v1/cleanup/stages/1/analyse').set(auth(user)).expect(200);
-    for (let i = 0; i < 50 && getStage(env.cleanupDb, 1).state !== 'ready'; i++) {
+    for (let i = 0; i < 50 && getStage(env.cleanupDb, env.libraryId(), 1).state !== 'ready'; i++) {
       await env.service.tick();
       await new Promise((r) => setTimeout(r, 20));
     }
@@ -797,11 +799,11 @@ describe('stage 1, batches, handoff and Undo', () => {
     // (they are referenced by its items: deleting them would break the analysis).
     await request(env.app).post('/api/v1/cleanup/stages/1/resume').set(auth(user)).expect(200);
     await request(env.app).post('/api/v1/cleanup/stages/1/analyse').set(auth(user)).expect(200);
-    for (let i = 0; i < 50 && getStage(env.cleanupDb, 1).state !== 'ready'; i++) {
+    for (let i = 0; i < 50 && getStage(env.cleanupDb, env.libraryId(), 1).state !== 'ready'; i++) {
       await env.service.tick();
       await new Promise((r) => setTimeout(r, 20));
     }
-    const after = getStage(env.cleanupDb, 1);
+    const after = getStage(env.cleanupDb, env.libraryId(), 1);
     expect(after.state).toBe('ready');
     expect((after.progress as { error: string | null }).error).toBeNull();
     await env.service.tick();

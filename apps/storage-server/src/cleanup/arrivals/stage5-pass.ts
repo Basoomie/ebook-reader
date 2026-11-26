@@ -72,8 +72,8 @@ export class ArrivalStage5 {
   }
 
   /** The sets the library's stage-5 gate holds back (its last result). */
-  private held(): { genres: boolean; tags: boolean } {
-    const p = getStage(this.db, 5).progress as {
+  private held(libraryId: string): { genres: boolean; tags: boolean } {
+    const p = getStage(this.db, libraryId, 5).progress as {
       gate?: { held?: { genres: boolean; tags: boolean } };
     };
     return p.gate?.held ?? { genres: false, tags: false };
@@ -192,7 +192,7 @@ export class ArrivalStage5 {
     const snap = this.deps.analysis.loadSnapshot(view.libraryId);
     const byUuid = new Map([...snap.books.values()].map((b) => [b.uuid, b]));
     const formats = this.formats(view);
-    const held = this.held();
+    const held = this.held(view.libraryId);
     const ownOf = this.db.prepare(
       `SELECT value_json FROM ai_values WHERE stage = 'calibre5' AND item_key = ? AND field = ?`,
     );

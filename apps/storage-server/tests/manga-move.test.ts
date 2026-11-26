@@ -658,8 +658,11 @@ describe('moving books to the manga library', () => {
           .run(now, JSON.stringify(p)).lastInsertRowid,
       );
       env.cleanupDb
-        .prepare('UPDATE calibre_arrivals_state SET current_run = ? WHERE id = 1')
-        .run(id);
+        .prepare('UPDATE calibre_arrivals_state SET current_run = ? WHERE library_id = ?')
+        .run(id, env.libraryId());
+      env.cleanupDb
+        .prepare('UPDATE calibre_arrival_runs SET library_id = ? WHERE id = ?')
+        .run(env.libraryId(), id);
       return id;
     };
     const proposed = (run: number) =>

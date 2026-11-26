@@ -22,6 +22,9 @@ export function cleanupDbPath(dbDir: string): string {
   return path.join(dbDir, CLEANUP_DB_FILENAME);
 }
 
+/** Manga part B: the migration that gives every stage, pass and import run its library. */
+export const LIBRARY_SCOPE_VERSION = 38;
+
 export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[] = [
   {
     version: 1,
@@ -2721,7 +2724,284 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
     `,
   },
   {
-    version: 38,
+    version: LIBRARY_SCOPE_VERSION,
+    name: 'Manga part B: every stage, pass and import run belongs to one Calibre library',
+    // manga-library.md part B (approved 2026-11-25). The state that was one row per stage (or
+    // id = 1) becomes one row per reader library; today's rows go to the primary library (the
+    // cleanup's library until now), whose id the server puts in _cleanup_primary before this runs
+    // (migrateCleanup). Without it (a tool, a test), the library of the newest stage 1-5 batch, the
+    // move's source or any proposal's. A database with none of those has nothing to carry: its
+    // rows are made per library when first needed.
+    sql: `
+      CREATE TEMP TABLE IF NOT EXISTS _cleanup_primary (library_id TEXT);
+      CREATE TEMP TABLE _v38_primary AS SELECT COALESCE(
+        (SELECT library_id FROM _cleanup_primary WHERE library_id IS NOT NULL LIMIT 1),
+        (SELECT library_id FROM batches WHERE stage BETWEEN 1 AND 5
+           ORDER BY created_at DESC LIMIT 1),
+        (SELECT library_id FROM calibre_move_state WHERE id = 1),
+        (SELECT library_id FROM proposed_changes WHERE stage BETWEEN 1 AND 5 LIMIT 1)
+      ) AS id;
+
+      CREATE TABLE stages_v38 (
+        stage          INTEGER NOT NULL CHECK (stage BETWEEN 0 AND 5),
+        library_id     TEXT NOT NULL,
+        mode           TEXT NOT NULL DEFAULT 'off' CHECK (mode IN ('off', 'analyse', 'on')),
+        state          TEXT NOT NULL DEFAULT 'idle',
+        pause_reason   TEXT,
+        pause_detail   TEXT,
+        paused_at      INTEGER,
+        progress_json  TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(progress_json)),
+        precision_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(precision_json)),
+        updated_at     INTEGER NOT NULL,
+        PRIMARY KEY (stage, library_id)
+      );
+      INSERT INTO stages_v38 (stage, library_id, mode, state, pause_reason, pause_detail,
+          paused_at, progress_json, precision_json, updated_at)
+        SELECT s.stage, COALESCE(p.id, ''), s.mode, s.state, s.pause_reason, s.pause_detail,
+          s.paused_at, s.progress_json, s.precision_json, s.updated_at
+        FROM stages s, _v38_primary p;
+      DROP TABLE stages;
+      ALTER TABLE stages_v38 RENAME TO stages;
+
+      -- library_id '' = every library: a gate's pause (one gate per stage across the libraries).
+      CREATE TABLE stage_field_pauses_v38 (
+        stage      INTEGER NOT NULL,
+        library_id TEXT NOT NULL,
+        field      TEXT NOT NULL,
+        reason     TEXT NOT NULL,
+        detail     TEXT,
+        paused_at  INTEGER NOT NULL,
+        PRIMARY KEY (stage, library_id, field)
+      );
+      INSERT INTO stage_field_pauses_v38 (stage, library_id, field, reason, detail, paused_at)
+        SELECT f.stage, CASE WHEN f.reason IN ('gate', 'no_labels') THEN '' ELSE p.id END,
+          f.field, f.reason, f.detail, f.paused_at
+        FROM stage_field_pauses f, _v38_primary p
+        WHERE p.id IS NOT NULL OR f.reason IN ('gate', 'no_labels');
+      DROP TABLE stage_field_pauses;
+      ALTER TABLE stage_field_pauses_v38 RENAME TO stage_field_pauses;
+
+      -- '' = a check about the content server, the sidecar or the settings (all libraries).
+      CREATE TABLE preflight_v38 (
+        name        TEXT NOT NULL,
+        library_id  TEXT NOT NULL DEFAULT '',
+        ok          INTEGER NOT NULL CHECK (ok IN (0, 1)),
+        detail      TEXT,
+        source      TEXT NOT NULL CHECK (source IN ('sidecar', 'server')),
+        checked_at  INTEGER NOT NULL,
+        PRIMARY KEY (name, library_id)
+      );
+      INSERT INTO preflight_v38 (name, library_id, ok, detail, source, checked_at)
+        SELECT name, '', ok, detail, source, checked_at FROM preflight;
+      DROP TABLE preflight;
+      ALTER TABLE preflight_v38 RENAME TO preflight;
+
+      CREATE TABLE bookmeter_more_state_v38 (
+        library_id    TEXT PRIMARY KEY,
+        mode          TEXT NOT NULL DEFAULT 'off' CHECK (mode IN ('off', 'analyse', 'on')),
+        progress_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(progress_json)),
+        paused_reason TEXT,
+        paused_detail TEXT,
+        updated_at    INTEGER NOT NULL
+      );
+      INSERT INTO bookmeter_more_state_v38
+        SELECT COALESCE(s.library_id, p.id), s.mode, s.progress_json, s.paused_reason,
+          s.paused_detail, s.updated_at
+        FROM bookmeter_more_state s, _v38_primary p WHERE COALESCE(s.library_id, p.id) IS NOT NULL;
+      DROP TABLE bookmeter_more_state;
+      ALTER TABLE bookmeter_more_state_v38 RENAME TO bookmeter_more_state;
+
+      CREATE TABLE series_pairs_state_v38 (
+        library_id    TEXT PRIMARY KEY,
+        mode          TEXT NOT NULL DEFAULT 'off' CHECK (mode IN ('off', 'analyse', 'on')),
+        progress_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(progress_json)),
+        paused_reason TEXT,
+        updated_at    INTEGER NOT NULL
+      );
+      INSERT INTO series_pairs_state_v38
+        SELECT COALESCE(s.library_id, p.id), s.mode, s.progress_json, s.paused_reason, s.updated_at
+        FROM series_pairs_state s, _v38_primary p WHERE COALESCE(s.library_id, p.id) IS NOT NULL;
+      DROP TABLE series_pairs_state;
+      ALTER TABLE series_pairs_state_v38 RENAME TO series_pairs_state;
+
+      CREATE TABLE link_discovery_state_v38 (
+        library_id    TEXT PRIMARY KEY,
+        mode          TEXT NOT NULL DEFAULT 'off' CHECK (mode IN ('off', 'analyse', 'on')),
+        progress_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(progress_json)),
+        paused_reason TEXT,
+        paused_detail TEXT,
+        updated_at    INTEGER NOT NULL
+      );
+      INSERT INTO link_discovery_state_v38
+        SELECT COALESCE(s.library_id, p.id), s.mode, s.progress_json, s.paused_reason,
+          s.paused_detail, s.updated_at
+        FROM link_discovery_state s, _v38_primary p WHERE COALESCE(s.library_id, p.id) IS NOT NULL;
+      DROP TABLE link_discovery_state;
+      ALTER TABLE link_discovery_state_v38 RENAME TO link_discovery_state;
+
+      CREATE TABLE bookmeter_listing_state_v38 (
+        library_id    TEXT PRIMARY KEY,
+        mode          TEXT NOT NULL DEFAULT 'off' CHECK (mode IN ('off', 'analyse', 'on')),
+        progress_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(progress_json)),
+        paused_reason TEXT,
+        paused_detail TEXT,
+        updated_at    INTEGER NOT NULL
+      );
+      INSERT INTO bookmeter_listing_state_v38
+        SELECT COALESCE(s.library_id, p.id), s.mode, s.progress_json, s.paused_reason,
+          s.paused_detail, s.updated_at
+        FROM bookmeter_listing_state s, _v38_primary p
+        WHERE COALESCE(s.library_id, p.id) IS NOT NULL;
+      DROP TABLE bookmeter_listing_state;
+      ALTER TABLE bookmeter_listing_state_v38 RENAME TO bookmeter_listing_state;
+
+      CREATE TABLE calibre_arrivals_state_v38 (
+        library_id          TEXT PRIMARY KEY,
+        mode                TEXT NOT NULL DEFAULT 'off' CHECK (mode IN ('off', 'analyse', 'on')),
+        pause_reason        TEXT,
+        pause_detail        TEXT,
+        paused_at           INTEGER,
+        last_scheduled_day  TEXT,
+        run_now             INTEGER NOT NULL DEFAULT 0,
+        current_run         INTEGER,
+        baseline_at         INTEGER,
+        snapshot_seen       TEXT,
+        hand_checked_at     INTEGER,
+        updated_at          INTEGER NOT NULL
+      );
+      INSERT INTO calibre_arrivals_state_v38
+        SELECT COALESCE(p.id, ''), s.mode, s.pause_reason, s.pause_detail, s.paused_at,
+          s.last_scheduled_day, s.run_now, s.current_run, s.baseline_at, s.snapshot_seen,
+          s.hand_checked_at, s.updated_at
+        FROM calibre_arrivals_state s, _v38_primary p;
+      DROP TABLE calibre_arrivals_state;
+      ALTER TABLE calibre_arrivals_state_v38 RENAME TO calibre_arrivals_state;
+
+      ALTER TABLE calibre_arrival_runs ADD COLUMN library_id TEXT;
+      UPDATE calibre_arrival_runs SET library_id = COALESCE(json_extract(progress_json, '$.libraryId'),
+        (SELECT id FROM _v38_primary));
+      CREATE INDEX calibre_arrival_runs_library ON calibre_arrival_runs (library_id, id);
+
+      -- The library of the Calibre book a file names (added as, identical or duplicate of, better
+      -- than). Until now always its pair's library.
+      ALTER TABLE calibre_arrival_files ADD COLUMN calibre_library_id TEXT;
+      UPDATE calibre_arrival_files SET calibre_library_id =
+          (SELECT p.library_id FROM calibre_arrival_pairs p WHERE p.pair_key = calibre_arrival_files.pair_key)
+        WHERE calibre_id IS NOT NULL;
+      ALTER TABLE calibre_arrival_batch_items ADD COLUMN calibre_library_id TEXT;
+      UPDATE calibre_arrival_batch_items SET calibre_library_id =
+          (SELECT b.library_id FROM calibre_arrival_batches b WHERE b.id = calibre_arrival_batch_items.batch_id)
+        WHERE calibre_id IS NOT NULL;
+      -- Review items name the library of their Calibre book; kind 'cross_copy': a copy of a book
+      -- in another library (a better copy, or a book added by hand there) is only ever review
+      -- (answer 3 at stop 0; nothing is removed from one library because of another).
+      CREATE TABLE calibre_arrival_reviews_v38 (
+        id          INTEGER PRIMARY KEY,
+        review_key  TEXT NOT NULL UNIQUE,
+        kind        TEXT NOT NULL CHECK (kind IN ('better_copy', 'archive', 'add_failed',
+                      'too_long', 'cross_copy')),
+        file_id     INTEGER,
+        calibre_id  INTEGER,
+        calibre_uuid TEXT,
+        detail_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(detail_json)),
+        run_id      INTEGER,
+        created_at  INTEGER NOT NULL,
+        decision    TEXT,
+        decided_at  INTEGER,
+        applied_at  INTEGER,
+        calibre_library_id TEXT
+      );
+      INSERT INTO calibre_arrival_reviews_v38 (id, review_key, kind, file_id, calibre_id,
+          calibre_uuid, detail_json, run_id, created_at, decision, decided_at, applied_at,
+          calibre_library_id)
+        SELECT r.id, r.review_key, r.kind, r.file_id, r.calibre_id, r.calibre_uuid, r.detail_json,
+          r.run_id, r.created_at, r.decision, r.decided_at, r.applied_at,
+          CASE WHEN r.calibre_id IS NULL THEN NULL ELSE COALESCE(
+            (SELECT f.calibre_library_id FROM calibre_arrival_files f WHERE f.id = r.file_id),
+            (SELECT id FROM _v38_primary)) END
+        FROM calibre_arrival_reviews r;
+      DROP TABLE calibre_arrival_reviews;
+      ALTER TABLE calibre_arrival_reviews_v38 RENAME TO calibre_arrival_reviews;
+      CREATE INDEX calibre_arrival_reviews_open ON calibre_arrival_reviews (decision, id);
+
+      -- A statement that names a Calibre book without its library means the file's own library
+      -- (its pair's), as every statement did before; one that names another library sets it.
+      CREATE TRIGGER calibre_arrival_files_library AFTER UPDATE OF calibre_id ON calibre_arrival_files
+      WHEN NEW.calibre_id IS NOT OLD.calibre_id AND NEW.calibre_library_id IS OLD.calibre_library_id
+      BEGIN
+        UPDATE calibre_arrival_files SET calibre_library_id = CASE WHEN NEW.calibre_id IS NULL THEN NULL
+          ELSE (SELECT p.library_id FROM calibre_arrival_pairs p WHERE p.pair_key = NEW.pair_key) END
+        WHERE id = NEW.id;
+      END;
+      CREATE TRIGGER calibre_arrival_batch_items_library AFTER UPDATE OF calibre_id ON calibre_arrival_batch_items
+      WHEN NEW.calibre_id IS NOT NULL AND NEW.calibre_library_id IS NULL
+      BEGIN
+        UPDATE calibre_arrival_batch_items SET calibre_library_id =
+          (SELECT b.library_id FROM calibre_arrival_batches b WHERE b.id = NEW.batch_id)
+        WHERE id = NEW.id;
+      END;
+      CREATE TRIGGER calibre_arrival_reviews_library AFTER INSERT ON calibre_arrival_reviews
+      WHEN NEW.calibre_id IS NOT NULL AND NEW.calibre_library_id IS NULL
+      BEGIN
+        UPDATE calibre_arrival_reviews SET calibre_library_id = COALESCE(
+            (SELECT f.calibre_library_id FROM calibre_arrival_files f WHERE f.id = NEW.file_id),
+            (SELECT r.library_id FROM calibre_arrival_runs r WHERE r.id = NEW.run_id))
+        WHERE id = NEW.id;
+      END;
+
+      CREATE TABLE calibre_arrival_books_v38 (
+        run_id        INTEGER NOT NULL REFERENCES calibre_arrival_runs(id),
+        library_id    TEXT NOT NULL,
+        calibre_id    INTEGER NOT NULL,
+        calibre_uuid  TEXT NOT NULL,
+        origin        TEXT NOT NULL CHECK (origin IN ('import', 'hand')),
+        file_id       INTEGER,
+        state         TEXT NOT NULL DEFAULT 'open',
+        detail        TEXT,
+        PRIMARY KEY (run_id, library_id, calibre_id)
+      );
+      INSERT INTO calibre_arrival_books_v38 SELECT run_id, library_id, calibre_id, calibre_uuid,
+        origin, file_id, state, detail FROM calibre_arrival_books;
+      DROP TABLE calibre_arrival_books;
+      ALTER TABLE calibre_arrival_books_v38 RENAME TO calibre_arrival_books;
+      CREATE INDEX calibre_arrival_books_book ON calibre_arrival_books (library_id, calibre_uuid);
+
+      -- origin 'move': a book a move brought into this library (never taken for one added by hand).
+      CREATE TABLE calibre_known_books_v38 (
+        library_id   TEXT NOT NULL,
+        calibre_id   INTEGER NOT NULL,
+        calibre_uuid TEXT NOT NULL,
+        origin       TEXT NOT NULL CHECK (origin IN ('baseline', 'import', 'hand', 'undo', 'move')),
+        file_id      INTEGER,
+        added_at     INTEGER NOT NULL,
+        settled_at   INTEGER,
+        run_id       INTEGER,
+        gone_at      INTEGER,
+        PRIMARY KEY (library_id, calibre_id)
+      );
+      INSERT INTO calibre_known_books_v38 SELECT library_id, calibre_id, calibre_uuid, origin,
+        file_id, added_at, settled_at, run_id, gone_at FROM calibre_known_books;
+      DROP TABLE calibre_known_books;
+      ALTER TABLE calibre_known_books_v38 RENAME TO calibre_known_books;
+      CREATE INDEX calibre_known_books_uuid ON calibre_known_books (calibre_uuid);
+      CREATE INDEX calibre_known_books_waiting ON calibre_known_books (library_id, origin, run_id);
+
+      -- One gate per stage across the libraries (gate-parts.ts): each library's part of it (its
+      -- labeled books' results); the gate is scored over every library's part together.
+      CREATE TABLE stage_gate_parts (
+        stage       INTEGER NOT NULL,
+        part        TEXT NOT NULL,
+        library_id  TEXT NOT NULL,
+        data_json   TEXT NOT NULL CHECK (json_valid(data_json)),
+        updated_at  INTEGER NOT NULL,
+        PRIMARY KEY (stage, part, library_id)
+      );
+
+      DROP TABLE _v38_primary;
+    `,
+  },
+  {
+    version: 39,
     name: 'Bookmeter links, second look: the authors whose listings are read page by page',
     // bookmeter-listings.md 8 (approved 2026-11-25): Bookmeter ignores the keyword of a search
     // with the author field, so the pass reads each author's listings ("recommended": by
@@ -2756,6 +3036,33 @@ export const CLEANUP_SCHEMA_VERSION = CLEANUP_MIGRATIONS[CLEANUP_MIGRATIONS.leng
 /** The migration that removes what the one-time AI move carried to ttsu.db. */
 export const AI_MOVE_VERSION = 21;
 
+/**
+ * The primary library before migration LIBRARY_SCOPE_VERSION: the reader library the cleanup's
+ * settings chose (targetLibraryId), else the one in the folder japanese-library, as
+ * CleanupService.targetLibrary() found it. Null when ttsu.db has neither.
+ */
+export function primaryLibraryOf(
+  cleanup: Database.Database,
+  main: Database.Database,
+): string | null {
+  try {
+    const row = cleanup
+      .prepare("SELECT value_json FROM settings WHERE key = 'targetLibraryId'")
+      .get() as { value_json: string } | undefined;
+    const chosen = row ? (JSON.parse(row.value_json) as unknown) : null;
+    if (typeof chosen === 'string' && chosen) {
+      const ok = main.prepare('SELECT id FROM libraries WHERE id = ?').get(chosen);
+      if (ok) return chosen;
+    }
+    const lib = main.prepare("SELECT id FROM libraries WHERE folder = 'japanese-library'").get() as
+      | { id: string }
+      | undefined;
+    return lib?.id ?? null;
+  } catch {
+    return null;
+  }
+}
+
 export function cleanupSchemaVersion(db: Database.Database): number {
   return db.pragma('user_version', { simple: true }) as number;
 }
@@ -2767,6 +3074,12 @@ export interface CleanupMigrateOptions {
    * Without it, a cleanup.db that still has AI data is refused (nothing may be dropped unmoved).
    */
   beforeAiMove?: (db: Database.Database) => void;
+  /**
+   * The primary library's reader id (the cleanup's one library before manga part B), asked just
+   * before migration LIBRARY_SCOPE_VERSION, which gives it today's stage and pass rows. Null or
+   * absent: the migration finds it from the database itself (the newest stage 1-5 batch).
+   */
+  primaryLibrary?: (db: Database.Database) => string | null;
 }
 
 export function migrateCleanup(db: Database.Database, opts: CleanupMigrateOptions = {}): number {
@@ -2787,6 +3100,12 @@ export function migrateCleanup(db: Database.Database, opts: CleanupMigrateOption
         );
     }
     db.transaction(() => {
+      if (migration.version === LIBRARY_SCOPE_VERSION) {
+        db.exec('CREATE TEMP TABLE IF NOT EXISTS _cleanup_primary (library_id TEXT)');
+        db.exec('DELETE FROM _cleanup_primary');
+        const primary = opts.primaryLibrary?.(db) ?? null;
+        if (primary) db.prepare('INSERT INTO _cleanup_primary VALUES (?)').run(primary);
+      }
       db.exec(migration.sql);
       db.pragma(`user_version = ${migration.version}`);
     })();
@@ -2835,7 +3154,10 @@ export function initCleanupDatabase(
     const db = openCleanupDatabase(
       file,
       mainDb
-        ? { beforeAiMove: (c) => void moveAiToShared(c, mainDb, dbDir, { log: opts.log }) }
+        ? {
+            beforeAiMove: (c) => void moveAiToShared(c, mainDb, dbDir, { log: opts.log }),
+            primaryLibrary: (c) => primaryLibraryOf(c, mainDb),
+          }
         : {},
     );
     return { ok: true, db, file, schemaVersion: cleanupSchemaVersion(db) };

@@ -20,7 +20,9 @@ import { fnv1a64 } from '$lib/search-history/search-history';
  *   (N.9) never, bonus books (N.1) only with the setting. Two books on one number: the one
  *   added first. The series is left out when a book on that number was started (Reading or
  *   Dropped), when there is none, and when you hid the series.
- * - Order: the series whose volume you finished last first (then by book id).
+ * - Order: the series whose volume you finished last first, by the read-throughs' finish day
+ *   (then by book id, newest first: the server's order and the search sorted by Series last
+ *   finished).
  */
 
 export const SERIES_NEXT_HIDE_KIND = 'series-next-hide';
@@ -142,7 +144,7 @@ export function nextInSeries(
   }
   return out.sort(
     (a, b) =>
-      b.finishedAt - a.finishedAt || (a.bookId < b.bookId ? -1 : a.bookId > b.bookId ? 1 : 0)
+      b.finishedAt - a.finishedAt || (a.bookId < b.bookId ? 1 : a.bookId > b.bookId ? -1 : 0)
   );
 }
 

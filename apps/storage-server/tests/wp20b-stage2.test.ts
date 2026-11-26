@@ -304,11 +304,11 @@ describe('stage 2: metadata and covers from the files', () => {
       .set(auth(user))
       .send({ mode })
       .expect(200);
-    for (let i = 0; i < 300 && getStage(env.cleanupDb, 2).state !== 'ready'; i++) {
+    for (let i = 0; i < 300 && getStage(env.cleanupDb, env.libraryId(), 2).state !== 'ready'; i++) {
       await env.service.tick();
       await new Promise((r) => setTimeout(r, 20));
     }
-    expect(getStage(env.cleanupDb, 2).state).toBe('ready');
+    expect(getStage(env.cleanupDb, env.libraryId(), 2).state).toBe('ready');
   }
 
   async function runAll(w: Worker, rounds = 30) {
@@ -353,7 +353,7 @@ describe('stage 2: metadata and covers from the files', () => {
   it('Look only reads every EPUB, proposes per field and class, scores the gate, and writes nothing to Calibre', async () => {
     const before = fingerprint(env.lib.dir);
     await setMode('analyse');
-    const p = getStage(env.cleanupDb, 2).progress as Record<string, any>;
+    const p = getStage(env.cleanupDb, env.libraryId(), 2).progress as Record<string, any>;
     expect(p.readDone).toBe(30);
     expect(p.readErrors).toBe(0);
     expect(p.groups.title).toMatchObject({ unknown: 4, processed: 1 });
@@ -382,21 +382,21 @@ describe('stage 2: metadata and covers from the files', () => {
     });
     expect(proposals('illustrator')[0].new_json).toBe('["画家一","画家二"]');
     // The gate passes on the labeled books.
-    const gate = (getStage(env.cleanupDb, 2).precision as any).gate;
+    const gate = (getStage(env.cleanupDb, env.libraryId(), 2).precision as any).gate;
     expect(gate.labeled).toBe(4);
     expect(gate.fields.title.ok).toBe(true);
     expect(gate.fields.authors.ok).toBe(true);
-    expect(listFieldPauses(env.cleanupDb, 2)).toEqual([]);
+    expect(listFieldPauses(env.cleanupDb, env.libraryId(), 2)).toEqual([]);
     // Nothing was written anywhere in the library, and nothing was planned.
     expect(fingerprint(env.lib.dir)).toEqual(before);
     expect(env.service.batches.list()).toEqual([]);
     // A second analysis reads no file again (each EPUB's evidence is kept).
     await request(env.app).post('/api/v1/cleanup/stages/2/analyse').set(auth(user)).expect(200);
-    for (let i = 0; i < 300 && getStage(env.cleanupDb, 2).state !== 'ready'; i++) {
+    for (let i = 0; i < 300 && getStage(env.cleanupDb, env.libraryId(), 2).state !== 'ready'; i++) {
       await env.service.tick();
       await new Promise((r) => setTimeout(r, 20));
     }
-    expect((getStage(env.cleanupDb, 2).progress as any).filesRead).toBe(0);
+    expect((getStage(env.cleanupDb, env.libraryId(), 2).progress as any).filesRead).toBe(0);
     const status = await request(env.app).get('/api/v1/cleanup/status').set(auth(user)).expect(200);
     expect(status.body.stage2.waiting).toBe('Preview: nothing is changed in Calibre');
   });
@@ -521,7 +521,7 @@ describe('stage 2: metadata and covers from the files', () => {
     });
     // Undone fields are not proposed again by a new analysis.
     await request(env.app).post('/api/v1/cleanup/stages/2/analyse').set(auth(user)).expect(200);
-    for (let i = 0; i < 300 && getStage(env.cleanupDb, 2).state !== 'ready'; i++) {
+    for (let i = 0; i < 300 && getStage(env.cleanupDb, env.libraryId(), 2).state !== 'ready'; i++) {
       await env.service.tick();
       await new Promise((r) => setTimeout(r, 20));
     }
@@ -599,11 +599,11 @@ describe('stage 2: metadata and covers from the files', () => {
       )
       .run(first.finishedAt! - 1000, Date.now() + 1000, env.libraryId());
     env.service.batches.checkIngested();
-    expect(getStage(env.cleanupDb, 2).pauseReason).toBeNull();
+    expect(getStage(env.cleanupDb, env.libraryId(), 2).pauseReason).toBeNull();
     // Once indexed, the first batch is marked taken in.
     await runAll(w);
     expect(env.service.batches.awaitingIngest(2)).toBeNull();
-    expect(getStage(env.cleanupDb, 2).pauseReason).toBeNull();
+    expect(getStage(env.cleanupDb, env.libraryId(), 2).pauseReason).toBeNull();
     expect(env.service.batches.list().filter((b) => b.stage === 2).length).toBeGreaterThan(2);
   });
 
@@ -727,7 +727,7 @@ describe('stage 2: metadata and covers from the files', () => {
       )
       .run(ids.B1);
     for (let i = 0; i < 20 && !(await env.service.analysis2!.step(() => false)); i++);
-    expect(getStage(env.cleanupDb, 2).progress.phase).toBe('done');
+    expect(getStage(env.cleanupDb, env.libraryId(), 2).progress.phase).toBe('done');
     expect(count()).toBe(before);
   });
 
@@ -771,7 +771,7 @@ describe('stage 2: metadata and covers from the files', () => {
     const first = env.service.batches.list().find((b) => b.stage === 2)!;
     expect(first.state).toBe('failed');
     expect(env.service.batches.itemCounts(first.id).failed).toBeGreaterThan(0);
-    expect(getStage(env.cleanupDb, 2).pauseReason).toBe('batch_failed');
+    expect(getStage(env.cleanupDb, env.libraryId(), 2).pauseReason).toBe('batch_failed');
     const books = new Set(setCalls().map((c) => c[c.indexOf('--password') + 2]));
     expect(setCalls().length).toBe(books.size);
   });
@@ -796,14 +796,14 @@ describe('stage 2: metadata and covers from the files', () => {
       'DEBUG',
       first.state,
       JSON.stringify(env.service.batches.itemCounts(first.id)),
-      getStage(env.cleanupDb, 2).pauseReason,
+      getStage(env.cleanupDb, env.libraryId(), 2).pauseReason,
       env.service.batches
         .list()
         .map((b) => b.stage + b.state)
         .join(),
     );
     expect(env.service.batches.itemCounts(first.id).failed).toBeGreaterThan(0);
-    expect(getStage(env.cleanupDb, 2).pauseReason).toBeNull();
+    expect(getStage(env.cleanupDb, env.libraryId(), 2).pauseReason).toBeNull();
     expect(env.logs.some((l) => l.includes('going on'))).toBe(true);
   });
 
@@ -849,18 +849,18 @@ describe('stage 2: metadata and covers from the files', () => {
 
   it("running the analysis again after stage 2's own writes keeps the gate's verdict (no title pause)", async () => {
     await setMode('analyse');
-    expect(listFieldPauses(env.cleanupDb, 2)).toEqual([]);
+    expect(listFieldPauses(env.cleanupDb, env.libraryId(), 2)).toEqual([]);
     await setMode('on');
     await runAll(worker());
     expect(calibreRecord(env.lib, ids.B2)!.title).toBe('正しい題名');
     // The gate compares the file with what stage 2 replaced, not with its own write.
-    env.service.reanalyse(2);
-    for (let i = 0; i < 300 && getStage(env.cleanupDb, 2).state !== 'ready'; i++) {
+    env.service.reanalyse(null, 2);
+    for (let i = 0; i < 300 && getStage(env.cleanupDb, env.libraryId(), 2).state !== 'ready'; i++) {
       await env.service.tick();
       await new Promise((r) => setTimeout(r, 20));
     }
-    expect(getStage(env.cleanupDb, 2).state).toBe('ready');
-    expect(listFieldPauses(env.cleanupDb, 2)).toEqual([]);
+    expect(getStage(env.cleanupDb, env.libraryId(), 2).state).toBe('ready');
+    expect(listFieldPauses(env.cleanupDb, env.libraryId(), 2)).toEqual([]);
   });
 
   it("a value stage 4 wrote and Calibre still holds is Calibre's own: review, never automatic", async () => {
@@ -968,12 +968,12 @@ describe('stage 2: metadata and covers from the files', () => {
     const open = Number(
       insert.run(lib, 900002, 'review', 'A review item', 'proposed').lastInsertRowid,
     );
-    env.service.reanalyse(2);
-    for (let i = 0; i < 300 && getStage(env.cleanupDb, 2).state !== 'ready'; i++) {
+    env.service.reanalyse(null, 2);
+    for (let i = 0; i < 300 && getStage(env.cleanupDb, env.libraryId(), 2).state !== 'ready'; i++) {
       await env.service.tick();
       await new Promise((r) => setTimeout(r, 20));
     }
-    expect(getStage(env.cleanupDb, 2).state).toBe('ready');
+    expect(getStage(env.cleanupDb, env.libraryId(), 2).state).toBe('ready');
     const rows = env.cleanupDb
       .prepare(
         'SELECT id, state, review_reason FROM proposed_changes WHERE id IN (?, ?) ORDER BY id',
@@ -984,7 +984,7 @@ describe('stage 2: metadata and covers from the files', () => {
       { id: open, state: 'proposed', review_reason: 'A review item' },
     ]);
     // The library's own undecided proposals were replaced by the new analysis.
-    const analysisId = getStage(env.cleanupDb, 2).progress.analysisId as string;
+    const analysisId = getStage(env.cleanupDb, env.libraryId(), 2).progress.analysisId as string;
     const stale = env.cleanupDb
       .prepare(
         `SELECT COUNT(*) AS n FROM proposed_changes WHERE stage = 2 AND state = 'proposed'
@@ -1103,7 +1103,7 @@ describe('stage 2: metadata and covers from the files', () => {
       }),
     );
     await setMode('on');
-    const pauses = listFieldPauses(env.cleanupDb, 2);
+    const pauses = listFieldPauses(env.cleanupDb, env.libraryId(), 2);
     expect(pauses.map((p) => [p.field, p.reason])).toEqual([['title', 'gate']]);
     expect(pauses[0].detail).toContain('below 85 %');
     await runAll(worker());
@@ -1123,7 +1123,10 @@ describe('stage 2: metadata and covers from the files', () => {
   it('without the labeled books, titles and authors stay paused (other fields go on)', async () => {
     fs.rmSync(goldFile);
     await setMode('on');
-    expect(listFieldPauses(env.cleanupDb, 2).map((p) => p.field)).toEqual(['authors', 'title']);
+    expect(listFieldPauses(env.cleanupDb, env.libraryId(), 2).map((p) => p.field)).toEqual([
+      'authors',
+      'title',
+    ]);
     await runAll(worker());
     expect(calibreRecord(env.lib, ids.B1)).toMatchObject({
       title: 'b1-scan',
@@ -1140,7 +1143,7 @@ describe('stage 2: metadata and covers from the files', () => {
     await setMode('on');
     await worker().cycle(); // heartbeat and safety checks
     await env.service.tick();
-    expect(getStage(env.cleanupDb, 2).pauseReason).toBe('library_changed');
+    expect(getStage(env.cleanupDb, env.libraryId(), 2).pauseReason).toBe('library_changed');
     expect(proposals().filter((r) => r.state === 'skipped')).toEqual([]);
     expect(env.service.batches.list()).toEqual([]);
   });

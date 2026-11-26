@@ -130,6 +130,16 @@ export function listsByBook(entries: readonly BookmeterEntry[]): Map<string, Set
   return out;
 }
 
+/** The best (newest) place of each reader book on a 読みたい本 list (every copy counts). */
+export function wishRankByBook(entries: readonly BookmeterEntry[]): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const e of entries) {
+    if (e.list !== 'wish') continue;
+    for (const b of e.books) if (e.rank > (out.get(b) ?? -Infinity)) out.set(b, e.rank);
+  }
+  return out;
+}
+
 /** The entries of one reader book (the book page). */
 export function entriesOfBook(
   entries: readonly BookmeterEntry[],

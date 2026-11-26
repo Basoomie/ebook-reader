@@ -21,7 +21,12 @@ import { ArrivalBatches } from '../src/cleanup/arrivals/add-batches';
 import { entrySkip } from '../src/cleanup/arrivals/archives';
 import { classifyName, settled, sniffFormat, walkSource } from '../src/cleanup/arrivals/catalog';
 import { qualityOfFile } from '../src/cleanup/arrivals/compare';
-import { inPool, sameTextNoWinner, type CompareFacts } from '../src/cleanup/arrivals/run';
+import {
+  continueArrivalsStage4,
+  inPool,
+  sameTextNoWinner,
+  type CompareFacts,
+} from '../src/cleanup/arrivals/run';
 import type { SourcePacer } from '../src/cleanup/arrivals/sources-fs';
 import { stage2Pass } from '../src/cleanup/arrivals/stage-passes';
 import { ArrivalStage5, emptyStage5Pass } from '../src/cleanup/arrivals/stage5-pass';
@@ -682,6 +687,7 @@ describe('wp20g: a run end to end', () => {
     ).toEqual({ n: 0 });
     const last = (await request(env.app).get('/api/v1/cleanup/arrivals').set(auth(env.userToken())))
       .body;
+    if (last.last.state !== 'done') console.log('RUNERR', last.last.error);
     expect(last.last.state).toBe('done');
     expect(last.last.report.estimate.books).toBe(2);
     expect(last.pairs[0].firstDoneAt).not.toBeNull();
@@ -763,6 +769,67 @@ describe('wp20g: a run end to end', () => {
         .get(),
     ).toEqual({ n: 2 });
   }, 300_000);
+
+  it('a finished run’s books stage 4 never read go on in a run of their own from stage 4 (run 7)', () => {
+    const db = env.cleanupDb;
+    const lib = 'lib-continue';
+    const p = {
+      phase: 'done',
+      libraryId: lib,
+      pairs: [{ key: 'k', source: 's', libraryId: lib, firstRun: false }],
+      scope: { import: [901, 902, 903], hand: [] },
+    };
+    const from = Number(
+      db
+        .prepare(
+          `INSERT INTO calibre_arrival_runs (trigger, mode, state, phase, started_at, finished_at, progress_json)
+           VALUES ('now', 'on', 'done', 'done', 1, 2, ?)`,
+        )
+        .run(JSON.stringify(p)).lastInsertRowid,
+    );
+    // Book 901 was read (its row carries the run's view); 903 is gone from Calibre since.
+    db.prepare(
+      `INSERT INTO stage4_books (library_id, calibre_uuid, calibre_id, analysis_id, labeled, state, updated_at)
+       VALUES (?, 'u901', 901, ?, 0, 'proposed', 1)`,
+    ).run(lib, `arrivals:${from}`);
+    const present = () =>
+      new Map([
+        [901, 'u901'],
+        [902, 'u902'],
+      ]);
+    // Manga part B: the run's own library's state row (one row per library).
+    db.prepare(
+      `INSERT INTO calibre_arrivals_state (library_id, mode, updated_at) VALUES (?, 'on', 0)`,
+    ).run(lib);
+    try {
+      const out = continueArrivalsStage4(db, from, present);
+      expect(out.books).toBe(1);
+      const r = db
+        .prepare(
+          'SELECT mode, state, phase, progress_json, library_id FROM calibre_arrival_runs WHERE id = ?',
+        )
+        .get(out.runId) as {
+        mode: string;
+        state: string;
+        phase: string;
+        progress_json: string;
+        library_id: string;
+      };
+      expect([r.mode, r.state, r.phase, r.library_id]).toEqual(['on', 'running', 'stage4', lib]);
+      const np = JSON.parse(r.progress_json);
+      expect(np.scope).toEqual({ import: [902], hand: [] });
+      expect(np.libraryId).toBe(lib);
+      expect(np.stage4Read).toBeUndefined();
+      expect(
+        db.prepare('SELECT current_run FROM calibre_arrivals_state WHERE library_id = ?').get(lib),
+      ).toEqual({ current_run: out.runId });
+      // Never while a run goes on.
+      expect(() => continueArrivalsStage4(db, from, present)).toThrow(/going on/);
+      db.prepare(`UPDATE calibre_arrival_runs SET state = 'stopped' WHERE id = ?`).run(out.runId);
+    } finally {
+      db.prepare('DELETE FROM calibre_arrivals_state WHERE library_id = ?').run(lib);
+    }
+  });
 
   it('a book added by hand that is a copy of a library book is proposed for removal (stage 1)', async () => {
     const H = await env.lib.addBook({ title: 'A (hand)', authors: ['作者'], epub: A });
@@ -951,7 +1018,7 @@ describe('wp20g: a run end to end', () => {
       .all() as { calibre_id: number }[])
       env.lib.removeBook(r.calibre_id);
     await env.index();
-    pauseField(env.cleanupDb, 2, 'title', 'library_changed', 'test');
+    pauseField(env.cleanupDb, env.libraryId(), 2, 'title', 'library_changed', 'test');
     fs.writeFileSync(
       path.join(src, 'Discord', 'F.epub'),
       makeTextEpub({ title: '[作者] F の本', chapters: chaptersOf(41) }),
@@ -993,7 +1060,7 @@ describe('wp20g: a run end to end', () => {
     expect(held.state).toBe('proposed');
     env.service.arrivals.stopRun();
     // Resumed: the next run has no new book, and writes what the first one held.
-    resumeField(env.cleanupDb, 2, 'title');
+    resumeField(env.cleanupDb, env.libraryId(), 2, 'title');
     await requestWhenFree();
     await steps();
     const later = env.service.arrivals.currentRun()!;
@@ -1306,7 +1373,7 @@ describe('wp20g: the settle time on a folder’s first look', () => {
     // On: the follow-up still belongs to the folder's first run, which never adds.
     env.service.arrivals.setMode('on');
     env.service.arrivals.stopRun();
-    const id = env.service.arrivals.maybeStart(later);
+    const id = env.service.arrivals.maybeStart(undefined, later);
     expect(id).not.toBeNull();
     // Part way through reading the texts another job waits for the disk: the reading stops
     // taking new books and hands the disk over; every book read so far is kept in its catalog row
@@ -1446,7 +1513,7 @@ describe('wp20g: Stop, Off, and a stopped run’s comparison', () => {
     expect(a().currentRun()).toBeNull();
     // Neither the due scheduled run nor a follow-up starts now (also a minute later).
     expect(a().maybeStart()).toBeNull();
-    expect(a().maybeStart(Date.now() + 61_000)).toBeNull();
+    expect(a().maybeStart(undefined, Date.now() + 61_000)).toBeNull();
     expect(
       env.cleanupDb.prepare('SELECT state FROM calibre_arrival_runs WHERE id = ?').get(run.id),
     ).toEqual({ state: 'stopped' });

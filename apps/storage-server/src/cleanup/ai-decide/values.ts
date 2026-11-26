@@ -265,11 +265,22 @@ export function valueCounts(
   db: Database.Database,
   stage: string,
   itemKeys?: string[],
+  /** Manga part B: only the items whose key starts with this (a library's "<library>:"). */
+  prefix?: string,
 ): Record<string, Record<string, number>> {
   const out: Record<string, Record<string, number>> = {};
-  const rows = db
-    .prepare(`SELECT item_key, field, source, flagged FROM ai_values WHERE stage = ?`)
-    .all(stage) as { item_key: string; field: string; source: string; flagged: number }[];
+  const rows = (
+    prefix
+      ? db
+          .prepare(
+            `SELECT item_key, field, source, flagged FROM ai_values
+             WHERE stage = ? AND item_key >= ? AND item_key < ?`,
+          )
+          .all(stage, prefix, prefix + '\uffff')
+      : db
+          .prepare(`SELECT item_key, field, source, flagged FROM ai_values WHERE stage = ?`)
+          .all(stage)
+  ) as { item_key: string; field: string; source: string; flagged: number }[];
   const only = itemKeys ? new Set(itemKeys) : null;
   for (const r of rows) {
     if (only && !only.has(r.item_key)) continue;
@@ -281,10 +292,25 @@ export function valueCounts(
 }
 
 /** Removes the values of items no longer analysed (a user value is kept). */
-export function dropOtherItems(db: Database.Database, stage: string, keep: Set<string>): number {
-  const keys = db
-    .prepare(`SELECT DISTINCT item_key FROM ai_values WHERE stage = ? AND source <> 'user'`)
-    .all(stage) as { item_key: string }[];
+export function dropOtherItems(
+  db: Database.Database,
+  stage: string,
+  keep: Set<string>,
+  /** Manga part B: only items whose key starts with this (another library's items stay). */
+  prefix?: string,
+): number {
+  const keys = (
+    prefix
+      ? db
+          .prepare(
+            `SELECT DISTINCT item_key FROM ai_values
+             WHERE stage = ? AND item_key >= ? AND item_key < ? AND source <> 'user'`,
+          )
+          .all(stage, prefix, prefix + '\uffff')
+      : db
+          .prepare(`SELECT DISTINCT item_key FROM ai_values WHERE stage = ? AND source <> 'user'`)
+          .all(stage)
+  ) as { item_key: string }[];
   const del = db.prepare(
     `DELETE FROM ai_values WHERE stage = ? AND item_key = ? AND source <> 'user'`,
   );

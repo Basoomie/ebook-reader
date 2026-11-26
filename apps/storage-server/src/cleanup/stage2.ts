@@ -12,6 +12,7 @@
  *
  * Resumable from its saved phase and cursor; writes nothing but cleanup.db.
  */
+import { gateParts, saveGatePart } from './gate-parts';
 import type Database from 'better-sqlite3';
 import { randomUUID } from 'crypto';
 import { statSync } from 'fs';
@@ -180,6 +181,8 @@ const yieldNow = () => new Promise<void>((r) => setImmediate(r));
 
 export interface Stage2Deps {
   cleanup: Database.Database;
+  /** Manga part B: the reader library this instance works on (one instance per library). */
+  libraryId: string;
   main: Database.Database;
   calibreDir: string;
   cacheDir: string;
@@ -209,12 +212,13 @@ export class Stage2Analysis {
   constructor(private readonly deps: Stage2Deps) {}
 
   progress(): Stage2Progress | null {
-    const p = getStage(this.deps.cleanup, 2).progress as unknown as Stage2Progress;
+    const p = getStage(this.deps.cleanup, this.deps.libraryId, 2)
+      .progress as unknown as Stage2Progress;
     return p && typeof p.analysisId === 'string' ? p : null;
   }
 
   private save(p: Stage2Progress, state?: string): void {
-    updateStage(this.deps.cleanup, 2, {
+    updateStage(this.deps.cleanup, this.deps.libraryId, 2, {
       progress: p as unknown as Record<string, unknown>,
       ...(state ? { state } : {}),
     });
@@ -788,13 +792,26 @@ export class Stage2Analysis {
     const { books, missing, error } = this.labeledBooks(p);
     if (error) {
       p.labelsError = error;
-      pauseForMissingLabels(db, error);
-      updateStage(db, 2, { precision: { gate: null, labelsError: error } });
+      pauseForMissingLabels(db, this.deps.libraryId, error);
+      updateStage(db, this.deps.libraryId, 2, { precision: { gate: null, labelsError: error } });
       return null;
     }
-    const gate = evaluateGate(books, missing, getSettings(db));
-    updateStage(db, 2, { precision: { gate, final, labelsError: null } });
-    if (final) applyGate(db, gate);
+    // One gate across the libraries: this library's labeled books with the others' (saved by
+    // their own analyses); with one library it is the gate as before.
+    saveGatePart(db, 2, 'books', this.deps.libraryId, { books, missing });
+    const parts = gateParts<{ books: ScoredBook[]; missing: number }>(
+      db,
+      2,
+      'books',
+      this.deps.libraryId,
+    );
+    const gate = evaluateGate(
+      parts.flatMap((x) => x.data.books),
+      parts.reduce((a, x) => a + x.data.missing, 0),
+      getSettings(db),
+    );
+    updateStage(db, this.deps.libraryId, 2, { precision: { gate, final, labelsError: null } });
+    if (final) applyGate(db, this.deps.libraryId, gate);
     return gate;
   }
 
@@ -813,17 +830,18 @@ export class Stage2Analysis {
       ).n;
       const library = (100 * review) / books;
       const sample = gate.reviewShare[field] ?? 0;
-      const current = listFieldPauses(db, 2).find((x) => x.field === field);
+      const current = listFieldPauses(db, this.deps.libraryId, 2).find((x) => x.field === field);
       if (library - sample > settings.reviewAlarmPercent) {
         pauseField(
           db,
+          this.deps.libraryId,
           2,
           field,
           'review_alarm',
           `${library.toFixed(1)} % of the library's books have this field in review, against ${sample.toFixed(1)} % of the labeled books (alarm above ${settings.reviewAlarmPercent} points). Look at the review list, then resume.`,
         );
       } else if (current?.reason === 'review_alarm') {
-        resumeField(db, 2, field);
+        resumeField(db, this.deps.libraryId, 2, field);
       }
     }
   }

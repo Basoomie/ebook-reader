@@ -194,7 +194,7 @@ describe('stage 3: content duplicates', () => {
   async function settle() {
     for (let i = 0; i < 1200; i++) {
       await env.service.tick();
-      const st = getStage(env.cleanupDb, 3).state;
+      const st = getStage(env.cleanupDb, env.libraryId(), 3).state;
       if (st === 'ready' || st === 'failed') return;
       await new Promise((r) => setTimeout(r, 25));
     }
@@ -405,7 +405,7 @@ describe('stage 3: content duplicates', () => {
     const done: { id: string; items: { calibreId: number }[] }[] = [];
     for (let round = 0; round < 10; round++) {
       await env.service.tick();
-      expect(getStage(env.cleanupDb, 3).pauseReason).toBeNull();
+      expect(getStage(env.cleanupDb, env.libraryId(), 3).pauseReason).toBeNull();
       const open = env.service.batches.open();
       if (!open) break;
       expect(open.stage).toBe(3);
@@ -488,7 +488,7 @@ describe('stage 3: content duplicates', () => {
     expect(env.service.batches.get(first.id)!.state).toBe('undone');
     await env.index();
     env.service.batches.checkIngested();
-    expect(getStage(env.cleanupDb, 3).pauseReason).toBeNull();
+    expect(getStage(env.cleanupDb, env.libraryId(), 3).pauseReason).toBeNull();
     expect(env.readerBook(uuids.A1)).toEqual({ bookId: a1Reader, missing: false });
   }, 120_000);
 
@@ -529,7 +529,7 @@ describe('stage 3: content duplicates', () => {
       .send({ mode: 'on' })
       .expect(200);
     await env.service.tick();
-    const stage = getStage(env.cleanupDb, 3);
+    const stage = getStage(env.cleanupDb, env.libraryId(), 3);
     expect(stage.pauseReason).toBe('not_identical');
     expect(stage.pauseDetail).toMatch(/files changed since the analysis/);
     expect(env.service.batches.open()).toBeNull();

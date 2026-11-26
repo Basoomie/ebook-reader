@@ -13,6 +13,7 @@
  * changed prompt or model asks again (answers already given are kept); a changed decision rule
  * decides again without asking. Nothing here writes to Calibre.
  */
+import { saveGatePart, unionOfParts } from '../gate-parts';
 import type Database from 'better-sqlite3';
 import { createHash } from 'crypto';
 import type { AiRunner } from '../../ai/runner';
@@ -155,6 +156,8 @@ export type Stage4AiStep = 'done' | 'more' | 'wait';
 
 export interface Stage4AiDeps {
   db: Database.Database;
+  /** Manga part B: the reader library this instance works on (one instance per library). */
+  libraryId: string;
   runner: AiRunner;
   analysis: Stage4Analysis;
   log?: (m: string) => void;
@@ -280,7 +283,9 @@ export class Stage4Ai {
   private save(ai: Stage4AiProgress): void {
     const p = this.stage4();
     if (!p || p.analysisId !== ai.analysisId || p.finishedAt !== ai.rulesFinishedAt) return;
-    updateStage(this.db, STAGE, { progress: { ...p, ai } as unknown as Record<string, unknown> });
+    updateStage(this.db, this.deps.libraryId, STAGE, {
+      progress: { ...p, ai } as unknown as Record<string, unknown>,
+    });
   }
 
   private next(ai: Stage4AiProgress, phase: Stage4AiPhase): void {
@@ -392,7 +397,8 @@ export class Stage4Ai {
   }
 
   private unpause(): void {
-    if (getStage(this.db, STAGE).pauseReason === 'ai') resumeStage(this.db, STAGE);
+    if (getStage(this.db, this.deps.libraryId, STAGE).pauseReason === 'ai')
+      resumeStage(this.db, this.deps.libraryId, STAGE);
   }
 
   /**
@@ -662,7 +668,7 @@ export class Stage4Ai {
         const keys = new Set(
           (this.list?.rows ?? []).map((r) => this.itemKey(p.libraryId, r.calibre_uuid)),
         );
-        dropOtherItems(this.db, 'calibre4', keys);
+        dropOtherItems(this.db, 'calibre4', keys, `${p.libraryId}:`);
         return { finished: true, items: n };
       }
       const items = [];
@@ -696,9 +702,10 @@ export class Stage4Ai {
         this.db
           .prepare(
             `SELECT item_key FROM ai_items WHERE stage = 'calibre4' ${s.ai.labeledOnly ? 'AND labeled = 1' : ''}
+               AND item_key >= ? AND item_key < ?
              ORDER BY labeled DESC, item_key`,
           )
-          .all() as { item_key: string }[]
+          .all(`${this.deps.libraryId}:`, `${this.deps.libraryId}:\uffff`) as { item_key: string }[]
       ).map((r) => r.item_key);
       for (let at = 0; at < keys.length; at += 500) {
         const chunk = keys.slice(at, at + 500);
@@ -715,9 +722,9 @@ export class Stage4Ai {
     ai.cost = runSpend(this.db, 'calibre4', ai.analysisId) as Stage4AiProgress['cost'];
     if (r.wait) {
       ai.wait = waitText(r.wait);
-      const st = getStage(this.db, STAGE);
+      const st = getStage(this.db, this.deps.libraryId, STAGE);
       if (waitNeedsUser(r.wait) && (st.pauseReason !== 'ai' || st.pauseDetail !== ai.wait)) {
-        pauseStage(this.db, STAGE, 'ai', ai.wait);
+        pauseStage(this.db, this.deps.libraryId, STAGE, 'ai', ai.wait);
         this.deps.log?.(`Stage 4: ${ai.wait}`);
       }
       if (r.pending === 0 && !waitNeedsUser(r.wait)) return 'done';
@@ -1033,7 +1040,11 @@ export class Stage4Ai {
     const tail = ai.cursor - total;
     if (tail === 0) {
       const settings = getSettings(this.db);
-      const g = scoreAiGate(g0.books);
+      // One gate across the libraries: this library's labeled books with the others'.
+      saveGatePart(this.db, STAGE, 'ai', this.deps.libraryId, g0.books);
+      const g = scoreAiGate(
+        unionOfParts<(typeof g0.books)[number]>(this.db, STAGE, 'ai', this.deps.libraryId),
+      );
       const below: string[] = [];
       if (g.books > 0) {
         for (const f of SCORED_FIELDS) {
@@ -1044,16 +1055,17 @@ export class Stage4Ai {
             below.push(name);
             pauseField(
               this.db,
+              this.deps.libraryId,
               STAGE,
               name,
               'gate',
               `${s.autoPercent.toFixed(1)} % right on the labeled books after the AI check (bar ${bar} %)`,
             );
-          } else resumeField(this.db, STAGE, name);
+          } else resumeField(this.db, this.deps.libraryId, STAGE, name);
         }
       }
       ai.gate = { ...g, at: Date.now(), passed: g.books > 0 && below.length === 0, below };
-      ai.counts = valueCounts(this.db, 'calibre4');
+      ai.counts = valueCounts(this.db, 'calibre4', undefined, `${this.deps.libraryId}:`);
       ai.cursor++;
       return false;
     }

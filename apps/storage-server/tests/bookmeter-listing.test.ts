@@ -842,8 +842,9 @@ describe('Bookmeter links: the pass', () => {
     p.setMode('analyse');
     await runUntil(p, () => false);
     const st = p.state().progress;
-    db.prepare('UPDATE bookmeter_listing_state SET progress_json = ? WHERE id = 1').run(
+    db.prepare('UPDATE bookmeter_listing_state SET progress_json = ? WHERE library_id = ?').run(
       JSON.stringify({ ...st, searchVersion: 2 }),
+      LIB,
     );
     expect(await p.step()).toBe('more');
     expect(p.state().progress).toMatchObject({

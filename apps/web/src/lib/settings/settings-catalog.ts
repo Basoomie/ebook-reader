@@ -1280,6 +1280,14 @@ export const SETTINGS_CATALOG: CatalogSetting[] = [
     description:
       'Removes duplicate copies from the Calibre library and fixes metadata, in batches you can undo. Off until you turn it on there.'
   },
+  {
+    id: 'cleanup-libraries-as',
+    section: 'data-tools',
+    title: 'Libraries on the cleanup page',
+    description:
+      'Picker: a button for each Calibre library, and the cleanup of the one you pick. Side by side: both libraries at once, one column each (one after the other on a phone). On this device.',
+    keywords: 'cleanup libraries manga picker side by side columns'
+  },
 
   // Statistics
   {

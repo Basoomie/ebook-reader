@@ -314,8 +314,13 @@ export interface BmState {
   updatedAt: number;
 }
 
-export function getBmState(db: Database.Database): BmState {
-  const r = db.prepare('SELECT * FROM bookmeter_more_state WHERE id = 1').get() as {
+export function getBmState(db: Database.Database, libraryId: string): BmState {
+  db.prepare(
+    `INSERT OR IGNORE INTO bookmeter_more_state (library_id, updated_at) VALUES (?, 0)`,
+  ).run(libraryId);
+  const r = db
+    .prepare('SELECT * FROM bookmeter_more_state WHERE library_id = ?')
+    .get(libraryId) as {
     library_id: string | null;
     mode: BmMode;
     progress_json: string;
@@ -336,16 +341,24 @@ export function getBmState(db: Database.Database): BmState {
   };
 }
 
-function saveProgress(db: Database.Database, p: BmProgress): void {
+function saveProgress(db: Database.Database, libraryId: string, p: BmProgress): void {
   db.prepare(
-    'UPDATE bookmeter_more_state SET progress_json = ?, library_id = ?, updated_at = ? WHERE id = 1',
-  ).run(JSON.stringify(p), p.libraryId, Date.now());
+    `INSERT OR IGNORE INTO bookmeter_more_state (library_id, updated_at) VALUES (?, 0)`,
+  ).run(libraryId);
+  db.prepare(
+    'UPDATE bookmeter_more_state SET progress_json = ?, updated_at = ? WHERE library_id = ?',
+  ).run(JSON.stringify(p), Date.now(), libraryId);
 }
 
-function setPause(db: Database.Database, reason: string | null, detail: string | null): void {
+function setPause(
+  db: Database.Database,
+  libraryId: string,
+  reason: string | null,
+  detail: string | null,
+): void {
   db.prepare(
-    'UPDATE bookmeter_more_state SET paused_reason = ?, paused_detail = ?, updated_at = ? WHERE id = 1',
-  ).run(reason, detail, Date.now());
+    'UPDATE bookmeter_more_state SET paused_reason = ?, paused_detail = ?, updated_at = ? WHERE library_id = ?',
+  ).run(reason, detail, Date.now(), libraryId);
 }
 
 // ---------------------------------------------------------------- the spot check's draw
@@ -413,13 +426,18 @@ export interface BookmeterMoreDeps {
 export type BmStep = 'more' | 'wait' | 'idle';
 
 export class BookmeterMore {
+  /** Manga part B: the library this pass works on (one instance per library). */
+  private lib(): string {
+    return this.deps.targetLibrary() ?? '';
+  }
+
   private readonly db: Database.Database;
   constructor(private readonly deps: BookmeterMoreDeps) {
     this.db = deps.db;
   }
 
   state(): BmState {
-    return getBmState(this.db);
+    return getBmState(this.db, this.lib());
   }
 
   /** Off / Preview / On. On only after the spot check passed. */
@@ -430,8 +448,11 @@ export class BookmeterMore {
       );
     }
     this.db
-      .prepare('UPDATE bookmeter_more_state SET mode = ?, updated_at = ? WHERE id = 1')
-      .run(mode, Date.now());
+      .prepare(`INSERT OR IGNORE INTO bookmeter_more_state (library_id, updated_at) VALUES (?, 0)`)
+      .run(this.lib());
+    this.db
+      .prepare('UPDATE bookmeter_more_state SET mode = ?, updated_at = ? WHERE library_id = ?')
+      .run(mode, Date.now(), this.lib());
     this.deps.log?.(`More Bookmeter matches: ${mode === 'analyse' ? 'Preview' : mode}`);
   }
 
@@ -446,10 +467,10 @@ export class BookmeterMore {
       // Another library: start over for it (its own books).
       const fresh = emptyBmProgress(p.run + (p.libraryId ? 1 : 0), lib);
       this.db.transaction(() => {
-        this.db.prepare('DELETE FROM bookmeter_more_books').run();
-        this.db.prepare('DELETE FROM bookmeter_more_waiters').run();
-        this.db.prepare('DELETE FROM bookmeter_more_spot').run();
-        saveProgress(this.db, fresh);
+        this.db.prepare('DELETE FROM bookmeter_more_books WHERE library_id = ?').run(lib);
+        this.db.prepare('DELETE FROM bookmeter_more_waiters WHERE library_id = ?').run(lib);
+        this.db.prepare('DELETE FROM bookmeter_more_spot WHERE library_id = ?').run(lib);
+        saveProgress(this.db, this.lib(), fresh);
       })();
       return 'more';
     }
@@ -465,7 +486,7 @@ export class BookmeterMore {
           : await this.phaseStep(st, p, lib, shouldStop);
     } finally {
       p.times[p.phase] = (p.times[p.phase] ?? 0) + (performance.now() - t);
-      saveProgress(this.db, p);
+      saveProgress(this.db, this.lib(), p);
     }
     return r;
   }
@@ -702,13 +723,13 @@ export class BookmeterMore {
       p.ai.wait = waitText(wait);
       const st = this.state();
       if (st.pausedReason !== 'ai' || st.pausedDetail !== p.ai.wait) {
-        setPause(db, 'ai', p.ai.wait);
+        setPause(db, this.lib(), 'ai', p.ai.wait);
         this.deps.log?.(`More Bookmeter matches: ${p.ai.wait}`);
       }
       return 'wait';
     }
     p.ai.wait = wait ? waitText(wait) : null;
-    if (!wait && this.state().pausedReason === 'ai') setPause(db, null, null);
+    if (!wait && this.state().pausedReason === 'ai') setPause(db, this.lib(), null, null);
     if (pending > 0) return moved && (!wait || waitIsNote(wait)) ? 'more' : 'wait';
     return this.aiDecide(p, lib);
   }
@@ -721,7 +742,7 @@ export class BookmeterMore {
     const db = this.db;
     const runner = this.deps.runner;
     // Every question has its answer: a pause for the AI (the limit, a key) is over.
-    if (this.state().pausedReason === 'ai') setPause(db, null, null);
+    if (this.state().pausedReason === 'ai') setPause(db, this.lib(), null, null);
     p.ai.wait = null;
     const near = db
       .prepare(
@@ -805,7 +826,7 @@ export class BookmeterMore {
     if (!rows.length) {
       const aid = bookmeterAnalysisId(p.run);
       db.transaction(() => {
-        db.prepare('DELETE FROM bookmeter_more_spot').run();
+        db.prepare('DELETE FROM bookmeter_more_spot WHERE library_id = ?').run(this.lib());
         // Open proposals of the books asked again (a match chosen now is proposed again).
         db.prepare(
           `DELETE FROM proposed_changes WHERE stage = 4 AND field = 'identifiers' AND analysis_id = ?
@@ -1298,7 +1319,7 @@ export class BookmeterMore {
     );
     let pos = 0;
     db.transaction(() => {
-      db.prepare('DELETE FROM bookmeter_more_spot').run();
+      db.prepare('DELETE FROM bookmeter_more_spot WHERE library_id = ?').run(this.lib());
       for (const s of ['rules', 'ai', 'second'] as BmSource[]) {
         const pick = by[s]
           .map((u) => ({ u, k: spotOrderKey(p.run, u) }))
@@ -1316,8 +1337,10 @@ export class BookmeterMore {
 
   spotCounts(): { size: number; right: number; wrong: number; open: number } {
     const rows = this.db
-      .prepare('SELECT verdict, COUNT(*) AS n FROM bookmeter_more_spot GROUP BY verdict')
-      .all() as { verdict: string | null; n: number }[];
+      .prepare(
+        'SELECT verdict, COUNT(*) AS n FROM bookmeter_more_spot WHERE library_id = ? GROUP BY verdict',
+      )
+      .all(this.lib()) as { verdict: string | null; n: number }[];
     const n = (v: string | null) => rows.find((r) => r.verdict === v)?.n ?? 0;
     const size = rows.reduce((a, r) => a + r.n, 0);
     return { size, right: n('right'), wrong: n('wrong'), open: n(null) };
@@ -1817,8 +1840,8 @@ export function addedIds(
 }
 
 /** Is stage 4 finished enough for the pass (its analysis, one-time passes and AI check). */
-export function stage4Finished(db: Database.Database, aiDone: boolean): boolean {
-  const p = getStage(db, 4).progress as { phase?: string } | null;
+export function stage4Finished(db: Database.Database, libraryId: string, aiDone: boolean): boolean {
+  const p = getStage(db, libraryId, 4).progress as { phase?: string } | null;
   return !!p && p.phase === 'done' && oneTimePassesDone(p as never) && aiDone;
 }
 

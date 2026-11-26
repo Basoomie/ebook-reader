@@ -40,7 +40,7 @@
  * For the same reason the WP5 scan and import run in the server (from the
  * migration page); the CLI only reports on them and can undo the import.
  */
-import type Database from 'better-sqlite3';
+import Database from 'better-sqlite3';
 import { existsSync, readFileSync, readdirSync } from 'fs';
 import path from 'path';
 import { UPLOADS_DIRNAME, UploadStore } from './uploads/upload-store';
@@ -93,8 +93,10 @@ import { rankEntries } from './audio/match';
 import { listLinks, resolveLink } from './audio/audio-links';
 import { createApplyToken, listApplyTokens, revokeApplyToken } from './cleanup/apply-tokens';
 import { initCleanupDatabase } from './cleanup/cleanup-db';
-import { listStages } from './cleanup/stages';
+import { listStages, stageLibraries } from './cleanup/stages';
 import { recordReviewDecisions, resumeFailedStage3 } from './cleanup/stage3';
+import { continueArrivalsStage4 } from './cleanup/arrivals/run';
+import { snapshotFile } from './calibre/indexer';
 import { importDryRun, runAudioDryRun } from './cleanup/audio/dry-run';
 
 /**
@@ -360,6 +362,8 @@ const USAGE = `Usage:
   cli cleanup revoke <token-id>              Revoke a cleanup sidecar token
   cli cleanup decide 3 <file>                Record the review's decisions on stage 3 pairs (marked as
                                              Claude's; your own decisions stay)
+  cli cleanup arrivals-continue <run>        New arrivals: stages 4-5 and the move for a finished On
+                                             run's books that stage 4 never read (a new run)
   cli cleanup resume 3                       Resume stage 3's failed analysis at the step that failed
                                              (keeps the books read and the pairs measured)
   cli cleanup audio-dryrun --stage 0|1|2 --out <folder>
@@ -369,6 +373,14 @@ const USAGE = `Usage:
   cli cleanup audio-import-dryrun <file>...  The live audiobook stages take over the dry runs' results
                                              (stage 1's hashes, stage 2's file checks), kept only for
                                              files that are unchanged when the live run walks them`;
+
+/** Manga part B: a cleanup command's library (--library <id>), else the primary library. */
+function cliLibrary(db: Database.Database, args: string[]): string {
+  const at = args.indexOf('--library');
+  const lib = at >= 0 ? args[at + 1] : stageLibraries(db)[0];
+  if (!lib) fail('No library: pass --library <reader library id>');
+  return lib;
+}
 
 function fail(message: string): never {
   console.error(message);
@@ -1043,13 +1055,39 @@ function cleanupCommand(command: string, rest: string[], env: Record<string, str
         console.log(token);
         break;
       }
+      case 'arrivals-continue': {
+        const from = Number(rest[0]);
+        if (!Number.isInteger(from) || from <= 0)
+          fail('cleanup arrivals-continue needs the run: cleanup arrivals-continue 7');
+        const cacheDir = path.resolve(env.CACHE_DIR ?? '/cache');
+        const out = continueArrivalsStage4(db, from, (libraryId) => {
+          const snap = new Database(snapshotFile(cacheDir, libraryId), {
+            readonly: true,
+            fileMustExist: true,
+          });
+          try {
+            const rows = snap.prepare('SELECT id, uuid FROM books').all() as {
+              id: number;
+              uuid: string;
+            }[];
+            return new Map(rows.map((r) => [r.id, r.uuid]));
+          } finally {
+            snap.close();
+          }
+        });
+        console.log(
+          `Run ${out.runId} started: stages 4-5 and the move for ${out.books} books of run ${from} that stage 4 never read.`,
+        );
+        break;
+      }
       case 'resume': {
         const [which] = rest;
         if (which !== '3')
           fail(
             'cleanup resume needs the stage: only stage 3 can resume a failed analysis (cleanup resume 3)',
           );
-        const out = resumeFailedStage3(db);
+        // Manga part B: --library <reader library id>, else the primary library (the first one).
+        const out = resumeFailedStage3(db, cliLibrary(db, rest));
         console.log(out.message);
         if (!out.ok) process.exitCode = 1;
         break;
@@ -1064,7 +1102,7 @@ function cleanupCommand(command: string, rest: string[], env: Record<string, str
         } catch (err) {
           fail(`Can't read ${file}: ${(err as Error).message}`);
         }
-        const out = recordReviewDecisions(db, input);
+        const out = recordReviewDecisions(db, cliLibrary(db, rest), input);
         console.log(out.message);
         if (!out.ok) process.exitCode = 1;
         break;
@@ -1090,9 +1128,9 @@ function cleanupCommand(command: string, rest: string[], env: Record<string, str
         break;
       }
       case 'status': {
-        for (const s of listStages(db)) {
+        for (const s of stageLibraries(db).flatMap((l) => listStages(db, l))) {
           console.log(
-            `stage ${s.stage} ${s.name}: mode=${s.mode} state=${s.state}` +
+            `${s.libraryId} stage ${s.stage} ${s.name}: mode=${s.mode} state=${s.state}` +
               (s.pauseReason ? ` paused (${s.pauseReason}): ${s.pauseDetail ?? ''}` : ''),
           );
         }

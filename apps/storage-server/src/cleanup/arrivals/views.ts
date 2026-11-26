@@ -78,16 +78,27 @@ export function runBar(p: RunProgress, now = Date.now()): Bar {
   };
 }
 
-export function arrivalsStatus(a: BookArrivals, db: Database.Database, now = Date.now()) {
-  const s = a.state();
+export function arrivalsStatus(
+  a: BookArrivals,
+  db: Database.Database,
+  libraryId: string | null = null,
+  now = Date.now(),
+) {
+  // Manga part B: one library's arrivals (its mode, pairs, run and last run); a run of another
+  // library is named so the card can say this library's run waits for it.
+  const lib = libraryId ?? a.libraries()[0] ?? '';
+  const s = a.state(lib);
   const settings = getSettings(db);
-  const run = a.currentRun();
+  const current = a.currentRun();
+  const run = current && a.runLibrary(current) === lib ? current : null;
+  const otherRun = current && !run ? { id: current.id, libraryId: a.runLibrary(current) } : null;
   const last = db
     .prepare(
       `SELECT id, trigger, mode, state, started_at, finished_at, report_json, error FROM calibre_arrival_runs
-       WHERE state <> 'running' ORDER BY id DESC LIMIT 1`,
+       INDEXED BY calibre_arrival_runs_library
+       WHERE library_id = ? AND state <> 'running' ORDER BY id DESC LIMIT 1`,
     )
-    .get() as
+    .get(lib) as
     | {
         id: number;
         trigger: string;
@@ -99,66 +110,72 @@ export function arrivalsStatus(a: BookArrivals, db: Database.Database, now = Dat
         error: string | null;
       }
     | undefined;
-  const pairs = settings.arrivals.pairs.map((pr) => {
-    const key = `${pr.id}|${pr.source}`;
-    const row = db.prepare('SELECT * FROM calibre_arrival_pairs WHERE pair_key = ?').get(key) as
-      | { first_run_id: number | null; first_done_at: number | null }
-      | undefined;
-    const n = (outcomes: string[]) =>
-      (
+  const pairs = settings.arrivals.pairs
+    .filter((pr) => pr.libraryId === lib)
+    .map((pr) => {
+      const key = `${pr.id}|${pr.source}`;
+      const row = db.prepare('SELECT * FROM calibre_arrival_pairs WHERE pair_key = ?').get(key) as
+        | { first_run_id: number | null; first_done_at: number | null }
+        | undefined;
+      const n = (outcomes: string[]) =>
+        (
+          db
+            .prepare(
+              `SELECT COUNT(*) AS n FROM calibre_arrival_files INDEXED BY calibre_arrival_files_outcome
+             WHERE outcome IN (${outcomes.map(() => '?').join(', ')}) AND pair_key = ? AND gone_at IS NULL`,
+            )
+            .get(...outcomes, key) as { n: number }
+        ).n;
+      const waiting = (
         db
           .prepare(
             `SELECT COUNT(*) AS n FROM calibre_arrival_files INDEXED BY calibre_arrival_files_outcome
-             WHERE outcome IN (${outcomes.map(() => '?').join(', ')}) AND pair_key = ? AND gone_at IS NULL`,
-          )
-          .get(...outcomes, key) as { n: number }
-      ).n;
-    const waiting = (
-      db
-        .prepare(
-          `SELECT COUNT(*) AS n FROM calibre_arrival_files INDEXED BY calibre_arrival_files_outcome
            WHERE outcome IN ('pending', 'waiting') AND pair_key = ? AND gone_at IS NULL
              AND kind IN ('epub', 'archive', 'volume')`,
-        )
-        .get(key) as { n: number }
-    ).n;
-    return {
-      key,
-      id: pr.id,
-      source: pr.source,
-      libraryId: pr.libraryId,
-      firstRunId: row?.first_run_id ?? null,
-      // Done once every file was looked at; runs that start after it add when On.
-      firstDoneAt: row?.first_done_at ?? null,
-      // Compared books only (a stopped run can leave new books not compared yet).
-      wouldAdd: (
-        db
-          .prepare(
-            `SELECT COUNT(*) AS n FROM calibre_arrival_files INDEXED BY calibre_arrival_files_outcome
-             WHERE outcome IN ('new', 'better') AND pair_key = ? AND gone_at IS NULL
-               AND json_extract(facts_json, '$.compared') IS NOT NULL`,
           )
           .get(key) as { n: number }
-      ).n,
-      added: n(['added']),
-      // Books and archives not looked at yet (waiting to settle): a first run is done without any.
-      waiting,
-      settleMinutes: settings.arrivals.settleMinutes,
-    };
-  });
+      ).n;
+      return {
+        key,
+        id: pr.id,
+        source: pr.source,
+        libraryId: pr.libraryId,
+        firstRunId: row?.first_run_id ?? null,
+        // Done once every file was looked at; runs that start after it add when On.
+        firstDoneAt: row?.first_done_at ?? null,
+        // Compared books only (a stopped run can leave new books not compared yet).
+        wouldAdd: (
+          db
+            .prepare(
+              `SELECT COUNT(*) AS n FROM calibre_arrival_files INDEXED BY calibre_arrival_files_outcome
+             WHERE outcome IN ('new', 'better') AND pair_key = ? AND gone_at IS NULL
+               AND json_extract(facts_json, '$.compared') IS NOT NULL`,
+            )
+            .get(key) as { n: number }
+        ).n,
+        added: n(['added']),
+        // Books and archives not looked at yet (waiting to settle): a first run is done without any.
+        waiting,
+        settleMinutes: settings.arrivals.settleMinutes,
+      };
+    });
   const reviews = (
     db
       .prepare(
-        `SELECT COUNT(*) AS n FROM calibre_arrival_reviews INDEXED BY calibre_arrival_reviews_open WHERE decision IS NULL`,
+        `SELECT COUNT(*) AS n FROM calibre_arrival_reviews INDEXED BY calibre_arrival_reviews_open
+         WHERE decision IS NULL AND (run_id IS NULL OR run_id IN
+           (SELECT id FROM calibre_arrival_runs WHERE library_id = ?))`,
       )
-      .get() as { n: number }
+      .get(lib) as { n: number }
   ).n;
   return {
     mode: s.mode,
     pause: s.pause_reason
       ? { reason: s.pause_reason, detail: s.pause_detail, at: s.paused_at }
       : null,
-    nextRunAt: a.nextRunAt(now),
+    nextRunAt: a.nextRunAt(lib, now),
+    libraryId: lib,
+    otherRun,
     timeZone: settings.arrivals.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone,
     importProblem: a.importProblem(),
     design: settings.ai.booksArrivalsDesign,
@@ -200,9 +217,19 @@ export function arrivalsList(
   list: string,
   offset = 0,
   limit = 50,
+  /** Manga part B: one library's lists (its folders, runs, batches, books); null = every one. */
+  libraryId: string | null = null,
 ): { total: number; items: unknown[] } {
   const lim = Math.min(200, Math.max(1, limit));
   const off = Math.max(0, offset);
+  const L = libraryId ? [libraryId] : [];
+  const ofPairs = (col: string) =>
+    libraryId
+      ? ` AND ${col} IN (SELECT pair_key FROM calibre_arrival_pairs WHERE library_id = ?)`
+      : '';
+  const ofRuns = libraryId
+    ? ' AND (r.run_id IS NULL OR r.run_id IN (SELECT id FROM calibre_arrival_runs WHERE library_id = ?))'
+    : '';
   if (LIST_OUTCOMES[list]) {
     const outs = LIST_OUTCOMES[list];
     const ph = outs.map(() => '?').join(', ');
@@ -210,78 +237,92 @@ export function arrivalsList(
       db
         .prepare(
           `SELECT COUNT(*) AS n FROM calibre_arrival_files INDEXED BY calibre_arrival_files_outcome
-           WHERE outcome IN (${ph}) AND gone_at IS NULL`,
+           WHERE outcome IN (${ph}) AND gone_at IS NULL${ofPairs('pair_key')}`,
         )
-        .get(...outs) as { n: number }
+        .get(...outs, ...L) as { n: number }
     ).n;
     const items = db
       .prepare(
         `SELECT id, pair_key, rel_path, size, mtime_ms, format, kind, outcome, detail, calibre_id, calibre_uuid,
+           calibre_library_id,
            run_id, decided_at, archive_id, json_extract(facts_json, '$.title') AS title,
            json_extract(facts_json, '$.addedAs.calibreId') AS added_as
          FROM calibre_arrival_files INDEXED BY calibre_arrival_files_outcome
-         WHERE outcome IN (${ph}) AND gone_at IS NULL ORDER BY outcome, pair_key, id LIMIT ? OFFSET ?`,
+         WHERE outcome IN (${ph}) AND gone_at IS NULL${ofPairs('pair_key')}
+         ORDER BY outcome, pair_key, id LIMIT ? OFFSET ?`,
       )
-      .all(...outs, lim, off);
+      .all(...outs, ...L, lim, off);
     return { total, items };
   }
   if (list === 'archives') {
     const total = (
-      db.prepare('SELECT COUNT(*) AS n FROM calibre_arrival_archives').get() as { n: number }
+      db
+        .prepare(
+          `SELECT COUNT(*) AS n FROM calibre_arrival_archives WHERE 1 = 1${ofPairs('pair_key')}`,
+        )
+        .get(...L) as { n: number }
     ).n;
     const items = db
       .prepare(
         `SELECT id, pair_key, rel_path, size, state, detail, books, volumes_json, listed_at, unpacked_at
-         FROM calibre_arrival_archives ORDER BY id DESC LIMIT ? OFFSET ?`,
+         FROM calibre_arrival_archives WHERE 1 = 1${ofPairs('pair_key')} ORDER BY id DESC LIMIT ? OFFSET ?`,
       )
-      .all(lim, off);
+      .all(...L, lim, off);
     return { total, items };
   }
   if (list === 'reviews') {
     const total = (
       db
         .prepare(
-          `SELECT COUNT(*) AS n FROM calibre_arrival_reviews INDEXED BY calibre_arrival_reviews_open WHERE decision IS NULL`,
+          `SELECT COUNT(*) AS n FROM calibre_arrival_reviews r INDEXED BY calibre_arrival_reviews_open
+           WHERE r.decision IS NULL${ofRuns}`,
         )
-        .get() as { n: number }
+        .get(...L) as { n: number }
     ).n;
     const items = db
       .prepare(
-        `SELECT r.id, r.kind, r.file_id, r.calibre_id, r.calibre_uuid, r.detail_json, r.run_id, r.created_at,
+        `SELECT r.id, r.kind, r.file_id, r.calibre_id, r.calibre_uuid, r.calibre_library_id, r.detail_json,
+           r.run_id, r.created_at,
            f.rel_path, f.pair_key
          FROM calibre_arrival_reviews r INDEXED BY calibre_arrival_reviews_open
          LEFT JOIN calibre_arrival_files f ON f.id = r.file_id
-         WHERE r.decision IS NULL ORDER BY r.id LIMIT ? OFFSET ?`,
+         WHERE r.decision IS NULL${ofRuns} ORDER BY r.id LIMIT ? OFFSET ?`,
       )
-      .all(lim, off);
+      .all(...L, lim, off);
     return { total, items };
   }
   if (list === 'hand') {
     const total = (
-      db.prepare(`SELECT COUNT(*) AS n FROM calibre_known_books WHERE origin = 'hand'`).get() as {
-        n: number;
-      }
+      db
+        .prepare(
+          `SELECT COUNT(*) AS n FROM calibre_known_books WHERE origin = 'hand'${libraryId ? ' AND library_id = ?' : ''}`,
+        )
+        .get(...L) as { n: number }
     ).n;
     const items = db
       .prepare(
         `SELECT calibre_id, calibre_uuid, added_at, settled_at, run_id FROM calibre_known_books
-         WHERE origin = 'hand' ORDER BY added_at DESC LIMIT ? OFFSET ?`,
+         WHERE origin = 'hand'${libraryId ? ' AND library_id = ?' : ''} ORDER BY added_at DESC LIMIT ? OFFSET ?`,
       )
-      .all(lim, off);
+      .all(...L, lim, off);
     return { total, items };
   }
   if (list === 'runs') {
     const total = (
-      db.prepare('SELECT COUNT(*) AS n FROM calibre_arrival_runs').get() as { n: number }
+      db
+        .prepare(
+          `SELECT COUNT(*) AS n FROM calibre_arrival_runs${libraryId ? ' WHERE library_id = ?' : ''}`,
+        )
+        .get(...L) as { n: number }
     ).n;
     const items = (
       db
         .prepare(
           `SELECT id, CASE WHEN json_extract(progress_json, '$.followUp') = 'settle' THEN 'files settled'
              ELSE trigger END AS trigger, mode, state, phase, started_at, finished_at, report_json, error
-           FROM calibre_arrival_runs ORDER BY id DESC LIMIT ? OFFSET ?`,
+           FROM calibre_arrival_runs${libraryId ? ' WHERE library_id = ?' : ''} ORDER BY id DESC LIMIT ? OFFSET ?`,
         )
-        .all(lim, off) as { report_json: string | null }[]
+        .all(...L, lim, off) as { report_json: string | null }[]
     ).map((r) => ({
       ...r,
       report: r.report_json ? JSON.parse(r.report_json) : null,
@@ -291,7 +332,11 @@ export function arrivalsList(
   }
   if (list === 'batches') {
     const total = (
-      db.prepare('SELECT COUNT(*) AS n FROM calibre_arrival_batches').get() as { n: number }
+      db
+        .prepare(
+          `SELECT COUNT(*) AS n FROM calibre_arrival_batches${libraryId ? ' WHERE library_id = ?' : ''}`,
+        )
+        .get(...L) as { n: number }
     ).n;
     const items = db
       .prepare(
@@ -299,9 +344,9 @@ export function arrivalsList(
            (SELECT COUNT(*) FROM calibre_arrival_batch_items i WHERE i.batch_id = b.id AND i.state IN ('added', 'removed')) AS done,
            (SELECT COUNT(*) FROM calibre_arrival_batch_items i WHERE i.batch_id = b.id AND i.state = 'failed') AS failed,
            EXISTS (SELECT 1 FROM calibre_arrival_batches u WHERE u.undo_of = b.id) AS undone
-         FROM calibre_arrival_batches b ORDER BY b.id DESC LIMIT ? OFFSET ?`,
+         FROM calibre_arrival_batches b${libraryId ? ' WHERE b.library_id = ?' : ''} ORDER BY b.id DESC LIMIT ? OFFSET ?`,
       )
-      .all(lim, off);
+      .all(...L, lim, off);
     return { total, items };
   }
   throw new Error(`No such list: ${list}`);

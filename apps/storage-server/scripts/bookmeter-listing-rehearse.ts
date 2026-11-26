@@ -28,7 +28,7 @@ import { migrateCleanup } from '../src/cleanup/cleanup-db';
 import { getSettings, updateSettings } from '../src/cleanup/settings';
 import { loadGold, mapLabeledIds } from '../src/cleanup/stage2-gate';
 import { getStage } from '../src/cleanup/stages';
-import { Stage4Analysis, type Stage4Progress } from '../src/cleanup/stage4/analysis';
+import { Stage4Analysis } from '../src/cleanup/stage4/analysis';
 import {
   BookmeterListings,
   listingAnalysisId,
@@ -71,8 +71,15 @@ async function main() {
   quietly(() => migrateCleanup(db, { beforeAiMove: () => undefined }));
   const main = new Database(arg('main')!);
   quietly(() => migrate(main));
-  const p4 = getStage(db, 4).progress as unknown as Stage4Progress;
-  const lib = p4.libraryId!;
+  // Manga part B: one library's pass (the pass's state row, or --lib).
+  const lib: string =
+    arg('lib') ??
+    (
+      db
+        .prepare('SELECT library_id FROM bookmeter_listing_state ORDER BY updated_at DESC LIMIT 1')
+        .get() as { library_id: string }
+    ).library_id;
+  void getStage;
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'bl-rehearse-'));
   const snap = path.join(tmp, SNAPSHOT_DIRNAME, `${lib}.db`);
   fs.mkdirSync(path.dirname(snap), { recursive: true });
@@ -102,6 +109,7 @@ async function main() {
   };
   const analysis = new Stage4Analysis({
     cleanup: db,
+    libraryId: lib,
     main,
     calibreDir: '',
     cacheDir: tmp,

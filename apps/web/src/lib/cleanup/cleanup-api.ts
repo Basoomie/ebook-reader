@@ -68,6 +68,22 @@ export interface CleanupBatch {
   counts: Record<string, number>;
 }
 
+/** Manga part B: one Calibre library the cleanup works on (the page's picker or columns). */
+export interface CleanupLibrarySummary {
+  id: string;
+  name: string;
+  folder: string;
+  /** The library the cleanup worked on alone before (japanese-library). */
+  primary: boolean;
+  /** Books in the reader's index. */
+  present: number;
+  /** Stages 1-5 On, and in Preview. */
+  on: number;
+  preview: number;
+  /** A stage or a field of it is paused. */
+  paused: boolean;
+}
+
 export interface CleanupStatus {
   available: boolean;
   error?: string;
@@ -2030,6 +2046,23 @@ export class CleanupApi {
     private readonly fetchImpl: typeof fetch = (...args) => fetch(...args)
   ) {}
 
+  /**
+   * Manga part B: the Calibre library (reader library id) this client's cleanup requests are
+   * about; null = the server's primary library (japanese-library), as before.
+   */
+  private library: string | null = null;
+
+  get libraryId(): string | null {
+    return this.library;
+  }
+
+  /** The same client for another library's cleanup (its stages, passes, lists and arrivals). */
+  withLibrary(libraryId: string | null): CleanupApi {
+    const api = new CleanupApi(this.serverUrl, this.token, this.timeoutSeconds, this.fetchImpl);
+    api.library = libraryId;
+    return api;
+  }
+
   private async request(
     method: 'GET' | 'POST' | 'PUT' | 'DELETE',
     path: string,
@@ -2038,9 +2071,14 @@ export class CleanupApi {
   ): Promise<unknown> {
     const headers: Record<string, string> = { Authorization: `Bearer ${this.token}` };
     if (body !== undefined) headers['Content-Type'] = 'application/json';
+    // The Calibre cleanup's routes take ?library= (the audiobook cleanup's ignore it).
+    const scoped =
+      this.library && path.startsWith('/cleanup/') && !path.startsWith('/cleanup/audio')
+        ? `${path}${path.includes('?') ? '&' : '?'}library=${encodeURIComponent(this.library)}`
+        : path;
     const response = await send(
       this.fetchImpl,
-      `${this.serverUrl}/api/v1${path}`,
+      `${this.serverUrl}/api/v1${scoped}`,
       { method, headers, body: body === undefined ? undefined : JSON.stringify(body) },
       { timeoutSeconds: this.timeoutSeconds, ...options }
     );
@@ -2050,6 +2088,13 @@ export class CleanupApi {
 
   status(): Promise<CleanupStatus> {
     return this.request('GET', '/cleanup/status') as Promise<CleanupStatus>;
+  }
+
+  /** Manga part B: the Calibre libraries the cleanup works on, a line each. */
+  libraries(): Promise<{ libraries: CleanupLibrarySummary[] }> {
+    return this.request('GET', '/cleanup/libraries') as Promise<{
+      libraries: CleanupLibrarySummary[];
+    }>;
   }
 
   settings(): Promise<SettingsAnswer> {

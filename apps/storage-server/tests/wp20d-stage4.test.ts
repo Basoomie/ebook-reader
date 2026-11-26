@@ -461,7 +461,9 @@ describe('stage 4: online sources (Preview)', () => {
     let phase = '';
     while (Date.now() < deadline) {
       await env.service.tick();
-      phase = String((getStage(env.cleanupDb, 4).progress as { phase?: string }).phase);
+      phase = String(
+        (getStage(env.cleanupDb, env.libraryId(), 4).progress as { phase?: string }).phase,
+      );
       if (phase === 'done') break;
       await sleep(200);
     }
@@ -471,7 +473,7 @@ describe('stage 4: online sources (Preview)', () => {
     expect(phase).toBe('done');
     // Each book is counted once (the labeled books were counted twice: read first, then again
     // when the library pass skipped them), and the page's numbers come from the database.
-    const prog = getStage(env.cleanupDb, 4).progress as {
+    const prog = getStage(env.cleanupDb, env.libraryId(), 4).progress as {
       readDone: number;
       readTotal: number;
       followUps?: { answers: Record<string, number>; made: Record<string, number> };
@@ -584,7 +586,7 @@ describe('stage 4: online sources (Preview)', () => {
 
     // The gate on the labeled books, the 600 and check D apart.
     const gate = (
-      getStage(env.cleanupDb, 4).precision as {
+      getStage(env.cleanupDb, env.libraryId(), 4).precision as {
         gate: {
           books: number;
           fields: Record<string, { percent: number | null; the600: unknown; checkD: unknown }>;
@@ -676,8 +678,8 @@ describe('stage 4: online sources (Preview)', () => {
       env.cleanupDb.prepare('SELECT 1 FROM fetch_requests WHERE id = ?').get(old.id),
     ).toBeUndefined();
     expect(
-      (getStage(env.cleanupDb, 4).progress as { amazonSweep?: { phase: string } }).amazonSweep
-        ?.phase,
+      (getStage(env.cleanupDb, env.libraryId(), 4).progress as { amazonSweep?: { phase: string } })
+        .amazonSweep?.phase,
     ).toBe('done');
   }, 120_000);
 
@@ -702,7 +704,8 @@ describe('stage 4: online sources (Preview)', () => {
         return u.startsWith(url) ? fetch(input, init) : Promise.resolve(internet(u, init));
       },
     );
-    const phase = () => String((getStage(env.cleanupDb, 4).progress as { phase?: string }).phase);
+    const phase = () =>
+      String((getStage(env.cleanupDb, env.libraryId(), 4).progress as { phase?: string }).phase);
     const running = fetcher.run();
     let deadline = Date.now() + 90_000;
     while (Date.now() < deadline && phase() !== 'done') {
@@ -765,11 +768,11 @@ describe('stage 4: online sources (Preview)', () => {
         "DELETE FROM proposed_changes WHERE stage = 4 AND calibre_id = ? AND field = 'identifiers'",
       )
       .run(ids.A);
-    const prog = getStage(env.cleanupDb, 4).progress as Record<string, unknown>;
+    const prog = getStage(env.cleanupDb, env.libraryId(), 4).progress as Record<string, unknown>;
     delete prog.bookmeterRedo;
     delete prog.bookwalkerRetry;
     prog.phase = 'lookups';
-    updateStage(env.cleanupDb, 4, { progress: prog, state: 'analysing' });
+    updateStage(env.cleanupDb, env.libraryId(), 4, { progress: prog, state: 'analysing' });
 
     // The pass: the queued search points at the plain index, book A asks it again (answered
     // from the cache: no new request to Bookmeter) and is proposed again with its Bookmeter id.
@@ -803,8 +806,11 @@ describe('stage 4: online sources (Preview)', () => {
       .get(ids.A) as { new_json: string } | undefined;
     expect(JSON.parse(ident!.new_json)).toMatchObject({ bookmeter: '778', isbn: '9784000000001' });
     expect(
-      (getStage(env.cleanupDb, 4).progress as { bookmeterRedo?: { phase: string; books: number } })
-        .bookmeterRedo,
+      (
+        getStage(env.cleanupDb, env.libraryId(), 4).progress as {
+          bookmeterRedo?: { phase: string; books: number };
+        }
+      ).bookmeterRedo,
     ).toMatchObject({ phase: 'done', books: 1 });
     // The BookWalker pass asked the series name again (from the cache) and found the book.
     const evA2 = a4.loadOnline(env.libraryId(), uuidA)! as unknown as {
@@ -814,7 +820,7 @@ describe('stage 4: online sources (Preview)', () => {
     expect(evA2.bookwalker.detail?.title).toBe('魔法使いの旅 1');
     expect(
       (
-        getStage(env.cleanupDb, 4).progress as {
+        getStage(env.cleanupDb, env.libraryId(), 4).progress as {
           bookwalkerRetry?: { phase: string; books: number };
         }
       ).bookwalkerRetry,

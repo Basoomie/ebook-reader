@@ -154,8 +154,13 @@ export interface LdState {
   updatedAt: number;
 }
 
-export function getLdState(db: Database.Database): LdState {
-  const r = db.prepare('SELECT * FROM link_discovery_state WHERE id = 1').get() as {
+export function getLdState(db: Database.Database, libraryId: string): LdState {
+  db.prepare(
+    `INSERT OR IGNORE INTO link_discovery_state (library_id, updated_at) VALUES (?, 0)`,
+  ).run(libraryId);
+  const r = db
+    .prepare('SELECT * FROM link_discovery_state WHERE library_id = ?')
+    .get(libraryId) as {
     library_id: string | null;
     mode: LdMode;
     progress_json: string;
@@ -174,10 +179,13 @@ export function getLdState(db: Database.Database): LdState {
   };
 }
 
-function saveProgress(db: Database.Database, p: LdProgress): void {
+function saveProgress(db: Database.Database, libraryId: string, p: LdProgress): void {
   db.prepare(
-    'UPDATE link_discovery_state SET progress_json = ?, library_id = ?, updated_at = ? WHERE id = 1',
-  ).run(JSON.stringify(p), p.libraryId, Date.now());
+    `INSERT OR IGNORE INTO link_discovery_state (library_id, updated_at) VALUES (?, 0)`,
+  ).run(libraryId);
+  db.prepare(
+    'UPDATE link_discovery_state SET progress_json = ?, updated_at = ? WHERE library_id = ?',
+  ).run(JSON.stringify(p), Date.now(), libraryId);
 }
 
 /** The draw's order: a fixed hash of the run, the book and the site. */
@@ -266,6 +274,11 @@ export interface LdLink {
 }
 
 export class LinkDiscovery {
+  /** Manga part B: the library this pass works on (one instance per library). */
+  private lib(): string {
+    return this.deps.targetLibrary() ?? '';
+  }
+
   private readonly db: Database.Database;
   /** Every id Calibre holds per key, and the series groups: rebuilt when the snapshot changes. */
   private held: { stamp: number; lib: string; maps: Map<string, Map<string, string>> } | null =
@@ -282,7 +295,7 @@ export class LinkDiscovery {
   }
 
   state(): LdState {
-    return getLdState(this.db);
+    return getLdState(this.db, this.lib());
   }
 
   /** Off / Preview / On. On only after the spot check passed. */
@@ -291,8 +304,11 @@ export class LinkDiscovery {
       throw new Error(`On needs the spot check first: every one of its links marked, none wrong`);
     }
     this.db
-      .prepare('UPDATE link_discovery_state SET mode = ?, updated_at = ? WHERE id = 1')
-      .run(mode, Date.now());
+      .prepare(`INSERT OR IGNORE INTO link_discovery_state (library_id, updated_at) VALUES (?, 0)`)
+      .run(this.lib());
+    this.db
+      .prepare('UPDATE link_discovery_state SET mode = ?, updated_at = ? WHERE library_id = ?')
+      .run(mode, Date.now(), this.lib());
     this.deps.log?.(`More direct links: ${mode === 'analyse' ? 'Preview' : mode}`);
   }
 
@@ -313,12 +329,12 @@ export class LinkDiscovery {
     const db = this.db;
     db.transaction(() => {
       db.prepare(
-        `DELETE FROM proposed_changes WHERE stage = 4 AND field = 'identifiers'
+        `DELETE FROM proposed_changes WHERE stage = 4 AND field = 'identifiers' AND library_id = ?
            AND analysis_id LIKE '${ANALYSIS_PREFIX}%' AND state = 'proposed' AND batch_id IS NULL`,
-      ).run();
-      db.prepare('DELETE FROM link_discovery_picks').run();
-      db.prepare('DELETE FROM link_discovery_spot').run();
-      saveProgress(db, fresh);
+      ).run(this.lib());
+      db.prepare('DELETE FROM link_discovery_picks WHERE library_id = ?').run(this.lib());
+      db.prepare('DELETE FROM link_discovery_spot WHERE library_id = ?').run(this.lib());
+      saveProgress(db, this.lib(), fresh);
     })();
   }
 
@@ -346,7 +362,7 @@ export class LinkDiscovery {
       p.times[phase] = (p.times[phase] ?? 0) + ms;
       // The series phase yields inside a step: its own slices are what the server waits for.
       if (phase !== 'series' && phase !== 'write' && ms > p.longestStepMs) p.longestStepMs = ms;
-      saveProgress(this.db, p);
+      saveProgress(this.db, this.lib(), p);
     }
     return r;
   }
@@ -864,7 +880,7 @@ export class LinkDiscovery {
     );
     let pos = 0;
     db.transaction(() => {
-      db.prepare('DELETE FROM link_discovery_spot').run();
+      db.prepare('DELETE FROM link_discovery_spot WHERE library_id = ?').run(this.lib());
       for (const s of SPOT_SLOTS) {
         const pick = by[s]
           .map((x) => ({ x, k: linkSpotOrderKey(p.run, x.uuid, x.site) }))
@@ -880,8 +896,10 @@ export class LinkDiscovery {
 
   spotCounts(): { size: number; right: number; wrong: number; open: number } {
     const rows = this.db
-      .prepare('SELECT verdict, COUNT(*) AS n FROM link_discovery_spot GROUP BY verdict')
-      .all() as { verdict: string | null; n: number }[];
+      .prepare(
+        'SELECT verdict, COUNT(*) AS n FROM link_discovery_spot WHERE library_id = ? GROUP BY verdict',
+      )
+      .all(this.lib()) as { verdict: string | null; n: number }[];
     const n = (v: string | null) => rows.find((r) => r.verdict === v)?.n ?? 0;
     const size = rows.reduce((a, r) => a + r.n, 0);
     return { size, right: n('right'), wrong: n('wrong'), open: n(null) };

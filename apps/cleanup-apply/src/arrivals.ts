@@ -46,6 +46,8 @@ export interface ArrivalBatch {
   id: number;
   kind: 'add' | 'undo_add';
   leaseSeconds: number;
+  /** 1.7.0 (manga part B): the library the batch adds to; absent (older server): the own one. */
+  calibreLibrary?: string | null;
   items: ArrivalItem[];
 }
 
@@ -119,9 +121,11 @@ export class ArrivalWorker {
   }
 
   /** One add or undo batch if the server has one. Returns whether there was one. */
-  async cycle(login: Login): Promise<boolean> {
+  async cycle(own: Login): Promise<boolean> {
     const { batch } = await this.o.api.claimArrivals();
     if (!batch) return false;
+    // 1.7.0: the batch's own library (the folder's pair: japanese-library or manga-library).
+    const login: Login = batch.calibreLibrary ? { ...own, libraryId: batch.calibreLibrary } : own;
     let error: string | null = null;
     try {
       await fsp.mkdir(this.arrivalDir(batch.id), { recursive: true });

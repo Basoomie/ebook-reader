@@ -572,7 +572,7 @@ export class Stage2Batches {
     this.liftNameHolds(libraryId);
     const settings = getSettings(this.db);
     const paused = new Set(
-      listFieldPauses(this.db, this.stage).flatMap((p) =>
+      listFieldPauses(this.db, libraryId, this.stage).flatMap((p) =>
         this.stage === 4 ? (STAGE4_PAUSED_FIELDS[p.field] ?? [p.field]) : [p.field],
       ),
     );
@@ -597,7 +597,7 @@ export class Stage2Batches {
            }
          ORDER BY calibre_id, id`,
       )
-      .all(libraryId, opts.analysisId ?? currentAnalysisId(this.db, this.stage)) as {
+      .all(libraryId, opts.analysisId ?? currentAnalysisId(this.db, libraryId, this.stage)) as {
       id: number;
       calibre_id: number;
       calibre_uuid: string;
@@ -681,7 +681,7 @@ export class Stage2Batches {
     // for them is fitted now, with Calibre's current values, in every stage's batch.
     const needsTitle = this.fitLongNames(
       libraryId,
-      opts.analysisId ?? currentAnalysisId(this.db, this.stage),
+      opts.analysisId ?? currentAnalysisId(this.db, libraryId, this.stage),
       byBook,
       byUuid,
       snapshotTime(snapFile),
@@ -710,7 +710,7 @@ export class Stage2Batches {
           if (r.field === 'title') titleSkipped = true;
           continue;
         }
-        const reason = await this.planCheck(book, r, ev, libDir, extras);
+        const reason = await this.planCheck(book, r, ev, libDir, extras, libraryId);
         if (reason) {
           skip.push({ id: r.id, reason });
           // A record without files is no change in Calibre (never pauses the stage).
@@ -736,6 +736,7 @@ export class Stage2Batches {
     if (changedBooks > 0 && share > settings.libraryChangedPausePercent) {
       pauseStage(
         this.db,
+        libraryId,
         this.stage,
         'library_changed',
         `${changedBooks} of the next ${byBook.size} books changed in Calibre since the analysis. Nothing was written or skipped. Run the analysis again: writing goes on by itself after it.`,
@@ -981,6 +982,7 @@ export class Stage2Batches {
     ev: Evidence2,
     libDir: string,
     extras: Map<number, Stage4Extras> | null = null,
+    libraryId = '',
   ): Promise<string | null> {
     if (!book || book.calibreId !== r.calibre_id) return 'The book is no longer in Calibre';
     // Stage 5's tags: a change applied to what Calibre holds at the write (a tag added since
@@ -1028,7 +1030,7 @@ export class Stage2Batches {
     }
     if (r.field === 'illustrator' && book.illustrators === null)
       return 'The library has no #illustrator column';
-    return this.matchingOld(book.uuid, r.field, current, old) ? null : EDITED;
+    return this.matchingOld(libraryId, book.uuid, r.field, current, old) ? null : EDITED;
   }
 
   /**
@@ -1037,6 +1039,7 @@ export class Stage2Batches {
    * value Calibre has (it becomes the undo record's old value), or null.
    */
   private matchingOld(
+    libraryId: string,
     uuid: string,
     field: string,
     current: Current,
@@ -1044,8 +1047,10 @@ export class Stage2Batches {
   ): { value: unknown } | null {
     if (fieldEquals(field, current, old)) return { value: old };
     const own = this.db
-      .prepare('SELECT value_json FROM applied_values WHERE calibre_uuid = ? AND field = ?')
-      .get(uuid, field) as { value_json: string } | undefined;
+      .prepare(
+        'SELECT value_json FROM applied_values WHERE library_id = ? AND calibre_uuid = ? AND field = ?',
+      )
+      .get(libraryId, uuid, field) as { value_json: string } | undefined;
     if (own) {
       const v = JSON.parse(own.value_json) as unknown;
       if (fieldEquals(field, current, v, false)) return { value: v };
@@ -1378,7 +1383,7 @@ export class Stage2Batches {
       this.written(batch, r, cur, oldCoverPath, now);
       return push('written', null);
     }
-    const matched = this.matchingOld(r.calibre_uuid, r.field, cur, oldV);
+    const matched = this.matchingOld(batch.libraryId, r.calibre_uuid, r.field, cur, oldV);
     if (!matched) {
       const why = edit ? EDITED_FORM : EDITED;
       this.setItem(r.item_id, 'skipped', why, null, now);
@@ -1968,9 +1973,9 @@ export class Stage2Batches {
     const later = this.db
       .prepare(
         `SELECT f.calibre_uuid FROM field_undo f JOIN batches b ON b.id = f.batch_id
-         WHERE b.created_at > ? AND b.kind = 'apply' AND f.restored_at IS NULL`,
+         WHERE b.created_at > ? AND b.kind = 'apply' AND b.library_id = ? AND f.restored_at IS NULL`,
       )
-      .all(batch.createdAt) as { calibre_uuid: string }[];
+      .all(batch.createdAt, batch.libraryId) as { calibre_uuid: string }[];
     if (later.some((r) => uuids.has(r.calibre_uuid))) {
       throw new BatchError(
         409,
