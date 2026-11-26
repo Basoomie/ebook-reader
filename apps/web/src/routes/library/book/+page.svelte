@@ -215,12 +215,9 @@
   $: fraction = book
     ? bookProgressFraction(book.id, state, positions.get(book.id) ?? [], book.charCount)
     : null;
-  $: statusText = [
-    state && state.status !== 'unread' ? STATUS_LABELS[state.status] : '',
-    progressLabel && progressLabel !== 'Finished' ? progressLabel : ''
-  ]
-    .filter(Boolean)
-    .join(' · ');
+  // Only the progress: the status button below already names the book's status
+  // (user 2026-11-25: "Completed" was shown three times in a row).
+  $: statusText = progressLabel && progressLabel !== 'Finished' ? progressLabel : '';
   $: readLabel = fraction !== null ? 'Continue reading' : 'Read';
   /** The status button shows the book's status ("Set status" while unread). */
   $: statusName = state && state.status !== 'unread' ? STATUS_LABELS[state.status] : '';
