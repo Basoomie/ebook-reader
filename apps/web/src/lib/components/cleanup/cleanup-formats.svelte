@@ -354,7 +354,7 @@
                       .calibreId})</span
                   >
                 {/if}
-                {#if book.change && book.change.reason && book.change.state !== 'applied'}
+                {#if book.change && book.change.reason && book.change.state !== 'applied' && book.change.reason !== book.reason}
                   <span class="text-c-muted">{book.change.reason}</span>
                 {/if}
                 {#if list.which === 'review' && book.change && (book.change.state === 'proposed' || book.change.state === 'kept')}

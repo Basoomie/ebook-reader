@@ -1282,8 +1282,8 @@ export function formatsOnCopy(convert: number, fold: number): ConfirmCopy {
   return {
     title: `Write ${(convert + fold).toLocaleString()} ${convert + fold === 1 ? 'book' : 'books'} to Calibre?`,
     message: [
-      `${convert.toLocaleString()} checked EPUBs are added to their own Calibre books; each book's original file stays.`,
-      `${fold.toLocaleString()} copies proven to be the same book as an EPUB book are folded into it: the copy's file is added to that book when it has none of that format, the copy's own tags go with it, and the copy is removed the usual way (kept in the quarantine and in Calibre's trash).`,
+      `${convert.toLocaleString()} checked ${convert === 1 ? 'EPUB is' : 'EPUBs are'} added to their own Calibre books; each book's original file stays.`,
+      `${fold.toLocaleString()} ${fold === 1 ? 'copy' : 'copies'} proven to be the same book as an EPUB book ${fold === 1 ? 'is' : 'are'} folded into it: the copy's file is added to that book when it has none of that format, the copy's own tags go with it, and the copy is removed the usual way (kept in the quarantine and in Calibre's trash).`,
       'The next new-arrivals run takes the converted books in (duplicates, metadata, store look-ups, genres and tags; picture books move to the manga library). Each batch can be undone from the batches list.'
     ],
     confirmLabel: 'Switch it On',

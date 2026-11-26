@@ -117,6 +117,8 @@ export const FORMATS_GROUPS: Record<string, string> = {
 };
 
 const n = (x: number) => x.toLocaleString('en-US');
+/** "1 copy", "2 copies". */
+const count = (x: number, one: string, many: string) => `${n(x)} ${x === 1 ? one : many}`;
 
 /** A bar's line: "Converted 120 of 1,066 · about 3 h left". */
 export function barLine(b: FormatsBar): string {
@@ -154,11 +156,11 @@ export function formatsLines(s: FormatsStatus | null): string[] {
   const review = prop('fold', 'review');
   if (convert + fold + review > 0)
     out.push(
-      `To write: ${n(convert)} EPUBs for their own books, ${n(fold)} copies folded into their EPUB book; ${n(review)} near copies for you to look at.`
+      `To write: ${count(convert, 'EPUB for its own book', 'EPUBs for their own books')}, ${count(fold, 'copy folded into its EPUB book', 'copies folded into their EPUB book')}; ${count(review, 'near copy', 'near copies')} for you to look at.`
     );
   if (c.written.convert + c.written.fold + c.written.undone > 0)
     out.push(
-      `Written: ${n(c.written.convert)} EPUBs added, ${n(c.written.fold)} copies folded${c.written.undone ? `, ${n(c.written.undone)} undone` : ''}.`
+      `Written: ${count(c.written.convert, 'EPUB', 'EPUBs')} added, ${count(c.written.fold, 'copy', 'copies')} folded${c.written.undone ? `, ${n(c.written.undone)} undone` : ''}.`
     );
   if (s.spot.total > 0 && p.phase !== 'write' && p.phase !== 'done')
     out.push(
