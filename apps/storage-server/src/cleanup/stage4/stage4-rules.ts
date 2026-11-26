@@ -65,8 +65,10 @@ import {
  * number where two volumes of the list sit on theirs (automatic). A side book between two volumes
  * on their list places is counted as a volume; one listed after the volume just before it, none
  * missing between, its date agreeing and both neighbours on their numbers, is automatic.
+ * 13 (2026-11-25): a count of weeks (「2週間でわかる」) is no volume number; new arrivals propose the
+ * series changes of books already in Calibre under stage 4's own analysis (arrivals/stage4-ai.ts).
  */
-export const STAGE4_RULES_VERSION = 12;
+export const STAGE4_RULES_VERSION = 13;
 
 /** The gold labels' names for the kinds. */
 export type Kind = 'full' | 'sample' | 'bonus' | 'special edition' | 'omnibus';

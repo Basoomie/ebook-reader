@@ -994,6 +994,10 @@ describe('a later part counted straight through (rules 12)', () => {
       false,
     );
   });
+  it('a count of weeks is no volume number (なれる！SE 2週間でわかる？SE入門 is volume 1)', () => {
+    expect(printedNumber('なれる！SE 2週間でわかる？SE入門', 'なれる!SE')).toBeNull();
+    expect(printedNumber('なれる！SE2 基礎から学ぶ？運用構築', 'なれる!SE')).toBe(2);
+  });
   it('本好き: 第四部 and 第五部 on their places in the series list (Amazon and RanobeDB: 1-33)', () => {
     const c = choose(HON);
     expect(c(7293)).toMatchObject({ index: 23, from: PART_PLACE }); // 第五部 II (was proposed 2)
