@@ -115,7 +115,6 @@ export interface BookmeterServerSettings {
   quickMinutes: number;
   fullHours: number;
   askAbove: number;
-  notifyArrived: boolean;
 }
 
 export interface BookmeterAccountStatus {

@@ -3,8 +3,7 @@
  * requireUser.
  *
  *   GET    /bookmeter/status                     settings, each account's lists and last checks
- *   PUT    /bookmeter/settings                   enabled, quickMinutes, fullHours, askAbove,
- *                                                notifyArrived
+ *   PUT    /bookmeter/settings                   enabled, quickMinutes, fullHours, askAbove
  *   POST   /bookmeter/accounts                   { user (id or profile URL), libraries?,
  *                                                statuses?, wish? }: checked and read at once
  *   PUT    /bookmeter/accounts/:id               { libraries?, statuses?, wish? }

@@ -36,8 +36,6 @@ export interface BookmeterSettings {
   fullHours: number;
   /** More changes than this ask first (Review) instead of being applied. */
   askAbove: number;
-  /** A wanted book that arrives in the library is told (Settings › Notifications). */
-  notifyArrived: boolean;
 }
 
 export const DEFAULT_BOOKMETER_SETTINGS: BookmeterSettings = {
@@ -46,7 +44,6 @@ export const DEFAULT_BOOKMETER_SETTINGS: BookmeterSettings = {
   quickMinutes: 60,
   fullHours: 24,
   askAbove: 10,
-  notifyArrived: true,
 };
 
 export const MAX_ACCOUNTS = 4;
@@ -58,7 +55,9 @@ const NUMBERS: Partial<Record<keyof BookmeterSettings, [number, number]>> = {
   fullHours: [1, 168],
   askAbove: [0, 10000],
 };
-const FLAGS: (keyof BookmeterSettings)[] = ['enabled', 'notifyArrived'];
+const FLAGS: (keyof BookmeterSettings)[] = ['enabled'];
+/** Settings that no longer exist, accepted and dropped: notifyArrived (the alert has its own switch in Settings › Notifications). */
+const RETIRED = new Set(['notifyArrived']);
 
 function readAccount(v: unknown): BookmeterAccount | null {
   if (!v || typeof v !== 'object') return null;
@@ -127,6 +126,7 @@ export function saveBookmeterSettings(
 ): BookmeterSettings {
   const next = readBookmeterSettings(db) as unknown as Record<string, unknown>;
   for (const [key, v] of Object.entries(patch)) {
+    if (RETIRED.has(key)) continue;
     if (FLAGS.includes(key as keyof BookmeterSettings)) {
       if (typeof v !== 'boolean') throw new BookmeterSettingsError(`${key} must be true or false`);
       next[key] = v;
