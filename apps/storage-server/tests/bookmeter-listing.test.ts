@@ -27,9 +27,12 @@ import {
 } from '../src/cleanup/stage4/bookmeter-listing';
 import { FetchQueue } from '../src/cleanup/stage4/queue';
 import {
-  BOOKMETER_AUTHOR_SEARCH_KEY,
+  BOOKMETER_AUTHOR_LIST_KEY,
   acceptBookmeter,
-  bookmeterListingSearch,
+  authorWalkGoesOn,
+  bookListings,
+  bookmeterAuthor,
+  bookmeterAuthorPage,
   parseBookmeterSearch,
   type BookmeterBook,
   type BookmeterHit,
@@ -224,17 +227,63 @@ describe('Bookmeter links: the pick', () => {
     expect(replaceBookmeter(ids, '2')).toEqual({ ...ids, bookmeter: '2' });
   });
 
-  it("asks the author-field search with the decided title and first author (More Bookmeter's Q2 key)", () => {
-    expect(bookmeterListingSearch('庶民サンプル 2', ['七月 隆文', 'x'])).toEqual({
-      key: `${BOOKMETER_AUTHOR_SEARCH_KEY}七月隆文\n庶民サンプル 2`,
-      url: expect.stringContaining('author=%E4%B8%83%E6%9C%88%E9%9A%86%E6%96%87&keyword='),
+  it("reads an author's listings page by page, keyed by the first author (the keyword is ignored by Bookmeter)", () => {
+    expect(bookmeterAuthor(['七月 隆文', 'x'])).toBe('七月隆文');
+    expect(bookmeterAuthor([])).toBeNull();
+    expect(bookmeterAuthor(['Unknown'])).toBeNull();
+    expect(bookmeterAuthorPage('七月隆文', 2)).toEqual({
+      key: `${BOOKMETER_AUTHOR_LIST_KEY}七月隆文\n2`,
+      url: expect.stringMatching(
+        /author=%E4%B8%83%E6%9C%88%E9%9A%86%E6%96%87&keyword=&partial=true&sort=recommended&type=japanese&page=2$/,
+      ),
       accept: 'text/html, */*; q=0.01',
     });
-    expect(bookmeterListingSearch('x', [])).toBeNull();
-    expect(bookmeterListingSearch('x', ['Unknown'])).toBeNull();
+    const page = (n: number, last: number | null) =>
+      Array.from({ length: n }, (_, i) => hit(String(i), 'x', ['a'], i === n - 1 ? last : 900));
+    // Goes on while the page is full, under the limit, and its last count beats the stop.
+    expect(authorWalkGoesOn(page(20, 31), 1, 30, 8)).toBe(true);
+    expect(authorWalkGoesOn(page(20, 30), 1, 30, 8)).toBe(false);
+    expect(authorWalkGoesOn(page(19, 900), 1, 0, 8)).toBe(false);
+    expect(authorWalkGoesOn(page(20, 900), 8, 0, 8)).toBe(false);
+    expect(authorWalkGoesOn(page(20, null), 1, 30, 8)).toBe(true);
   });
 
-  it('times the search from what is open at the pace since every search was queued', () => {
+  it('takes another listing of the same book once its own listing is known, never as a first match', () => {
+    const book: BookmeterBook = {
+      title: '狼と香辛料II',
+      authors: ['支倉凍砂'],
+      own: ['狼と香辛料II'],
+      chosen: { series: '狼と香辛料', ix: 2, fmt: 'light novel', calTitle: '狼と香辛料II' },
+    };
+    const kindle = hit('8229663', '狼と香辛料II (電撃文庫)', ['支倉 凍砂'], 194);
+    const paper = hit('577843', '狼と香辛料 (2) (電撃文庫)', ['支倉 凍砂'], 4150);
+    const vol3 = hit('577844', '狼と香辛料 (3) (電撃文庫)', ['支倉 凍砂'], 3737);
+    const comic = hit('572959', '狼と香辛料(2) (電撃コミックス)', ['小梅 けいと,文倉 十'], 565);
+    expect(acceptBookmeter([kindle, vol3, comic, paper], book)).toMatchObject({
+      hit: { id: '577843' },
+      reason: 'another listing of the same book (as-written); the most registered of 2 listings',
+    });
+    // The paperback alone is no first match (the checks don't take it).
+    expect(acceptBookmeter([paper, vol3], book).hit).toBeNull();
+    expect(bookListings([paper, vol3], book).map((l) => l.hit.id)).toEqual([]);
+    // The saved listing makes the book's own listing known (the AI check's ids too).
+    expect(bookListings([paper, vol3], book, undefined, '8229663').map((l) => l.hit.id)).toEqual(
+      [],
+    );
+    expect(
+      bookListings([kindle, paper, vol3], book, undefined, '8229663').map((l) => [l.hit.id, l.via]),
+    ).toEqual([
+      ['8229663', 1],
+      ['577843', 'as-written'],
+    ]);
+    expect(decideListing('8229663', [kindle, paper, vol3, comic], book)).toMatchObject({
+      state: 'change',
+      pick: { id: '577843', registrations: 4150 },
+      via: 'as-written',
+    });
+  });
+
+  it('times the search from the authors left at the pace since every book was queued', () => {
     const p = emptyBlProgress(1, LIB);
     p.phaseStartedAt = 0;
     p.search = { looked: 10, asked: 10, answered: 0, enqueued: false, failed: 0, since: null };
@@ -250,11 +299,13 @@ describe('Bookmeter links: the pick', () => {
       answered: 250,
       enqueued: true,
       failed: 0,
-      since: { at: 1000, answered: 50 },
+      authors: 350,
+      walked: 200,
+      since: { at: 1000, answered: 0 },
     };
-    // 200 answered in 400 s since queuing: 150 open take 300 s.
-    expect(listingBar(p, 401_000, { open: 150, written: 0, toWrite: 0, pace: null }).leftMs).toBe(
-      300_000,
+    // 200 walks ended in 400 s since queuing: 150 open take 300 s.
+    expect(listingBar(p, 401_000, { open: 150, written: 0, toWrite: 0, pace: null })).toMatchObject(
+      { done: 200, total: 350, leftMs: 300_000 },
     );
   });
 });
@@ -411,11 +462,14 @@ describe('Bookmeter links: the pass', () => {
       analysis_id: string;
     }[];
 
-  /** The new author-field searches' answers, by keyword. */
+  /** Each author's listings on Bookmeter, most registered first; served 20 a page. */
   const live: Record<string, Parameters<typeof searchPage>[0]> = {};
+  const asked: string[] = [];
   const byUrl = (url: string) => {
-    const kw = decodeURIComponent(/keyword=([^&]*)/.exec(url)?.[1] ?? '');
-    return searchPage(live[kw] ?? []);
+    const au = decodeURIComponent(/author=([^&]*)/.exec(url)?.[1] ?? '');
+    const page = Number(/page=(\d+)/.exec(url)?.[1] ?? 1);
+    asked.push(`${au}#${page}`);
+    return searchPage((live[au] ?? []).slice((page - 1) * 20, page * 20));
   };
 
   beforeEach(() => {
@@ -433,8 +487,9 @@ describe('Bookmeter links: the pass', () => {
     planned = [];
     stamp = 1;
     for (const k of Object.keys(live)) delete live[k];
+    asked.length = 0;
     const au = ['七月 隆文'];
-    // a: saved the Kindle listing; only the new search shows the paperback.
+    // a: saved the Kindle listing; only the author's listings show the paperback (page 2).
     add(
       {
         uuid: 'a',
@@ -445,9 +500,23 @@ describe('Bookmeter links: the pass', () => {
       },
       [{ id: '6542818', whole: '庶民サンプル 2 (Kindle版)', authors: au, reg: 18 }],
     );
-    live['庶民サンプル 2'] = [
-      { id: '6542818', whole: '庶民サンプル 2 (Kindle版)', authors: au, reg: 19 },
+    live['七月隆文'] = [
+      ...Array.from({ length: 20 }, (_, i) => ({
+        id: `90${i}`,
+        whole: `ぼくは明日、昨日のきみとデートする ${i + 1}`,
+        authors: au,
+        reg: 9000 - i,
+      })),
       { id: '7000001', whole: '庶民サンプル 2 (星海社FICTIONS)', authors: au, reg: 444 },
+      { id: '6826860', whole: '庶民サンプル 7', authors: au, reg: 444 },
+      // Under every saved count from here: never read (page 3).
+      ...Array.from({ length: 18 }, (_, i) => ({
+        id: `80${i}`,
+        whole: `他の本 ${i}`,
+        authors: au,
+        reg: 3,
+      })),
+      { id: '6542818', whole: '庶民サンプル 2 (Kindle版)', authors: au, reg: 2 },
     ];
     // b: already the most registered listing.
     add(
@@ -481,13 +550,7 @@ describe('Bookmeter links: the pass', () => {
         },
       ],
     );
-    live['異世界魔王と召喚少女の奴隷魔術 3'] = [
-      {
-        id: '13876810',
-        whole: '異世界魔王と召喚少女の奴隷魔術 3',
-        authors: ['福田 直叶,(原作)むらさき ゆきや'],
-        reg: 50,
-      },
+    live['むらさきゆきや'] = [
       {
         id: '8000',
         whole: '異世界魔王と召喚少女の奴隷魔術 3 (講談社ラノベ文庫)',
@@ -517,17 +580,28 @@ describe('Bookmeter links: the pass', () => {
     expect(await p.step()).toBe('idle');
   });
 
-  it('searches every saved id again at the queue, decides as answers come, and replaces only the bookmeter id', async () => {
+  /** The pass and the fetcher in turn until the spot check (or nothing moves). */
+  const drive = async (p: BookmeterListings) => {
+    for (let i = 0; i < 20 && p.state().progress.phase === 'search'; i++) {
+      await runUntil(p, (ph) => ph === 'spot');
+      fetchAll(byUrl);
+    }
+    await runUntil(p, (ph) => ph === 'spot');
+  };
+
+  it("reads each author's listings page by page down to the saved counts, decides each book from them, and replaces only the bookmeter id", async () => {
     const p = pass();
     p.setMode('analyse');
     await runUntil(p, () => false);
     expect(p.state().progress.phase).toBe('search');
-    expect(p.openSearches()).toBe(4);
+    // One walk per first author (a and b share 七月隆文).
+    expect(p.openSearches(LIB)).toBe(3);
     expect(rows().every((r) => r.state === 'search')).toBe(true);
-    // The queue makes the pass's waiters ready when the fetcher answers.
-    fetchAll(byUrl);
-    expect(p.openSearches()).toBe(0);
-    await runUntil(p, (ph) => ph === 'spot');
+    await drive(p);
+    expect(p.openSearches(LIB)).toBe(0);
+    // 七月隆文: page 2's last listing (3) is under the lowest saved count (18): no page 3.
+    expect(asked.sort()).toEqual(['七月隆文#1', '七月隆文#2', '作者#1', 'むらさきゆきや#1'].sort());
+    expect(p.state().progress.search).toMatchObject({ authors: 3, walked: 3, pages: 4 });
     expect(rows()).toEqual([
       { u: 'a', state: 'change' },
       { u: 'b', state: 'keep' },
@@ -551,12 +625,47 @@ describe('Bookmeter links: the pass', () => {
     const list = p.listBooks(LIB, 1, 'change', 0, 20);
     expect(list.total).toBe(2);
     expect(list.items[0]).toMatchObject({
-      saved: { id: '6542818', registrations: 19, url: 'https://bookmeter.com/books/6542818' },
+      saved: { id: '6542818', registrations: 18, url: 'https://bookmeter.com/books/6542818' },
       pick: { id: '7000001', registrations: 444 },
     });
   });
 
-  it('never looks at the user’s identifiers nor at a saved id the AI check chose (not searched)', async () => {
+  it("reads the saved listing's count from the earlier run's own search when no other answer shows it", async () => {
+    // e: matched by More Bookmeter coverage; stage 4's search never showed the saved listing, the
+    // earlier run's author-field search (key by the decided title) did.
+    add(
+      {
+        uuid: 'e',
+        id: 5,
+        title: '庶民サンプル 5',
+        authors: ['七月隆文'],
+        ids: { bookmeter: '555' },
+      },
+      [],
+    );
+    store(
+      'search-jp-au:七月隆文\n庶民サンプル 5',
+      searchPage([
+        { id: '555', whole: '庶民サンプル 5 (Kindle版)', authors: ['七月 隆文'], reg: 6 },
+      ]),
+    );
+    live['七月隆文'].splice(20, 0, {
+      id: '7000005',
+      whole: '庶民サンプル 5 (星海社FICTIONS)',
+      authors: ['七月 隆文'],
+      reg: 300,
+    });
+    const p = pass();
+    p.setMode('analyse');
+    await drive(p);
+    expect(rows().find((r) => r.u === 'e')?.state).toBe('change');
+    expect(p.listBooks(LIB, 1, 'change', 0, 20).items.find((x) => x.uuid === 'e')).toMatchObject({
+      saved: { id: '555', registrations: 6 },
+      pick: { id: '7000005', registrations: 300 },
+    });
+  });
+
+  it('never looks at the user’s identifiers; looks at a saved id the AI check chose like the others', async () => {
     db.prepare(
       `INSERT INTO user_fields (library_id, calibre_uuid, field, since, source) VALUES (?, 'a', 'identifiers', 0, 'edit')`,
     ).run(LIB);
@@ -567,19 +676,16 @@ describe('Bookmeter links: the pass', () => {
     const p = pass();
     p.setMode('analyse');
     await runUntil(p, () => false);
-    expect(p.openSearches()).toBe(2);
-    expect(rows().filter((r) => r.state !== 'search')).toEqual([
-      { u: 'a', state: 'yours' },
-      { u: 'c', state: 'ai' },
-    ]);
+    expect(p.openSearches(LIB)).toBe(3);
+    expect(rows().filter((r) => r.state !== 'search')).toEqual([{ u: 'a', state: 'yours' }]);
+    await drive(p);
+    expect(rows().find((r) => r.u === 'c')?.state).toBe('change');
   });
 
   it('holds a book with another open change, skips one whose saved id changed, and never proposes again after an Undo', async () => {
     const p = pass();
     p.setMode('analyse');
-    await runUntil(p, () => false);
-    fetchAll(byUrl);
-    await runUntil(p, (ph) => ph === 'spot');
+    await drive(p);
     db.prepare(`DELETE FROM proposed_changes`).run();
     db.prepare(
       `INSERT INTO proposed_changes (stage, library_id, calibre_id, calibre_uuid, field, old_json, new_json, source, class, state, analysis_id, created_at, updated_at)
@@ -601,9 +707,7 @@ describe('Bookmeter links: the pass', () => {
   it('allows On only with every book of the spot check right, then writes by its own analysis id', async () => {
     const p = pass();
     p.setMode('analyse');
-    await runUntil(p, () => false);
-    fetchAll(byUrl);
-    await runUntil(p, (ph) => ph === 'spot');
+    await drive(p);
     await p.step();
     expect(() => p.setMode('on')).toThrow(/spot check/);
     const spot = p.listSpot(LIB, 1);
@@ -622,9 +726,7 @@ describe('Bookmeter links: the pass', () => {
   it('drops the changes of books removed from Calibre before each batch (never pausing stage 4 on them)', async () => {
     const p = pass();
     p.setMode('analyse');
-    await runUntil(p, () => false);
-    fetchAll(byUrl);
-    await runUntil(p, (ph) => ph === 'spot');
+    await drive(p);
     await p.step();
     for (const s of p.listSpot(LIB, 1)) p.setVerdict(s.uuid, 'right');
     // Removed before On (the rebuild finds it gone): its Preview proposal goes too.
@@ -648,9 +750,7 @@ describe('Bookmeter links: the pass', () => {
   it('takes the card counts from the database once for a run rebuilt before (never twice)', async () => {
     const p = pass();
     p.setMode('analyse');
-    await runUntil(p, () => false);
-    fetchAll(byUrl);
-    await runUntil(p, (ph) => ph === 'spot');
+    await drive(p);
     await p.step();
     for (const s of p.listSpot(LIB, 1)) p.setVerdict(s.uuid, 'right');
     p.setMode('on');
@@ -665,32 +765,32 @@ describe('Bookmeter links: the pass', () => {
     expect(p.state().progress.propose).toMatchObject({ proposed: 1, removed: 1, gone: 0 });
   });
 
-  it('never decides a book from a refused search: asks it again until it is answered', async () => {
+  it("never decides a book from a refused page: asks it again until the author's walk is read", async () => {
     const s0 = getSettings(db).fetch;
     updateSettings(db, { fetch: { ...s0, maxAttempts: 1 } });
     const p = pass();
     p.setMode('analyse');
     await runUntil(p, () => false);
-    // Bookmeter refuses every search (busy); the queue backs the site off after each refusal, so
+    // Bookmeter refuses every page (busy); the queue backs the site off after each refusal, so
     // the fetcher's clock moves on an hour between claims.
     const refused = new Set<number>();
-    for (let i = 0; i < 50 && refused.size < 4; i++) {
+    for (let i = 0; i < 50 && refused.size < 3; i++) {
       clock += 3600_000;
       for (const c of q.claim(clock).requests) {
         q.report(c.id, c.leaseToken, answer('busy', 503), clock);
         refused.add(c.id);
       }
     }
-    expect(refused.size).toBe(4);
+    expect(refused.size).toBe(3);
     await runUntil(p, () => false);
     expect(p.state().progress.phase).toBe('search');
     expect(rows().every((r) => r.state === 'search')).toBe(true);
-    expect(p.state().progress.search).toMatchObject({ failed: 4, answered: 0 });
-    expect(p.refusedOpen(LIB)).toBe(4);
-    expect(p.openSearches()).toBe(4);
+    expect(p.state().progress.search).toMatchObject({ failed: 3, answered: 0 });
+    expect(p.refusedOpen(LIB)).toBe(3);
+    expect(p.openSearches(LIB)).toBe(3);
     // Put back in line with a wait (10 minutes the first time).
     const due = db
-      .prepare(`SELECT state, next_at FROM fetch_requests WHERE key LIKE 'search-jp-au:%'`)
+      .prepare(`SELECT state, next_at FROM fetch_requests WHERE key LIKE 'author-list:%'`)
       .all() as { state: string; next_at: number }[];
     expect(due.every((r) => r.state === 'queued' && r.next_at > Date.now() + 9 * 60_000)).toBe(
       true,
@@ -699,10 +799,9 @@ describe('Bookmeter links: the pass', () => {
     expect(refusedWaitMs(3)).toBe(2_400_000);
     expect(refusedWaitMs(20)).toBe(7_200_000);
     // The wait is over and Bookmeter answers: decided as usual.
-    db.prepare(`UPDATE fetch_requests SET next_at = 0 WHERE key LIKE 'search-jp-au:%'`).run();
+    db.prepare(`UPDATE fetch_requests SET next_at = 0 WHERE key LIKE 'author-list:%'`).run();
     clock += 3600_000;
-    fetchAll(byUrl);
-    await runUntil(p, (ph) => ph === 'spot');
+    await drive(p);
     expect(rows()).toEqual([
       { u: 'a', state: 'change' },
       { u: 'b', state: 'keep' },
@@ -712,7 +811,7 @@ describe('Bookmeter links: the pass', () => {
     expect(p.refusedOpen(LIB)).toBe(0);
   });
 
-  it('lists a book Bookmeter answers "not found" for, and changes nothing there', async () => {
+  it('ends a walk Bookmeter answers "not found" for, deciding its books from what was read', async () => {
     const p = pass();
     p.setMode('analyse');
     await runUntil(p, () => false);
@@ -723,17 +822,19 @@ describe('Bookmeter links: the pass', () => {
         q.report(
           c.id,
           c.leaseToken,
-          c.url.includes(encodeURIComponent('庶民サンプル 2'))
-            ? answer('', 404)
-            : answer(byUrl(c.url)),
+          c.url.includes(encodeURIComponent('七月隆文')) ? answer('', 404) : answer(byUrl(c.url)),
           clock,
         );
     }
-    await runUntil(p, (ph) => ph === 'spot');
-    expect(rows().find((r) => r.u === 'a')?.state).toBe('unsearched');
-    expect(p.state().progress.search.gone).toBe(1);
+    await drive(p);
+    // a's stored search shows only its saved listing: kept; b too.
+    expect(rows()).toEqual([
+      { u: 'a', state: 'keep' },
+      { u: 'b', state: 'keep' },
+      { u: 'c', state: 'change' },
+      { u: 'd', state: 'adaptation' },
+    ]);
     expect(proposals().map((x) => x.u)).toEqual(['c']);
-    expect(p.listBooks(LIB, 1, 'unsearched', 0, 20).total).toBe(1);
   });
 
   it('starts a run made under the old search rules again, by itself', async () => {
@@ -742,7 +843,7 @@ describe('Bookmeter links: the pass', () => {
     await runUntil(p, () => false);
     const st = p.state().progress;
     db.prepare('UPDATE bookmeter_listing_state SET progress_json = ? WHERE id = 1').run(
-      JSON.stringify({ ...st, searchVersion: undefined }),
+      JSON.stringify({ ...st, searchVersion: 2 }),
     );
     expect(await p.step()).toBe('more');
     expect(p.state().progress).toMatchObject({
@@ -750,25 +851,25 @@ describe('Bookmeter links: the pass', () => {
       searchVersion: BL_SEARCH_VERSION,
       phase: 'search',
     });
+    expect(BL_SEARCH_VERSION).toBe(3);
     expect(p.state().mode).toBe('analyse');
     await runUntil(p, () => false);
-    expect(p.openSearches()).toBe(4);
+    expect(p.openSearches(LIB)).toBe(3);
   });
 
   it('looks again from the start: a new run, its unwritten proposals gone, written ones kept', async () => {
     const p = pass();
     p.setMode('analyse');
-    await runUntil(p, () => false);
-    fetchAll(byUrl);
-    await runUntil(p, (ph) => ph === 'spot');
+    await drive(p);
     db.prepare(`UPDATE proposed_changes SET state = 'applied' WHERE calibre_uuid = 'a'`).run();
     p.again();
     expect(p.state().progress.run).toBe(2);
     expect(proposals().map((x) => x.u)).toEqual(['a']);
     expect(rows()).toEqual([]);
+    expect(db.prepare('SELECT COUNT(*) AS n FROM bookmeter_author_walks').get()).toEqual({ n: 0 });
   });
 
-  it('reads its polled counts and its waiters by index', () => {
+  it('reads its polled counts, its waiters and the walks by index', () => {
     const plan = (sql: string) =>
       (db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all() as { detail: string }[])
         .map((r) => r.detail)
@@ -783,8 +884,18 @@ describe('Bookmeter links: the pass', () => {
         `SELECT w.request_id FROM bookmeter_listing_waiters w JOIN fetch_requests r ON r.id = w.request_id WHERE w.ready = 1 AND w.library_id = 'x' LIMIT 100`,
       ),
     ).toMatch(/bookmeter_listing_waiters_ready/);
-    expect(plan(`SELECT COUNT(*) AS n FROM bookmeter_listing_waiters WHERE ready = 0`)).toMatch(
-      /bookmeter_listing_waiters_open/,
-    );
+    expect(
+      plan(
+        `SELECT COUNT(*) AS n FROM bookmeter_author_walks INDEXED BY bookmeter_author_walks_state WHERE library_id = 'x' AND state IN ('wait', 'walk')`,
+      ),
+    ).toMatch(/COVERING INDEX bookmeter_author_walks_state/);
+    expect(
+      plan(
+        `SELECT b.calibre_uuid FROM bookmeter_author_walks w INDEXED BY bookmeter_author_walks_state
+         JOIN bookmeter_listing_books b INDEXED BY bookmeter_listing_books_author
+           ON b.library_id = w.library_id AND b.author = w.author AND b.state = 'search'
+         WHERE w.library_id = 'x' AND w.state = 'done' LIMIT 50`,
+      ),
+    ).toMatch(/bookmeter_listing_books_author/);
   });
 });

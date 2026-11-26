@@ -6,17 +6,22 @@
  * (bookmeter_listing_state, cleanup.db v35).
  *
  * Phases, each resumable (cursors and rows in cleanup.db), in slices of about 25 ms:
- *   search  every book with a saved id (the reader's snapshot) searched again with Bookmeter's
- *           author field (its decided title and first author), through the fetch queue at
- *           Bookmeter's own pace, behind everything else. Books whose saved id the AI check chose
- *           (More Bookmeter coverage) keep it and are not searched (measured: already the most
- *           registered); books whose identifiers are the user's are never looked at.
- *   pick    as each answer comes in: the book's listings from every stored search (stage 4's,
- *           More Bookmeter's Q1/Q2) and the new one, judged as acceptBookmeter judges a match
- *           (judgeBookmeter: today's checks, the chosen rules, the comic and adaptation guards),
- *           and the most registered of them. The saved id changes only to a listing with more
- *           registrations, or when the saved one is a comic or an adaptation of a text book and
- *           this book's own listing was found. An adaptation with nothing better is listed.
+ *   search  every book with a saved id (the reader's snapshot) queued under its first author;
+ *           each author's listings read page by page ("recommended": by registrations) through
+ *           the fetch queue at Bookmeter's own pace, behind everything else, until the counts
+ *           fall under the lowest saved listing among the author's books (at most
+ *           `bookmeterAuthorPages` pages). Second look (bookmeter-listings.md 8): this replaces the
+ *           author-field search, whose keyword Bookmeter ignores; the AI check's ids are looked at
+ *           like the others (user's decision 2). Books whose identifiers are the user's are never
+ *           looked at.
+ *   pick    once the author's walk ends: the book's listings from every stored search (stage
+ *           4's, More Bookmeter's Q1/Q2) and the author's pages, judged as acceptBookmeter judges
+ *           a match (judgeBookmeter: today's checks, the chosen rules, the comic and adaptation
+ *           guards) plus every other listing of the same book (bookmeter-same.ts, once the book's
+ *           own listing is known), and the most registered of them. The saved id changes only to
+ *           a listing with more registrations, or when the saved one is a comic or an adaptation
+ *           of a text book and this book's own listing was found. An adaptation with nothing
+ *           better is listed.
  *   propose one identifiers proposal per changed book under this pass's analysis id: the reader's
  *           current identifiers with only `bookmeter` replaced (every other id byte for byte;
  *           stage 2's write path writes the set only while Calibre still holds the old one).
@@ -33,16 +38,22 @@ import { createHash } from 'crypto';
 import { performance } from 'perf_hooks';
 import { loadGold, mapLabeledIds } from '../stage2-gate';
 import type { Stage2Batches } from '../stage2-batches';
+import { getSettings } from '../settings';
 import { bookmeterAnswers, type BookmeterFacts, type Stage4Analysis } from './analysis';
 import { judge, mainTitle, type Gold } from './bookmeter-rules';
 import type { FetchQueue } from './queue';
 import {
   BOOKMETER_AUTHOR_SEARCH_KEY,
   BOOKMETER_SEARCH_KEY,
+  authorWalkGoesOn,
+  bookListings,
+  bookmeterAuthor,
+  bookmeterAuthorPage,
   bookmeterListingSearch,
   judgeBookmeter,
   mostRegistered,
   parseBookmeterSearch,
+  type BookListing,
   type BookmeterBook,
   type BookmeterGuard,
   type BookmeterHit,
@@ -83,9 +94,14 @@ export const BL_PRIORITY = -3;
 const SLICE_MS = 25;
 /**
  * The search step's rules. 2: a refused search is asked again, never decided from the stored
- * answers (a run of version 1 starts again by itself).
+ * answers (a run of version 1 starts again by itself). 3 (bookmeter-listings.md 8, second look):
+ * the author's listings page by page instead of the author-field search (Bookmeter ignores its
+ * keyword), every listing of the same book (bookmeter-same.ts), and the AI check's ids looked at
+ * like the others (user's decision 2).
  */
-export const BL_SEARCH_VERSION = 2;
+export const BL_SEARCH_VERSION = 3;
+/** The waiter of an author walk's page (bookmeter_listing_waiters.calibre_uuid): '@' + author. */
+export const AUTHOR_WAITER = '@';
 /** The wait before a refused search is put back in line: 10 min, doubled each time, at most 2 h. */
 export function refusedWaitMs(retries: number): number {
   return Math.min(2 * 3600_000, 10 * 60_000 * 2 ** Math.max(0, retries - 1));
@@ -115,6 +131,8 @@ export interface BlDecision {
   savedGuard: BookmeterGuard | null;
   /** How many listings were judged to be this book. */
   listings: number;
+  /** How the pick was found to be this book: the checks' tier or the same-book form. */
+  via?: BookListing['via'] | null;
 }
 
 const listingOf = (h: BookmeterHit): BlListing => ({
@@ -138,7 +156,10 @@ export function decideListing(
   book: BookmeterBook,
 ): BlDecision {
   const j = judgeBookmeter(hits, book);
-  const taken = hits.filter((_, i) => j.tier[i] !== null);
+  // Second look (bookmeter-listings.md 8): today's checks, plus every other listing of the same
+  // book once the book's own listing is known (a listing the checks take, or the saved one).
+  const listings = bookListings(hits, book, j, saved);
+  const taken = listings.map((l) => l.hit);
   const best = mostRegistered(taken);
   const si = hits.findIndex((h) => h.id === saved);
   const savedHit = si >= 0 ? hits[si] : null;
@@ -149,6 +170,7 @@ export function decideListing(
     pick: pick ? listingOf(pick) : null,
     savedGuard,
     listings: taken.length,
+    via: pick ? (listings.find((l) => l.hit === pick)?.via ?? null) : null,
   });
   if (!best) return out(savedGuard ? 'adaptation' : 'keep', null);
   if (best.id === saved) return out('keep', best);
@@ -208,6 +230,11 @@ export interface BlProgress {
     gone?: number;
     /** Books without an author to search with: decided from the stored searches. */
     noAuthor?: number;
+    /** Version 3: authors to walk, walks ended, pages read, books decided after their walk. */
+    authors?: number;
+    walked?: number;
+    pages?: number;
+    decided?: number;
     /**
      * When every search was queued, with the answers handled and ready then: the pace is
      * measured from there (answers already in the cache come at once).
@@ -392,6 +419,7 @@ export class BookmeterListings {
       ).run();
       db.prepare('DELETE FROM bookmeter_listing_books').run();
       db.prepare('DELETE FROM bookmeter_listing_waiters').run();
+      db.prepare('DELETE FROM bookmeter_author_walks').run();
       db.prepare('DELETE FROM bookmeter_listing_spot').run();
       saveProgress(db, fresh);
     })();
@@ -470,17 +498,6 @@ export class BookmeterListings {
       .get(lib, uuid);
   }
 
-  /** True when More Bookmeter coverage's AI check chose this saved id (kept as chosen). */
-  private aiChose(lib: string, uuid: string, saved: string): boolean {
-    const r = this.db
-      .prepare(
-        `SELECT source, json_extract(hit_json, '$.id') AS id FROM bookmeter_more_books
-         WHERE library_id = ? AND calibre_uuid = ?`,
-      )
-      .get(lib, uuid) as { source: string | null; id: string | null } | undefined;
-    return r?.source === 'ai' && r.id === saved;
-  }
-
   /** A stored Bookmeter answer by its queue key (null when never fetched or gone). */
   private stored(key: string): BookmeterHit[] | null {
     const r = this.db
@@ -494,8 +511,9 @@ export class BookmeterListings {
 
   /**
    * Every Bookmeter answer the book has, in order: stage 4's search (read again from the cache:
-   * the stored hits have no counts), More Bookmeter coverage's Q1 and Q2, then `fresh` (the new
-   * author-field search). Stage 4's stored hits when its page is gone.
+   * the stored hits have no counts) and its author-field search, More Bookmeter coverage's Q1 and
+   * Q2, then `fresh` (more listings: the author's pages). Stage 4's stored hits when its page is
+   * gone.
    */
   answersOf(f: BookmeterFacts, fresh: BookmeterHit[] | null): BookmeterHit[] {
     const lists: BookmeterHit[][] = [];
@@ -506,6 +524,11 @@ export class BookmeterListings {
     const au = (f.input.authors[0] ?? '').replace(/\s/gu, '');
     if (q1 && q1 !== f.queryTitle) lists.push(this.stored(`${BOOKMETER_SEARCH_KEY}${q1}`) ?? []);
     if (au && q1) lists.push(this.stored(`${BOOKMETER_AUTHOR_SEARCH_KEY}${au}\n${q1}`) ?? []);
+    // The earlier runs' own author-field search (version 2, by the decided title): it showed the
+    // saved listing of many books (its count is what a better listing must beat).
+    const v2 = bookmeterListingSearch(f.input.title, f.input.authors);
+    if (v2 && v2.key !== `${BOOKMETER_AUTHOR_SEARCH_KEY}${au}\n${q1}`)
+      lists.push(this.stored(v2.key) ?? []);
     if (fresh) lists.push(fresh);
     return mergeAnswers(lists);
   }
@@ -518,15 +541,17 @@ export class BookmeterListings {
     saved: string,
     state: BlState,
     decision: BlDecision | null,
+    author: string | null = null,
   ): void {
     this.db
       .prepare(
         `INSERT INTO bookmeter_listing_books
-           (library_id, calibre_uuid, calibre_id, labeled, saved_id, state, decision_json, proposed, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
+           (library_id, calibre_uuid, calibre_id, labeled, saved_id, state, decision_json, proposed, updated_at, author)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
          ON CONFLICT(library_id, calibre_uuid) DO UPDATE SET calibre_id = excluded.calibre_id,
            labeled = excluded.labeled, saved_id = excluded.saved_id, state = excluded.state,
-           decision_json = excluded.decision_json, proposed = 0, updated_at = excluded.updated_at`,
+           decision_json = excluded.decision_json, proposed = 0, updated_at = excluded.updated_at,
+           author = COALESCE(excluded.author, author)`,
       )
       .run(
         lib,
@@ -537,32 +562,8 @@ export class BookmeterListings {
         state,
         decision ? JSON.stringify(decision) : null,
         Date.now(),
+        author,
       );
-  }
-
-  private waiter(
-    lib: string,
-    uuid: string,
-    spec: { key: string; url: string; accept: string },
-    labeled: boolean,
-  ): void {
-    const r = this.deps.queue.enqueue(
-      {
-        site: 'bookmeter',
-        key: spec.key,
-        url: spec.url,
-        accept: spec.accept,
-        priority: labeled ? BL_PRIORITY : BL_PRIORITY - 1,
-      },
-      null,
-    );
-    const ready = r.state === 'done' || r.state === 'gone' || r.state === 'failed' ? 1 : 0;
-    this.db
-      .prepare(
-        `INSERT INTO bookmeter_listing_waiters (request_id, library_id, calibre_uuid, ready)
-         VALUES (?, ?, ?, ?) ON CONFLICT DO UPDATE SET ready = excluded.ready`,
-      )
-      .run(r.id, lib, uuid, ready);
   }
 
   /** The books with a saved id, by UUID (the reader's snapshot; kept while it is unchanged). */
@@ -573,6 +574,14 @@ export class BookmeterListings {
     return this.saved.list;
   }
 
+  /**
+   * Search, version 3 (bookmeter-listings.md 8): each book is queued under its first author; each
+   * author's listings are read page by page ("recommended": by registrations) until the counts
+   * fall under the lowest saved listing among the author's books, at most `authorPages` pages;
+   * then the author's books are decided from their stored answers and the author's pages. A
+   * page Bookmeter refuses is asked again (10 min, doubling, at most 2 h); no book is decided
+   * before its author's walk ends.
+   */
   private searchStep(p: BlProgress, lib: string): BlStep {
     const db = this.db;
     const a = this.deps.analysis;
@@ -581,7 +590,6 @@ export class BookmeterListings {
     if (!p.search.enqueued) {
       const all = this.savedBooks(lib);
       p.books = all.length;
-      // The next books after the cursor (sorted by UUID).
       let i = 0;
       if (p.cursor) {
         let lo = 0;
@@ -596,16 +604,17 @@ export class BookmeterListings {
       if (i >= all.length) {
         p.search.enqueued = true;
         p.cursor = '';
-        const ready = (
-          db
-            .prepare('SELECT COUNT(*) AS n FROM bookmeter_listing_waiters WHERE ready = 1')
-            .get() as { n: number }
-        ).n;
-        p.search.since = { at: Date.now(), answered: p.search.answered + ready };
+        p.search.authors = this.walkCount(lib);
+        p.search.since = { at: Date.now(), answered: 0 };
         return 'more';
       }
       const labeledOf = db.prepare(
         'SELECT labeled FROM stage4_books WHERE library_id = ? AND calibre_uuid = ?',
+      );
+      const walk = db.prepare(
+        `INSERT INTO bookmeter_author_walks (library_id, author, stop, pages, state, retries, updated_at)
+         VALUES (?, ?, ?, 0, 'wait', 0, ?)
+         ON CONFLICT (library_id, author) DO UPDATE SET stop = MIN(stop, excluded.stop)`,
       );
       db.transaction(() => {
         for (; i < all.length; i++) {
@@ -619,58 +628,80 @@ export class BookmeterListings {
             this.putBook(lib, b.uuid, b.calibreId, labeled, b.saved, 'yours', null);
             continue;
           }
-          if (this.aiChose(lib, b.uuid, b.saved)) {
-            this.putBook(lib, b.uuid, b.calibreId, labeled, b.saved, 'ai', null);
-            continue;
-          }
           const f = a.bookmeterFacts(lib, b.uuid);
           if (!f) {
             this.putBook(lib, b.uuid, b.calibreId, labeled, b.saved, 'nofacts', null);
             continue;
           }
-          const spec = bookmeterListingSearch(f.input.title, f.input.authors);
-          if (!spec) {
-            // No author to search with: the stored searches are all there is (counted on the card).
+          const stored = this.answersOf(f, null);
+          const author = bookmeterAuthor(f.input.authors);
+          if (!author) {
+            // No author to walk: the stored searches are all there is (counted on the card).
             p.search.noAuthor = (p.search.noAuthor ?? 0) + 1;
-            const d = decideListing(b.saved, this.answersOf(f, null), f.input);
+            const d = decideListing(b.saved, stored, f.input);
             this.putBook(lib, b.uuid, b.calibreId, labeled, b.saved, d.state, d);
             continue;
           }
-          this.putBook(lib, b.uuid, b.calibreId, labeled, b.saved, 'search', null);
-          this.waiter(lib, b.uuid, spec, labeled);
+          // What a better listing must beat: the saved listing's count (unknown: walk to the cap).
+          const savedHit = stored.find((h) => h.id === b.saved);
+          const stop =
+            typeof savedHit?.registrations === 'number' && savedHit.registrations >= 0
+              ? savedHit.registrations
+              : 0;
+          this.putBook(lib, b.uuid, b.calibreId, labeled, b.saved, 'search', null, author);
+          walk.run(lib, author, stop, Date.now());
           p.search.asked++;
         }
       })();
       return 'more';
     }
-    // The answers that came back.
+    // Every author's first page, queued in slices once every book is listed (stops are final).
+    const waiting = db
+      .prepare(
+        `SELECT author FROM bookmeter_author_walks INDEXED BY bookmeter_author_walks_state
+         WHERE library_id = ? AND state = 'wait' LIMIT 200`,
+      )
+      .all(lib) as { author: string }[];
+    if (waiting.length) {
+      db.transaction(() => {
+        for (const w of waiting) {
+          if (performance.now() - t0 > SLICE_MS) break;
+          this.askPage(lib, w.author, 1);
+        }
+      })();
+      return 'more';
+    }
+    // The pages that came back.
     const ready = db
       .prepare(
-        `SELECT w.request_id, w.calibre_uuid, r.state AS rstate FROM bookmeter_listing_waiters w
-         JOIN fetch_requests r ON r.id = w.request_id
+        `SELECT w.request_id, w.calibre_uuid AS waiter, r.state AS rstate, r.key AS rkey
+         FROM bookmeter_listing_waiters w JOIN fetch_requests r ON r.id = w.request_id
          WHERE w.ready = 1 AND w.library_id = ? LIMIT 100`,
       )
-      .all(lib) as { request_id: number; calibre_uuid: string; rstate: string }[];
-    const del = db.prepare(
-      'DELETE FROM bookmeter_listing_waiters WHERE request_id = ? AND library_id = ? AND calibre_uuid = ?',
-    );
-    const row = db.prepare(
-      'SELECT calibre_id, labeled, saved_id, decision_json FROM bookmeter_listing_books WHERE library_id = ? AND calibre_uuid = ?',
-    );
+      .all(lib) as { request_id: number; waiter: string; rstate: string; rkey: string }[];
+    const cap = Math.max(1, getSettings(db).fetch.bookmeterAuthorPages ?? 8);
     for (const w of ready) {
       if (performance.now() - t0 > SLICE_MS) break;
-      const b = row.get(lib, w.calibre_uuid) as
-        | { calibre_id: number; labeled: number; saved_id: string; decision_json: string | null }
-        | undefined;
+      if (!w.waiter.startsWith(AUTHOR_WAITER)) {
+        // A book's own search from a run of version 2: nothing waits on it now.
+        db.prepare(
+          'DELETE FROM bookmeter_listing_waiters WHERE request_id = ? AND library_id = ? AND calibre_uuid = ?',
+        ).run(w.request_id, lib, w.waiter);
+        continue;
+      }
+      const author = w.waiter.slice(AUTHOR_WAITER.length);
+      const walk = db
+        .prepare(
+          'SELECT stop, pages, retries FROM bookmeter_author_walks WHERE library_id = ? AND author = ?',
+        )
+        .get(lib, author) as { stop: number; pages: number; retries: number } | undefined;
+      const page = Number(w.rkey.slice(w.rkey.lastIndexOf('\n') + 1)) || 1;
       db.transaction(() => {
-        if (b && w.rstate === 'failed') {
-          // Refused: never decided from the stored answers. Put back in line after a growing
-          // wait; the book stays open and the step does not end until it is answered.
-          const retries =
-            ((b.decision_json ? (JSON.parse(b.decision_json) as { retries?: number }) : {})
-              .retries ?? 0) + 1;
+        if (walk && w.rstate === 'failed') {
+          // Refused: asked again after a growing wait; the author's books stay open.
+          const retries = walk.retries + 1;
           p.search.failed++;
-          this.deps.queue.requeue(w.request_id, b.labeled === 1 ? BL_PRIORITY : BL_PRIORITY - 1);
+          this.deps.queue.requeue(w.request_id, BL_PRIORITY - 1);
           db.prepare('UPDATE fetch_requests SET next_at = ? WHERE id = ? AND state = ?').run(
             Date.now() + refusedWaitMs(retries),
             w.request_id,
@@ -678,56 +709,44 @@ export class BookmeterListings {
           );
           db.prepare(
             'UPDATE bookmeter_listing_waiters SET ready = 0 WHERE request_id = ? AND library_id = ? AND calibre_uuid = ?',
-          ).run(w.request_id, lib, w.calibre_uuid);
+          ).run(w.request_id, lib, w.waiter);
           db.prepare(
-            'UPDATE bookmeter_listing_books SET decision_json = ?, updated_at = ? WHERE library_id = ? AND calibre_uuid = ?',
-          ).run(JSON.stringify({ retries }), Date.now(), lib, w.calibre_uuid);
+            'UPDATE bookmeter_author_walks SET retries = ?, updated_at = ? WHERE library_id = ? AND author = ?',
+          ).run(retries, Date.now(), lib, author);
           return;
         }
-        del.run(w.request_id, lib, w.calibre_uuid);
-        if (!b) return;
-        if (w.rstate === 'gone') {
-          // Bookmeter said the search does not exist: listed, nothing changed.
-          p.search.gone = (p.search.gone ?? 0) + 1;
-          this.putBook(
-            lib,
-            w.calibre_uuid,
-            b.calibre_id,
-            b.labeled === 1,
-            b.saved_id,
-            'unsearched',
-            null,
-          );
-          return;
-        }
+        db.prepare(
+          'DELETE FROM bookmeter_listing_waiters WHERE request_id = ? AND library_id = ? AND calibre_uuid = ?',
+        ).run(w.request_id, lib, w.waiter);
+        if (!walk) return;
         p.search.answered++;
-        const f = a.bookmeterFacts(lib, w.calibre_uuid);
-        if (!f) {
-          this.putBook(
-            lib,
-            w.calibre_uuid,
-            b.calibre_id,
-            b.labeled === 1,
-            b.saved_id,
-            'nofacts',
-            null,
-          );
+        if (w.rstate === 'gone') {
+          // Bookmeter knows no such page: the walk ends with the pages read.
+          this.endWalk(p, lib, author, walk.pages);
           return;
         }
         const body = this.deps.queue.readAnswer(w.request_id);
         if (!body) {
           // Answered, but the answer can't be read (its cached file is gone): asked again.
           p.search.failed++;
-          this.deps.queue.requeue(w.request_id, b.labeled === 1 ? BL_PRIORITY : BL_PRIORITY - 1);
+          this.deps.queue.requeue(w.request_id, BL_PRIORITY - 1);
           db.prepare(
             'INSERT OR REPLACE INTO bookmeter_listing_waiters (request_id, library_id, calibre_uuid, ready) VALUES (?, ?, ?, 0)',
-          ).run(w.request_id, lib, w.calibre_uuid);
+          ).run(w.request_id, lib, w.waiter);
           return;
         }
-        const d = decideListing(b.saved_id, this.answersOf(f, parseBookmeterSearch(body)), f.input);
-        this.putBook(lib, w.calibre_uuid, b.calibre_id, b.labeled === 1, b.saved_id, d.state, d);
+        const hits = parseBookmeterSearch(body);
+        p.search.pages = (p.search.pages ?? 0) + 1;
+        if (authorWalkGoesOn(hits, page, walk.stop, cap)) {
+          db.prepare(
+            'UPDATE bookmeter_author_walks SET pages = ?, retries = 0, updated_at = ? WHERE library_id = ? AND author = ?',
+          ).run(page, Date.now(), lib, author);
+          this.askPage(lib, author, page + 1);
+        } else this.endWalk(p, lib, author, page);
       })();
     }
+    // The books of the authors whose walk ended.
+    const decided = this.decideWalked(p, lib, t0);
     const open = (
       db
         .prepare(
@@ -741,7 +760,103 @@ export class BookmeterListings {
       this.next(p, 'propose');
       return 'more';
     }
-    return ready.length ? 'more' : 'wait';
+    return ready.length || decided ? 'more' : 'wait';
+  }
+
+  /** Authors with a walk in this run. */
+  private walkCount(lib: string): number {
+    return (
+      this.db
+        .prepare('SELECT COUNT(*) AS n FROM bookmeter_author_walks WHERE library_id = ?')
+        .get(lib) as { n: number }
+    ).n;
+  }
+
+  /** One page of an author's listings, through the queue at the pass's priority. */
+  private askPage(lib: string, author: string, page: number): void {
+    const spec = bookmeterAuthorPage(author, page);
+    const r = this.deps.queue.enqueue(
+      { site: 'bookmeter', ...spec, priority: BL_PRIORITY - 1 },
+      null,
+    );
+    const ready = r.state === 'done' || r.state === 'gone' || r.state === 'failed' ? 1 : 0;
+    this.db
+      .prepare(
+        `INSERT INTO bookmeter_listing_waiters (request_id, library_id, calibre_uuid, ready)
+         VALUES (?, ?, ?, ?) ON CONFLICT DO UPDATE SET ready = excluded.ready`,
+      )
+      .run(r.id, lib, `${AUTHOR_WAITER}${author}`, ready);
+    this.db
+      .prepare(
+        `UPDATE bookmeter_author_walks SET state = 'walk', updated_at = ? WHERE library_id = ? AND author = ?`,
+      )
+      .run(Date.now(), lib, author);
+  }
+
+  private endWalk(p: BlProgress, lib: string, author: string, pages: number): void {
+    this.db
+      .prepare(
+        `UPDATE bookmeter_author_walks SET state = 'done', pages = ?, updated_at = ? WHERE library_id = ? AND author = ?`,
+      )
+      .run(pages, Date.now(), lib, author);
+    p.search.walked = (p.search.walked ?? 0) + 1;
+  }
+
+  /** The listings on an author's pages read in this walk (from the cache, by their keys). */
+  authorHits(author: string, pages: number): BookmeterHit[] {
+    const lists: BookmeterHit[][] = [];
+    for (let n = 1; n <= pages; n++)
+      lists.push(this.stored(bookmeterAuthorPage(author, n).key) ?? []);
+    return mergeAnswers(lists);
+  }
+
+  /** Decides, in a slice, the open books whose author's walk ended. Returns how many. */
+  private decideWalked(p: BlProgress, lib: string, t0: number): number {
+    const db = this.db;
+    const rows = db
+      .prepare(
+        `SELECT b.calibre_uuid, b.calibre_id, b.labeled, b.saved_id, b.author, w.pages
+         FROM bookmeter_author_walks w INDEXED BY bookmeter_author_walks_state
+         JOIN bookmeter_listing_books b INDEXED BY bookmeter_listing_books_author
+           ON b.library_id = w.library_id AND b.author = w.author AND b.state = 'search'
+         WHERE w.library_id = ? AND w.state = 'done' LIMIT 50`,
+      )
+      .all(lib) as {
+      calibre_uuid: string;
+      calibre_id: number;
+      labeled: number;
+      saved_id: string;
+      author: string;
+      pages: number;
+    }[];
+    const pages = new Map<string, BookmeterHit[]>();
+    let n = 0;
+    for (const r of rows) {
+      if (performance.now() - t0 > SLICE_MS * 2) break;
+      n++;
+      const f = this.deps.analysis.bookmeterFacts(lib, r.calibre_uuid);
+      if (!f) {
+        this.putBook(
+          lib,
+          r.calibre_uuid,
+          r.calibre_id,
+          r.labeled === 1,
+          r.saved_id,
+          'nofacts',
+          null,
+        );
+        continue;
+      }
+      let ah = pages.get(r.author);
+      if (!ah) {
+        ah = this.authorHits(r.author, r.pages);
+        pages.set(r.author, ah);
+      }
+      const d = decideListing(r.saved_id, mergeAnswers([this.answersOf(f, null), ah]), f.input);
+      this.putBook(lib, r.calibre_uuid, r.calibre_id, r.labeled === 1, r.saved_id, d.state, d);
+      p.search.decided = (p.search.decided ?? 0) + 1;
+    }
+    return n;
   }
 
   private countState(lib: string, state: BlState): number {
@@ -1183,24 +1298,27 @@ export class BookmeterListings {
     return out;
   }
 
-  /** Books whose search Bookmeter refused and that wait to be asked again. */
+  /** Authors whose page Bookmeter refused and that wait to be asked again. */
   refusedOpen(lib: string): number {
     return (
       this.db
         .prepare(
-          `SELECT COUNT(*) AS n FROM bookmeter_listing_books INDEXED BY bookmeter_listing_books_state
-           WHERE library_id = ? AND state = 'search' AND decision_json IS NOT NULL`,
+          `SELECT COUNT(*) AS n FROM bookmeter_author_walks INDEXED BY bookmeter_author_walks_state
+           WHERE library_id = ? AND state = 'walk' AND retries > 0`,
         )
         .get(lib) as { n: number }
     ).n;
   }
 
-  /** Open searches (not answered yet). */
-  openSearches(): number {
+  /** Authors whose walk has not ended. */
+  openSearches(lib: string): number {
     return (
       this.db
-        .prepare('SELECT COUNT(*) AS n FROM bookmeter_listing_waiters WHERE ready = 0')
-        .get() as { n: number }
+        .prepare(
+          `SELECT COUNT(*) AS n FROM bookmeter_author_walks INDEXED BY bookmeter_author_walks_state
+           WHERE library_id = ? AND state IN ('wait', 'walk')`,
+        )
+        .get(lib) as { n: number }
     ).n;
   }
 
@@ -1235,7 +1353,7 @@ export class BookmeterListings {
       stage4Done: this.deps.stage4Done(),
       progress: p,
       bar: listingBar(p, now, {
-        open: p.phase === 'search' ? this.openSearches() : 0,
+        open: p.phase === 'search' && lib ? this.openSearches(lib) : 0,
         written: (proposals.applied ?? 0) + (proposals.skipped ?? 0),
         toWrite: (proposals.proposed ?? 0) + (proposals.queued ?? 0),
         pace: p.phase === 'write' ? this.writePace(p.write.batches) : null,
@@ -1283,9 +1401,12 @@ export function listingBar(
     case 'search': {
       if (!p.search.enqueued)
         return { phase: p.phase, done: p.search.looked, total: p.books || null, leftMs: null };
-      const total = p.search.answered + w.open;
+      // Version 3: the authors' walks (w.open: walks not ended), paced by walks ended since every
+      // book was queued. A run of version 2 is never shown here (it starts again by itself).
+      const walked = p.search.walked ?? 0;
+      const total = walked + w.open;
       const since = p.search.since;
-      const paced = since ? p.search.answered - since.answered : 0;
+      const paced = since ? walked - since.answered : 0;
       const pacedMs = since ? now - since.at : 0;
       const left =
         w.open === 0
@@ -1293,7 +1414,7 @@ export function listingBar(
           : paced >= MIN_MEASURED && pacedMs > 0
             ? Math.round((w.open * pacedMs) / paced)
             : null;
-      return { phase: p.phase, done: p.search.answered, total: total || null, leftMs: left };
+      return { phase: p.phase, done: walked, total: total || null, leftMs: left };
     }
     case 'propose': {
       const t = p.propose.total;

@@ -42,15 +42,19 @@ function status(over: Partial<ListingsStatus> = {}): ListingsStatus {
 }
 
 describe('Bookmeter links: the card', () => {
-  it('names the step: queuing first, then the searches with the time left', () => {
-    expect(listingsBar(status())?.label).toBe('Step 1 of 2: Queuing the searches (0 of 40,775)');
+  it('names the step: queuing first, then the authors’ listings with the time left', () => {
+    expect(listingsBar(status())?.label).toBe(
+      'Step 1 of 2: Queuing the books by author (0 of 40,775)'
+    );
     const s = status();
     const b = listingsBar({
       ...s,
       progress: { ...s.progress, search: { ...s.progress.search, enqueued: true } },
-      bar: { phase: 'search', done: 1200, total: 36000, leftMs: 3_600_000 }
+      bar: { phase: 'search', done: 1200, total: 9000, leftMs: 3_600_000 }
     });
-    expect(b?.label).toBe('Step 1 of 2: Searching 読書メーター again (1,200 of 36,000)');
+    expect(b?.label).toBe(
+      'Step 1 of 2: Reading the authors’ listings on 読書メーター (1,200 of 9,000)'
+    );
     expect(b?.eta).toBeTruthy();
     expect(listingsBar(status({ mode: 'off' }))).toBeNull();
   });
@@ -64,12 +68,23 @@ describe('Bookmeter links: the card', () => {
       ...s,
       progress: {
         ...s.progress,
-        search: { looked: 40775, asked: 36000, answered: 36000, enqueued: true, failed: 4 }
+        search: {
+          looked: 40775,
+          asked: 36000,
+          answered: 21000,
+          enqueued: true,
+          failed: 4,
+          authors: 9000,
+          walked: 8000,
+          pages: 21000,
+          decided: 31000
+        }
       }
     });
     expect(lines).toContain(
-      'Looked at 40,775 of 40,775 books with a saved link; 36,000 searched again, 36,000 answered.'
+      'Looked at 40,775 of 40,775 books with a saved link; 36,000 wait for their author’s listings, 31,000 decided.'
     );
+    expect(lines).toContain('Read the listings of 8,000 of 9,000 authors (21,000 pages).');
     expect(lines).toContain(
       'Decided: 1,700 to change, 30,000 already the listing most readers registered, 3 saved to a comic or an adaptation, 12 whose saved listing the searches did not show.'
     );
@@ -79,10 +94,10 @@ describe('Bookmeter links: the card', () => {
     expect(lines).toContain('Links: 1,690 to write, 0 written.');
   });
 
-  it('says that refused searches are asked again, never decided', () => {
+  it('says that refused pages are asked again, never decided', () => {
     const lines = listingsLines(status({ refusedOpen: 12 }));
     expect(lines).toContain(
-      '12 searches were refused by 読書メーター and wait to be asked again (10 minutes, then longer each time). No book is decided until its search is answered.'
+      '12 authors’ pages were refused by 読書メーター and wait to be asked again (10 minutes, then longer each time). No book is decided until its author’s listings are read.'
     );
     expect(listingsLines(status({ books: { keep: 5, unsearched: 2 } }))).toContain(
       'Decided: 0 to change, 5 already the listing most readers registered, 2 読書メーター could not search.'

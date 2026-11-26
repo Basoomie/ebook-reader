@@ -209,10 +209,13 @@ describe('stage 4: online sources (Preview)', () => {
       // Bookmeter's v2 index misses books its plain one finds (live 2026-11-19).
       if (new URL(u).searchParams.get('type') === 'japanese_v2') return html(bookmeterPartial([]));
       const q = decodeURIComponent(new URL(u).searchParams.get('keyword') ?? '');
-      // Bookmeter listings: the author-field search also shows the paperback readers log.
-      const byAuthor = (new URL(u).searchParams.get('author') ?? '') !== '';
+      // Bookmeter listings: with the author field filled Bookmeter ignores the keyword and lists
+      // the author's books, most registered first (checked live, bookmeter-listings.md 8); they
+      // show the paperback readers log.
+      const author = new URL(u).searchParams.get('author') ?? '';
+      const byAuthor = author !== '';
       return html(
-        q.startsWith('魔法使いの旅')
+        q.startsWith('魔法使いの旅') || author === '山田太郎'
           ? bookmeterPartial([
               { id: '777', title: '魔法使いの旅 1 (テスト文庫)', authors: ['山田太郎'], reg: 3 },
               ...(byAuthor

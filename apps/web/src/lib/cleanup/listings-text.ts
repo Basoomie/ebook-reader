@@ -40,6 +40,11 @@ export interface ListingsStatus {
       failed: number;
       gone?: number;
       noAuthor?: number;
+      /** Second look: authors to walk, walks ended, pages read, books decided after their walk. */
+      authors?: number;
+      walked?: number;
+      pages?: number;
+      decided?: number;
     };
     propose: {
       total: number;
@@ -98,12 +103,12 @@ export const LISTINGS_MODE_LABELS: Record<ListingsMode, string> = {
 export const LISTINGS_HINTS: Record<ListingsMode, string> = {
   off: 'Off: nothing is looked at.',
   analyse:
-    'Preview: searches 読書メーター again for every book with a saved link (at its usual pace) and proposes the listing most readers registered, where it is the same book. Nothing is written.',
+    'Preview: reads the 読書メーター listings of the author of every book with a saved link (most registered first, at its usual pace) and proposes the listing most readers registered, where it is the same book. Nothing is written.',
   on: 'On: the changed links are written to Calibre in batches through stage 4. Only the 読書メーター id changes; every other id stays as it is.'
 };
 
 export const LISTINGS_PHASES: Record<ListingsPhase, string> = {
-  search: 'Searching 読書メーター again',
+  search: 'Reading the authors’ listings on 読書メーター',
   propose: 'Preparing the changes',
   spot: 'The spot check waits for you',
   write: 'Writing the links to Calibre',
@@ -158,7 +163,7 @@ export function listingsBar(s: ListingsStatus | null): ProgressBar | null {
   const label =
     (step < 0
       ? LISTINGS_PHASES[b.phase]
-      : `Step ${step + 1} of ${order.length}: ${queuing ? 'Queuing the searches' : LISTINGS_PHASES[b.phase]}`) +
+      : `Step ${step + 1} of ${order.length}: ${queuing ? 'Queuing the books by author' : LISTINGS_PHASES[b.phase]}`) +
     (b.total ? ` (${n(b.done)} of ${n(b.total)})` : b.done ? ` (${n(b.done)})` : '');
   return {
     label,
@@ -178,11 +183,15 @@ export function listingsLines(s: ListingsStatus | null): string[] {
   if (s.siteWait && p.phase === 'search') out.push(`読書メーター's requests wait: ${s.siteWait}.`);
   if (p.search.looked > 0)
     out.push(
-      `Looked at ${n(p.search.looked)} of ${n(p.books)} books with a saved link; ${n(p.search.asked)} searched again, ${n(p.search.answered)} answered.`
+      `Looked at ${n(p.search.looked)} of ${n(p.books)} books with a saved link; ${n(p.search.asked)} wait for their author’s listings, ${n(p.search.decided ?? 0)} decided.`
+    );
+  if (p.search.enqueued && p.search.authors)
+    out.push(
+      `Read the listings of ${n(p.search.walked ?? 0)} of ${n(p.search.authors)} authors (${n(p.search.pages ?? 0)} ${p.search.pages === 1 ? 'page' : 'pages'}).`
     );
   if (s.refusedOpen)
     out.push(
-      `${n(s.refusedOpen)} ${s.refusedOpen === 1 ? 'search was' : 'searches were'} refused by 読書メーター and ${s.refusedOpen === 1 ? 'waits' : 'wait'} to be asked again (10 minutes, then longer each time). No book is decided until its search is answered.`
+      `${n(s.refusedOpen)} ${s.refusedOpen === 1 ? 'author’s page was' : 'authors’ pages were'} refused by 読書メーター and ${s.refusedOpen === 1 ? 'waits' : 'wait'} to be asked again (10 minutes, then longer each time). No book is decided until its author’s listings are read.`
     );
   if (p.search.noAuthor)
     out.push(

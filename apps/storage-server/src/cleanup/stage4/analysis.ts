@@ -100,7 +100,10 @@ import {
   NDL_SPARQL,
   acceptBookmeter,
   BOOKMETER_SEARCH_KEY,
-  bookmeterListingSearch,
+  BOOKMETER_AUTHOR_LIST_KEY,
+  authorWalkGoesOn,
+  bookmeterAuthor,
+  bookmeterAuthorPage,
   bookmeterSearchUrl,
   bookmeterStoresUrl,
   oldBookmeterSearch,
@@ -313,11 +316,14 @@ export interface OnlineEvidence {
     stores?: StoreIds;
     failed?: string;
     /**
-     * Bookmeter listings (2026-11-25): after a match, the same book searched with Bookmeter's
-     * author field (the decided title and first author), and the match picked again over both
-     * answers (the most registered listing that is the book). Its results, or why it failed.
+     * Bookmeter listings (2026-11-25): after a match, more of the book's listings, and the match
+     * picked again over every answer (the most registered listing that is the book). Since the
+     * second look (bookmeter-listings.md 8): the first author's listings, page by page while the
+     * page's last listing has more registrations than the match (Bookmeter ignored the keyword of
+     * the author-field search asked before). Their results merged, the pages read, or why a page
+     * failed.
      */
-    listing?: { hits?: BookmeterHit[]; failed?: string };
+    listing?: { hits?: BookmeterHit[]; failed?: string; pages?: number };
   };
   cover: {
     url: string;
@@ -1744,9 +1750,36 @@ export class Stage4Analysis {
         break;
       }
       case 'bookmeter-listing': {
-        ev.bookmeter.listing = body
-          ? { hits: parseBookmeterSearch(body) }
-          : { failed: failed ?? req.state };
+        // One page of the first author's listings (bookmeter-listings.md 8): merged with the
+        // pages before; the next page while this one's last listing still has more
+        // registrations than the match. A failed page ends the walk with what was read.
+        const prev = ev.bookmeter.listing?.hits ?? [];
+        const key = this.requestKey(requestId) ?? '';
+        const page = Number(key.slice(key.lastIndexOf('\n') + 1)) || 1;
+        if (!body) {
+          ev.bookmeter.listing = { hits: prev, pages: page - 1, failed: failed ?? req.state };
+        } else {
+          const pageHits = parseBookmeterSearch(body);
+          ev.bookmeter.listing = { hits: mergeHits(prev, pageHits), pages: page };
+          const au = bookmeterAuthor(
+            key.startsWith(BOOKMETER_AUTHOR_LIST_KEY)
+              ? [key.slice(BOOKMETER_AUTHOR_LIST_KEY.length, key.lastIndexOf('\n'))]
+              : [],
+          );
+          const matched = ev.bookmeter.accepted
+            ? bookmeterAnswers(ev).find((h) => h.id === ev.bookmeter.accepted!.id)
+            : null;
+          const stop =
+            typeof matched?.registrations === 'number' ? Math.max(0, matched.registrations) : 0;
+          const cap = getSettings(this.db).fetch.bookmeterAuthorPages ?? 8;
+          if (au && authorWalkGoesOn(pageHits, page, stop, cap)) {
+            q.enqueue(
+              { site: 'bookmeter', ...bookmeterAuthorPage(au, page + 1), priority: prio },
+              w('bookmeter-listing'),
+            );
+            break;
+          }
+        }
         close('listing');
         const ref = this.loadRef(p.libraryId, book.uuid)?.file;
         if (ref && ev.bookmeter.accepted) {
@@ -1822,12 +1855,15 @@ export class Stage4Analysis {
       );
       ev.bookmeter.accepted = acc.hit ? { id: acc.hit.id, reason: acc.reason } : null;
       ev.bookmeter.reason = acc.reason;
-      // Bookmeter listings: the book searched with the author field too, before its store list
-      // (the listing readers log is often only there).
-      const listing = acc.hit ? bookmeterListingSearch(d.values.t, d.values.au) : null;
-      if (listing && !ev.bookmeter.listing) {
+      // Bookmeter listings: the first author's listings too, before its store list (the listing
+      // readers log is often only there; bookmeter-listings.md 8).
+      const au = acc.hit ? bookmeterAuthor(d.values.au) : null;
+      if (au && !ev.bookmeter.listing) {
         ev.open.push('listing');
-        q.enqueue({ site: 'bookmeter', ...listing, priority: prio }, w('bookmeter-listing'));
+        q.enqueue(
+          { site: 'bookmeter', ...bookmeterAuthorPage(au, 1), priority: prio },
+          w('bookmeter-listing'),
+        );
       } else if (acc.hit) this.askBookmeterStores(ev, acc.hit.id, prio, w);
     }
     if (ev.cover === null) {
@@ -3804,6 +3840,18 @@ export function bookmeterAnswers(ev: { bookmeter: OnlineEvidence['bookmeter'] })
     const had = out.get(h.id);
     if (!had) out.set(h.id, h);
     else if (typeof had.registrations !== 'number' && typeof h.registrations === 'number')
+      out.set(h.id, { ...had, registrations: h.registrations });
+  }
+  return [...out.values()];
+}
+
+/** Two lists of Bookmeter hits, each listing once in first-seen order (a later count wins). */
+export function mergeHits(a: BookmeterHit[], b: BookmeterHit[]): BookmeterHit[] {
+  const out = new Map<string, BookmeterHit>();
+  for (const h of [...a, ...b]) {
+    const had = out.get(h.id);
+    if (!had) out.set(h.id, h);
+    else if (typeof h.registrations === 'number')
       out.set(h.id, { ...had, registrations: h.registrations });
   }
   return [...out.values()];

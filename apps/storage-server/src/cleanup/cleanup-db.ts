@@ -2720,6 +2720,35 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
       ) WITHOUT ROWID;
     `,
   },
+  {
+    version: 38,
+    name: 'Bookmeter links, second look: the authors whose listings are read page by page',
+    // bookmeter-listings.md 8 (approved 2026-11-25): Bookmeter ignores the keyword of a search
+    // with the author field, so the pass reads each author's listings ("recommended": by
+    // registrations) page by page instead. bookmeter_author_walks: one row per first author in a
+    // run; stop = the fewest registrations a better listing must beat (the lowest saved listing
+    // among the author's books), pages = pages read, state wait (not asked) / walk (a page is
+    // asked) / done, retries = refusals of the open page. A page's waiter is
+    // bookmeter_listing_waiters with calibre_uuid '@' + author. bookmeter_listing_books.author:
+    // the book's walk.
+    sql: `
+      CREATE TABLE bookmeter_author_walks (
+        library_id    TEXT NOT NULL,
+        author        TEXT NOT NULL,
+        stop          INTEGER NOT NULL,
+        pages         INTEGER NOT NULL DEFAULT 0,
+        state         TEXT NOT NULL CHECK (state IN ('wait', 'walk', 'done')),
+        retries       INTEGER NOT NULL DEFAULT 0,
+        updated_at    INTEGER NOT NULL,
+        PRIMARY KEY (library_id, author)
+      ) WITHOUT ROWID;
+      CREATE INDEX bookmeter_author_walks_state
+        ON bookmeter_author_walks (library_id, state, author);
+      ALTER TABLE bookmeter_listing_books ADD COLUMN author TEXT;
+      CREATE INDEX bookmeter_listing_books_author
+        ON bookmeter_listing_books (library_id, author, state);
+    `,
+  },
 ];
 
 export const CLEANUP_SCHEMA_VERSION = CLEANUP_MIGRATIONS[CLEANUP_MIGRATIONS.length - 1].version;
