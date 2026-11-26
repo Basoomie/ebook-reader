@@ -46,6 +46,7 @@ import {
   BOOKMETER_AUTHOR_SEARCH_KEY,
   BOOKMETER_SEARCH_KEY,
   authorWalkGoesOn,
+  walkPagesLeft,
   bookListings,
   bookmeterAuthor,
   bookmeterAuthorPage,
@@ -240,6 +241,8 @@ export interface BlProgress {
      * measured from there (answers already in the cache come at once).
      */
     since: { at: number; answered: number } | null;
+    /** Pages read by time (every 5 minutes, the last hour and a bit): the card's pace. */
+    paceMarks?: [number, number][];
   };
   propose: {
     total: number;
@@ -710,9 +713,11 @@ export class BookmeterListings {
       const author = w.waiter.slice(AUTHOR_WAITER.length);
       const walk = db
         .prepare(
-          'SELECT stop, pages, retries FROM bookmeter_author_walks WHERE library_id = ? AND author = ?',
+          'SELECT stop, pages, retries, first_reg FROM bookmeter_author_walks WHERE library_id = ? AND author = ?',
         )
-        .get(lib, author) as { stop: number; pages: number; retries: number } | undefined;
+        .get(lib, author) as
+        | { stop: number; pages: number; retries: number; first_reg: number | null }
+        | undefined;
       const page = Number(w.rkey.slice(w.rkey.lastIndexOf('\n') + 1)) || 1;
       db.transaction(() => {
         if (walk && w.rstate === 'failed') {
@@ -756,13 +761,23 @@ export class BookmeterListings {
         const hits = parseBookmeterSearch(body);
         p.search.pages = (p.search.pages ?? 0) + 1;
         if (authorWalkGoesOn(hits, page, walk.stop, cap)) {
+          const firstReg = page === 1 ? countOf(hits[0]) : walk.first_reg;
+          const left = walkPagesLeft(
+            firstReg,
+            countOf(hits[hits.length - 1]),
+            page,
+            walk.stop,
+            cap,
+          );
           db.prepare(
-            'UPDATE bookmeter_author_walks SET pages = ?, retries = 0, updated_at = ? WHERE library_id = ? AND author = ?',
-          ).run(page, Date.now(), lib, author);
+            'UPDATE bookmeter_author_walks SET pages = ?, retries = 0, first_reg = ?, left_pages = ?, updated_at = ? WHERE library_id = ? AND author = ?',
+          ).run(page, firstReg, left, Date.now(), lib, author);
           this.askPage(lib, author, page + 1);
         } else this.endWalk(p, lib, author, page);
       })();
     }
+    this.estimateOpenWalks(lib, cap, t0);
+    markPace(p, Date.now());
     // The books of the authors whose walk ended.
     const decided = this.decideWalked(p, lib, t0);
     const open = (
@@ -1330,6 +1345,56 @@ export class BookmeterListings {
     ).n;
   }
 
+  /**
+   * Walks open from before their estimate was kept (a deploy mid-run): pages left from the
+   * pages already read (the cache), a few per step.
+   */
+  private estimateOpenWalks(lib: string, cap: number, t0: number): void {
+    const rows = this.db
+      .prepare(
+        `SELECT author, stop, pages FROM bookmeter_author_walks INDEXED BY bookmeter_author_walks_state
+         WHERE library_id = ? AND state = 'walk' AND pages > 0 AND left_pages IS NULL LIMIT 50`,
+      )
+      .all(lib) as { author: string; stop: number; pages: number }[];
+    const set = this.db.prepare(
+      'UPDATE bookmeter_author_walks SET first_reg = ?, left_pages = ? WHERE library_id = ? AND author = ?',
+    );
+    for (const r of rows) {
+      if (performance.now() - t0 > SLICE_MS) break;
+      const first = this.stored(bookmeterAuthorPage(r.author, 1).key) ?? [];
+      const last =
+        r.pages === 1 ? first : (this.stored(bookmeterAuthorPage(r.author, r.pages).key) ?? []);
+      const firstReg = countOf(first[0]);
+      const left = walkPagesLeft(firstReg, countOf(last[last.length - 1]), r.pages, r.stop, cap);
+      set.run(firstReg, left, lib, r.author);
+    }
+  }
+
+  /**
+   * Pages the open walks still read: each walk's estimate, a walk not estimated yet counted as
+   * the mean pages of the walks ended in this run (at least one).
+   */
+  pagesLeft(lib: string): number {
+    const open = this.db
+      .prepare(
+        `SELECT COUNT(*) AS n, SUM(CASE WHEN w.left_pages IS NULL THEN 1 ELSE 0 END) AS unknown,
+                SUM(COALESCE(w.left_pages, 0)) AS left
+         FROM bookmeter_author_walks w INDEXED BY bookmeter_author_walks_state
+         WHERE w.library_id = ? AND w.state IN ('wait', 'walk')`,
+      )
+      .get(lib) as { n: number; unknown: number | null; left: number | null };
+    if (!open.n) return 0;
+    const ended = this.db
+      .prepare(
+        `SELECT COUNT(*) AS n, SUM(pages) AS pages FROM bookmeter_author_walks INDEXED BY bookmeter_author_walks_state
+         WHERE library_id = ? AND state = 'done'`,
+      )
+      .get(lib) as { n: number; pages: number | null };
+    const mean = ended.n ? Math.max(1, (ended.pages ?? 0) / ended.n) : 1;
+    // An estimated walk's estimate counts its page in flight; a walk without one has it in mean.
+    return Math.round((open.left ?? 0) + (open.unknown ?? 0) * mean);
+  }
+
   /** Authors whose walk has not ended. */
   openSearches(lib: string): number {
     return (
@@ -1374,6 +1439,7 @@ export class BookmeterListings {
       progress: p,
       bar: listingBar(p, now, {
         open: p.phase === 'search' && lib ? this.openSearches(lib) : 0,
+        pagesLeft: p.phase === 'search' && p.search.enqueued && lib ? this.pagesLeft(lib) : null,
         written: (proposals.applied ?? 0) + (proposals.skipped ?? 0),
         toWrite: (proposals.proposed ?? 0) + (proposals.queued ?? 0),
         pace: p.phase === 'write' ? this.writePace(p.write.batches) : null,
@@ -1398,6 +1464,35 @@ export interface BlBar {
   leftMs: number | null;
 }
 
+/** A listing's registrations, or null. */
+function countOf(h: BookmeterHit | undefined): number | null {
+  return h && typeof h.registrations === 'number' ? h.registrations : null;
+}
+
+const PACE_MARK_MS = 5 * 60_000;
+const PACE_WINDOW_MS = 60 * 60_000;
+/** Pages a page pace is measured from before it is trusted. */
+const MIN_PAGES = 30;
+
+/** Adds a mark of the pages read every 5 minutes, keeping a little over the last hour. */
+export function markPace(p: BlProgress, now: number): void {
+  if (!p.search.enqueued) return;
+  const marks = (p.search.paceMarks ??= []);
+  const last = marks[marks.length - 1];
+  if (last && now - last[0] < PACE_MARK_MS) return;
+  marks.push([now, p.search.pages ?? 0]);
+  while (marks.length > 2 && now - marks[1][0] >= PACE_WINDOW_MS) marks.shift();
+}
+
+/** Milliseconds per page over the last hour (the oldest mark kept), or null. */
+export function pagePace(marks: [number, number][], pages: number, now: number): number | null {
+  const from = marks[0];
+  if (!from) return null;
+  const read = pages - from[1];
+  const ms = now - from[0];
+  return read >= MIN_PAGES && ms > 0 ? ms / read : null;
+}
+
 /** Answers or steps a rate is measured from before it is trusted. */
 const MIN_MEASURED = 100;
 
@@ -1411,6 +1506,8 @@ export function listingBar(
   now: number,
   w: {
     open: number;
+    /** Pages the open walks still read (estimated), else null. */
+    pagesLeft?: number | null;
     written: number;
     toWrite: number;
     pace: { ms: number; items: number } | null;
@@ -1428,12 +1525,16 @@ export function listingBar(
       const since = p.search.since;
       const paced = since ? walked - since.answered : 0;
       const pacedMs = since ? now - since.at : 0;
+      // Paced by pages over the last hour (walks differ: one page or up to the cap).
+      const pace = pagePace(p.search.paceMarks ?? [], p.search.pages ?? 0, now);
       const left =
         w.open === 0
           ? 0
-          : paced >= MIN_MEASURED && pacedMs > 0
-            ? Math.round((w.open * pacedMs) / paced)
-            : null;
+          : typeof w.pagesLeft === 'number' && pace
+            ? Math.round(w.pagesLeft * pace)
+            : paced >= MIN_MEASURED && pacedMs > 0
+              ? Math.round((w.open * pacedMs) / paced)
+              : null;
       return { phase: p.phase, done: walked, total: total || null, leftMs: left };
     }
     case 'propose': {

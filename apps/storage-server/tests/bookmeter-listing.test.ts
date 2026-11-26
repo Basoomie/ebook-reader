@@ -22,7 +22,9 @@ import {
   emptyBlProgress,
   listingAnalysisId,
   listingBar,
+  markPace,
   mergeAnswers,
+  pagePace,
   replaceBookmeter,
 } from '../src/cleanup/stage4/bookmeter-listing';
 import { FetchQueue } from '../src/cleanup/stage4/queue';
@@ -34,6 +36,7 @@ import {
   bookmeterAuthor,
   bookmeterAuthorPage,
   parseBookmeterSearch,
+  walkPagesLeft,
   type BookmeterBook,
   type BookmeterHit,
 } from '../src/cleanup/stage4/store-links';
@@ -307,6 +310,46 @@ describe('Bookmeter links: the pick', () => {
     expect(listingBar(p, 401_000, { open: 150, written: 0, toWrite: 0, pace: null })).toMatchObject(
       { done: 200, total: 350, leftMs: 300_000 },
     );
+  });
+
+  it('estimates a walk’s pages left from how fast the counts fall', () => {
+    // Page 1: 1,000 → 500 over 19 listings; the stop 125 is two halvings (38 listings) on: 2 pages.
+    expect(walkPagesLeft(1000, 500, 1, 125, 8)).toBe(2);
+    expect(walkPagesLeft(1000, 500, 1, 499, 8)).toBe(1);
+    expect(walkPagesLeft(1000, 500, 1, 500, 8)).toBe(0);
+    expect(walkPagesLeft(1000, 999, 1, 1, 8)).toBe(7); // to the cap
+    expect(walkPagesLeft(null, 500, 1, 125, 8)).toBe(7);
+    expect(walkPagesLeft(1000, 500, 1, 0, 8)).toBe(7); // no stop: to the cap
+    expect(walkPagesLeft(1000, 500, 8, 125, 8)).toBe(0);
+  });
+
+  it('times the walks by pages over the last hour once they are estimated', () => {
+    const p = emptyBlProgress(1, LIB);
+    p.phaseStartedAt = 0;
+    p.search = {
+      looked: 400,
+      asked: 400,
+      answered: 0,
+      enqueued: true,
+      failed: 0,
+      authors: 350,
+      walked: 300,
+      pages: 0,
+      since: { at: 0, answered: 0 },
+    };
+    const min = 60_000;
+    for (let t = 0; t <= 90 * min; t += min) {
+      p.search.pages = t / min; // 1 page a minute
+      markPace(p, t);
+    }
+    // Only a little over the last hour is kept.
+    expect(90 * min - p.search.paceMarks![0][0]).toBeLessThanOrEqual(65 * min);
+    expect(pagePace(p.search.paceMarks!, p.search.pages!, 90 * min)).toBeCloseTo(min);
+    // 50 walks open with 120 pages left: 2 hours, whatever the walks' pace since queuing.
+    expect(
+      listingBar(p, 90 * min, { open: 50, pagesLeft: 120, written: 0, toWrite: 0, pace: null })
+        .leftMs,
+    ).toBeCloseTo(120 * min, -3);
   });
 });
 
