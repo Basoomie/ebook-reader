@@ -217,10 +217,19 @@ describe('settings', () => {
       applyHelperMinutes: 30,
       fetchHelperMinutes: 30,
       refusalQuietHours: 24,
+      seriesArrivalWaitHours: 24,
     });
     // N2 added Stats, off by default.
     expect(d.sections).toEqual({ jobs: true, cleanup: true, data: true, stats: false });
     expect(d.events.job_failed).toEqual({ discord: true, email: true });
+    // The series-arrival alert starts off (series-arrivals.md).
+    expect(d.events.series_arrival).toEqual({ discord: false, email: false });
+    expect(
+      mergeSettings(d, { events: { series_arrival: { email: true } } }).events.series_arrival,
+    ).toEqual({
+      discord: false,
+      email: true,
+    });
   });
 
   it('validates, and a section switched off keeps its items', () => {

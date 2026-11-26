@@ -16,6 +16,8 @@ export interface EventDef {
   section: SectionId;
   label: string;
   kind: EventKind;
+  /** Off on every channel until the user switches it on (most events start on). */
+  defaultOff?: boolean;
 }
 
 export const SECTIONS: { id: SectionId; label: string }[] = [
@@ -178,6 +180,12 @@ export function getEvent(id: string): EventDef | undefined {
 }
 
 /** Adds an event (later sessions: the daily summaries, Stats). A known id is left as it is. */
+/** An event's switches before the user changes them. */
+export function defaultSwitches(id: string): { discord: boolean; email: boolean } {
+  const on = !getEvent(id)?.defaultOff;
+  return { discord: on, email: on };
+}
+
 export function registerEvent(def: EventDef): void {
   if (!getEvent(def.id)) EVENTS.push({ ...def });
 }
