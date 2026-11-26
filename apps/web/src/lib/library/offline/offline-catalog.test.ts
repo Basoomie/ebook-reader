@@ -208,6 +208,22 @@ describe('offline search terms', () => {
     ).toEqual(['f', 'g', 'n']);
   });
 
+  it('sorts by the day completed, books without one last in either direction', () => {
+    const [few, none, good] = [{ id: 'f' }, { id: 'n' }, { id: 'g' }] as never[];
+    const day: Record<string, number | null> = {
+      f: Date.parse('2026-01-05T00:00:00Z') / 1000,
+      g: Date.parse('2026-03-01T00:00:00Z') / 1000,
+      n: null
+    };
+    const at = (id: string) => day[id];
+    const order = (dir: 'asc' | 'desc') =>
+      [few, none, good]
+        .sort(bookComparator({ key: 'completed', dir }, at))
+        .map((x: { id: string }) => x.id);
+    expect(order('desc')).toEqual(['g', 'f', 'n']);
+    expect(order('asc')).toEqual(['f', 'g', 'n']);
+  });
+
   it('status and favorite from the local records; no record = unread', () => {
     const states = new Map([['a', state('a', { status: 'reading', favorite: true })]]);
     const other = book('o');

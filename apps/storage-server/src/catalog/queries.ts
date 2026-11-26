@@ -20,6 +20,7 @@ import {
   encodeSortCursor,
   sortCursorSql,
   sortOrderSql,
+  sortSelectSql,
 } from './sort';
 
 export interface CatalogUser {
@@ -461,9 +462,12 @@ export function planBooks(
     }
   }
   const where = conds.length ? `WHERE ${conds.map((c) => c.sql).join(' AND ')}` : '';
+  // Date completed adds one computed column (bound to the user) in front of the select list.
+  const extra = bySeriesIndex ? null : sortSelectSql(sort);
+  const select = extra ? BOOK_SELECT.replace('SELECT b.id,', `SELECT ${extra} b.id,`) : BOOK_SELECT;
   return {
-    sql: `${BOOK_SELECT} ${where} ${order} LIMIT ?`,
-    params: [...conds.flatMap((c) => c.params), limit + 1],
+    sql: `${select} ${where} ${order} LIMIT ?`,
+    params: [...(extra ? [user.id] : []), ...conds.flatMap((c) => c.params), limit + 1],
     regex,
     finish(raw) {
       const rows = raw as BookRow[];
