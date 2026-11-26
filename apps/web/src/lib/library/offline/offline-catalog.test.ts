@@ -513,6 +513,65 @@ describe('OfflineCatalog', () => {
   });
 });
 
+describe('OfflineCatalog: status:next by Series last finished', () => {
+  const done = (id: string, finishedOn: string | null) =>
+    state(id, {
+      status: 'completed',
+      readThroughs: [
+        {
+          id: `${id}:1`,
+          number: 1,
+          origin: 'completion',
+          startedOn: null,
+          finished: true,
+          finishedOn,
+          manual: false,
+          charCount: null
+        }
+      ]
+    });
+  const vol = (id: string, series: string, index: number, addedAt: number) =>
+    book(id, { series: { name: series, index }, addedAt });
+  it("lists the next volumes in the Home row's order, paged", async () => {
+    const catalog = new OfflineCatalog(async () =>
+      data({
+        // Added in the opposite order, so Date added would list them the other way.
+        books: [
+          vol('a1', 'A', 1, 1),
+          vol('a2', 'A', 2, 9),
+          vol('b1', 'B', 1, 2),
+          vol('b2', 'B', 2, 8),
+          vol('c1', 'C', 1, 3),
+          vol('c2', 'C', 2, 7),
+          vol('d1', 'D', 1, 4),
+          vol('d2', 'D', 2, 6)
+        ],
+        states: new Map([
+          ['a1', done('a1', '2026-01-05')],
+          ['b1', done('b1', '2026-03-01')],
+          ['c1', done('c1', '2026-02-10')],
+          ['d1', done('d1', null)]
+        ])
+      })
+    );
+    const home = await catalog.nextInSeries();
+    expect(home).toEqual(['b2', 'c2', 'a2', 'd2']);
+    const ids: string[] = [];
+    let cursor: string | undefined;
+    do {
+      const res = await catalog.books({
+        q: 'status:next',
+        sort: { key: 'finished', dir: 'desc' },
+        limit: 1,
+        cursor
+      });
+      ids.push(...res.books.map((b) => b.id));
+      cursor = res.nextCursor ?? undefined;
+    } while (cursor);
+    expect(ids).toEqual(home);
+  });
+});
+
 describe('OfflineCatalog reads', () => {
   it("reads the device once for a page's requests, again after invalidate", async () => {
     let titles = ['one'];

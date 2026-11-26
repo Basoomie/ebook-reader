@@ -39,7 +39,7 @@ import { OfflineCatalog, type OfflineData } from './offline-catalog';
 import { firstServerAnswer, serverReachability, type FirstAnswer } from './reachability';
 import { serverCheckSeconds } from '$lib/library/settings';
 import { nextInSeriesBonus$, nextInSeriesOn$ } from '$lib/library/next-in-series-settings';
-import { listsByBook } from '$lib/bookmeter/plan';
+import { listsByBook, wishRankByBook } from '$lib/bookmeter/plan';
 
 /**
  * The offline Library in the browser: keeping the copies current (copies.ts) and the
@@ -387,7 +387,8 @@ export async function loadOfflineData(): Promise<OfflineData> {
     nextHidden: new Set(hidden.map((h) => h.id)),
     nextOn: nextInSeriesOn$.getValue(),
     nextBonus: nextInSeriesBonus$.getValue(),
-    bookmeterLists: listsByBook(bm.entries)
+    bookmeterLists: listsByBook(bm.entries),
+    bookmeterWishRank: wishRankByBook(bm.entries)
   };
 }
 

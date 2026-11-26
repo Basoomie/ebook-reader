@@ -52,6 +52,34 @@ describe('library sorts', () => {
     );
   });
 
+  it('offers Series last finished only for status:next, newest first by default', () => {
+    expect(sortChoices('books').some((c) => c.key === 'finished')).toBe(false);
+    expect(sortChoices('next').map((c) => c.key)[0]).toBe('finished');
+    expect(defaultSort('next', { books: 'title-asc', groups: '' })).toEqual({
+      key: 'finished',
+      dir: 'desc'
+    });
+    expect(parseSort('finished-asc', 'next')).toEqual({ key: 'finished', dir: 'asc' });
+    expect(parseSort('finished-desc', 'books')).toBeNull();
+    expect(sortLabel({ key: 'finished', dir: 'desc' }, 'next')).toBe(
+      'Series last finished · Newest first'
+    );
+  });
+
+  it('offers 読書メーター order only for bookmeter:wish, newest first by default', () => {
+    expect(sortChoices('books').some((c) => c.key === 'wish')).toBe(false);
+    expect(sortChoices('wish').map((c) => c.key)[0]).toBe('wish');
+    expect(defaultSort('wish', { books: 'title-asc', groups: '' })).toEqual({
+      key: 'wish',
+      dir: 'desc'
+    });
+    expect(parseSort('wish-asc', 'wish')).toEqual({ key: 'wish', dir: 'asc' });
+    expect(parseSort('wish-desc', 'books')).toBeNull();
+    expect(sortLabel({ key: 'wish', dir: 'desc' }, 'wish')).toBe(
+      '読書メーター order · Newest first'
+    );
+  });
+
   it('starts series and lists in their own order, others in the remembered sort', () => {
     expect(defaultSort('series', { books: 'title-asc', groups: '' })).toEqual({
       key: 'series',

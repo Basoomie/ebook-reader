@@ -15,6 +15,10 @@
  *   default (the device's order, with Reorder).
  * - completed: the built-in Completed collection; "Date completed" comes first, newest first,
  *   and is the default there.
+ * - next: the search status:next alone (Home's Next in your series, See all); "Series last
+ *   finished" comes first, newest first, and is the default there: the Home row's order.
+ * - wish: the search bookmeter:wish alone (the 読みたい本 collection); "読書メーター order" comes
+ *   first, newest added first, and is the default there: the order of Bookmeter's wish list.
  * - groups: the Series, Authors and Tags tabs.
  * - notes-books, notes-highlights: the Notes page's two views (sorted on the device; the
  *   last pick per view is remembered there, `notesBookSort` / `notesHighlightSort`).
@@ -34,7 +38,9 @@ export type BookSortKey =
   | 'rating'
   | 'ratings'
   | 'readers'
-  | 'completed';
+  | 'completed'
+  | 'finished'
+  | 'wish';
 
 /** The store ratings' sorts (the cards show their figure only under these). */
 export const RATING_SORT_KEYS: readonly BookSortKey[] = ['rating', 'ratings', 'readers'];
@@ -50,6 +56,8 @@ export interface ServerSort<K extends string> {
 export type SortContext =
   | 'books'
   | 'completed'
+  | 'next'
+  | 'wish'
   | 'series'
   | 'list'
   | 'groups'
@@ -124,6 +132,28 @@ const COMPLETED_CHOICE: SortChoice = {
   defaultDir: 'desc'
 };
 
+/**
+ * Series last finished: offered only for the search status:next, where it is the default (the
+ * day you last finished a volume of the book's series, as the Home row orders them).
+ */
+const NEXT_CHOICE: SortChoice = {
+  key: 'finished',
+  label: 'Series last finished',
+  dirLabels: { asc: 'Oldest first', desc: 'Newest first' },
+  defaultDir: 'desc'
+};
+
+/**
+ * 読書メーター order: offered only for the search bookmeter:wish, where it is the default (the
+ * place on your 読みたい本 list, the book added last first, as Bookmeter shows it).
+ */
+const WISH_CHOICE: SortChoice = {
+  key: 'wish',
+  label: '読書メーター order',
+  dirLabels: { asc: 'Oldest first', desc: 'Newest first' },
+  defaultDir: 'desc'
+};
+
 const GROUP_CHOICES: SortChoice[] = [
   {
     key: 'newest',
@@ -190,6 +220,8 @@ export function sortChoices(context: SortContext): SortChoice[] {
   if (context === 'groups') return GROUP_CHOICES;
   if (context === 'books') return BOOK_CHOICES;
   if (context === 'completed') return [COMPLETED_CHOICE, ...BOOK_CHOICES];
+  if (context === 'next') return [NEXT_CHOICE, ...BOOK_CHOICES];
+  if (context === 'wish') return [WISH_CHOICE, ...BOOK_CHOICES];
   if (context === 'notes-books') return NOTES_BOOK_CHOICES;
   if (context === 'notes-highlights') return NOTES_HIGHLIGHT_CHOICES;
   return [
@@ -221,6 +253,10 @@ export function defaultSort(
   if (context === 'series' || context === 'list') return { key: context, dir: 'asc' };
   // The Completed collection always opens newest completed first (not the device's last pick).
   if (context === 'completed') return { key: 'completed', dir: 'desc' };
+  // status:next always opens in the Home row's order.
+  if (context === 'next') return { key: 'finished', dir: 'desc' };
+  // bookmeter:wish always opens in Bookmeter's own order.
+  if (context === 'wish') return { key: 'wish', dir: 'desc' };
   if (context === 'groups') return parseSort(remembered.groups, 'groups') ?? DEFAULT_GROUP_SORT;
   return parseSort(remembered.books, 'books') ?? DEFAULT_BOOK_SORT;
 }

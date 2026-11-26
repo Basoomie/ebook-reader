@@ -40,7 +40,11 @@ export function compareCodePoints(a: string, b: string): number {
   return 0;
 }
 
-/** The day (UTC midnight, seconds) a book was last finished, or null: the server's `sort_completed`. */
+/**
+ * The day (UTC midnight, seconds) a computed sort reads, or null: for Date completed the day the
+ * book was last finished (the server's `sort_completed`), for Series last finished the day a
+ * volume of its series was last finished (`sort_finished`). The caller passes the sort's own.
+ */
 export type CompletedAt = (bookId: string) => number | null;
 
 function sortValue(
@@ -71,6 +75,8 @@ function sortValue(
     case 'readers':
       return book.readers ?? (asc ? HIGH_NUMBER : -1);
     case 'completed':
+    case 'finished':
+    case 'wish':
       return completedAt?.(book.id) ?? (asc ? HIGH_NUMBER : -1);
   }
 }
