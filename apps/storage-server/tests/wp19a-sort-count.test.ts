@@ -207,9 +207,10 @@ describe('book sorts (GET /books?sort=&dir=)', () => {
       ratings: { asc: 'books_sort_ratings_asc', desc: 'books_sort_ratings_desc' },
       readers: { asc: 'books_sort_readers_asc', desc: 'books_sort_readers_desc' },
     };
-    // Date completed is worked out per book from the user's records (the Completed collection's
-    // few hundred books), so it has no index: see completed-sort.test.ts.
-    for (const key of BOOK_SORT_KEYS.filter((k) => k !== 'completed')) {
+    // Date completed and Series last finished are worked out per book from the user's records
+    // (the Completed collection's few hundred books, status:next's few dozen), so they have no
+    // index: see completed-sort.test.ts and next-in-series.test.ts.
+    for (const key of BOOK_SORT_KEYS.filter((k) => k !== 'completed' && k !== 'finished')) {
       for (const dir of SORT_DIRS) {
         const sort: BookSort = { key, dir };
         const first = planBooks(c.e.db, c.user, { sort, limit: 2, query: 'a chars:<1000' });

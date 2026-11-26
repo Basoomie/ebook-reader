@@ -38,7 +38,8 @@ import {
   groupComparator,
   newestFirst,
   seriesOrder,
-  volumeOrder
+  volumeOrder,
+  type CompletedAt
 } from './sort';
 
 /**
@@ -118,6 +119,16 @@ function completedAtOf(state: BookState | undefined): number | null {
   return best === null ? null : Date.parse(`${best}T00:00:00Z`) / 1000;
 }
 
+/** The day a computed sort reads (offline/sort.ts CompletedAt), from this device's data. */
+function dayOfSort(data: OfflineData, key: BookSortKey): CompletedAt | undefined {
+  if (key === 'completed') return (id) => completedAtOf(data.states.get(id));
+  if (key !== 'finished') return undefined;
+  // Series last finished: the Home row's day (only the next volumes have one; status:next).
+  const days = new Map<string, number>();
+  for (const e of offlineNext(data)) if (e.finishedAt > 0) days.set(e.bookId, e.finishedAt / 1000);
+  return (id) => days.get(id) ?? null;
+}
+
 const NO_LISTS: ReadonlySet<string> = new Set();
 
 const DEFAULT_PAGE_SIZE = 50;
@@ -136,7 +147,8 @@ const BOOK_SORTS: BookSortKey[] = [
   'rating',
   'ratings',
   'readers',
-  'completed'
+  'completed',
+  'finished'
 ];
 const GROUP_SORTS: GroupSortKey[] = ['newest', 'name', 'count'];
 
@@ -348,9 +360,7 @@ export class OfflineCatalog {
       query.sort && BOOK_SORTS.includes(query.sort.key as BookSortKey)
         ? (query.sort as ServerSort<BookSortKey>)
         : DEFAULT_SORT;
-    list.sort(
-      bySeriesIndex ? seriesOrder : bookComparator(sort, (id) => completedAtOf(data.states.get(id)))
-    );
+    list.sort(bySeriesIndex ? seriesOrder : bookComparator(sort, dayOfSort(data, sort.key)));
     const { items, nextCursor } = page(list, query.cursor, query.limit);
     return { books: items.map(summaryOf), nextCursor };
   }

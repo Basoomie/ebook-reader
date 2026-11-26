@@ -16,7 +16,8 @@
  * - `nextInSeriesOn` off: nothing.
  * - Order: the series whose volume you finished last first, by the finished read-throughs'
  *   finishedOn only (the day the Completed collection sorts by, and the web's rule), then by
- *   book id; a series with no such day last. Never when a record was saved: a bulk import
+ *   book id (newest first, as the search status:next sorted by Series last finished); a
+ *   series with no such day last. Never when a record was saved: a bulk import
  *   saves every completion at once (2026-11-25, the row came out in save order).
  */
 import type Database from 'better-sqlite3';
@@ -88,7 +89,7 @@ export function nextInSeriesSelect(userId: string): { sql: string; params: unkno
 /** The next volumes' ids in the Home row's order. */
 export function nextInSeriesIds(db: Database.Database, userId: string): string[] {
   const { sql, params } = nextInSeriesSelect(userId);
-  const rows = db.prepare(`SELECT id FROM (${sql}) ORDER BY at DESC, id`).all(...params) as {
+  const rows = db.prepare(`SELECT id FROM (${sql}) ORDER BY at DESC, id DESC`).all(...params) as {
     id: string;
   }[];
   return rows.map((r) => r.id);

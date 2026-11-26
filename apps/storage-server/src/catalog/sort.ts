@@ -26,7 +26,8 @@ export type BookSortKey =
   | 'rating'
   | 'ratings'
   | 'readers'
-  | 'completed';
+  | 'completed'
+  | 'finished';
 export type SortDir = 'asc' | 'desc';
 
 export interface BookSort {
@@ -45,6 +46,7 @@ export const BOOK_SORT_KEYS: BookSortKey[] = [
   'ratings',
   'readers',
   'completed',
+  'finished',
 ];
 export const SORT_DIRS: SortDir[] = ['asc', 'desc'];
 
@@ -77,6 +79,8 @@ export interface SortRow {
   readers: number | null;
   /** The Date completed sort's value (planBooks selects it as `sort_completed`). */
   sort_completed?: number | null;
+  /** The Series last finished sort's value (planBooks selects it as `sort_finished`). */
+  sort_finished?: number | null;
 }
 
 const COLUMNS: Record<BookSortKey, SortColumn> = {
@@ -153,15 +157,33 @@ const COLUMNS: Record<BookSortKey, SortColumn> = {
     sql: { asc: 'sort_completed', desc: 'sort_completed' },
     value: (r) => r.sort_completed ?? -1,
   },
+  // Series last finished (the search status:next only, next-in-series.ts): the latest
+  // finish day (seconds, UTC midnight) of any finished read-through in the book's series and
+  // library, the Home row's order. Selected as `sort_finished`; books without one last.
+  finished: {
+    type: 'number',
+    sql: { asc: 'sort_finished', desc: 'sort_finished' },
+    value: (r) => r.sort_finished ?? -1,
+  },
 };
 
 /**
- * The select-list part a sort needs (Date completed), with the user id it binds: `null` for
+ * The select-list part a sort needs (Date completed, Series last finished), with the user id it binds: `null` for
  * the sorts that read a column of `b`. Ends with a comma.
  */
 export function sortSelectSql(sort: BookSort): string | null {
-  if (sort.key !== 'completed') return null;
   const none = sort.dir === 'asc' ? HIGH_NUMBER : -1;
+  if (sort.key === 'finished') {
+    return `IFNULL((SELECT MAX(CAST(strftime('%s', json_extract(r.data, '$.finishedOn')) AS INTEGER))
+                     FROM books fb
+                     JOIN sync_records r ON r.book_id = fb.id AND r.user_id = ?
+                      AND r.kind = 'read-through' AND r.deleted_at IS NULL
+                      AND json_extract(r.data, '$.finished') = 1
+                    WHERE fb.series_id = b.series_id AND fb.library_id = b.library_id
+                      AND fb.series_index IS NOT NULL),
+                   ${none}) AS sort_finished,`;
+  }
+  if (sort.key !== 'completed') return null;
   return `IFNULL((SELECT MAX(CAST(strftime('%s', json_extract(r.data, '$.finishedOn')) AS INTEGER))
                    FROM sync_records r
                   WHERE r.book_id = b.id AND r.user_id = ? AND r.kind = 'read-through'

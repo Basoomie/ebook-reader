@@ -1310,6 +1310,8 @@
       if (c?.type === 'manual') return 'list';
       return collectionId === 'completed' ? 'completed' : 'books';
     }
+    // Next in your series' See all: the search status:next alone, in the Home row's order.
+    if (appliedQuery.trim().toLowerCase() === 'status:next') return 'next';
     return 'books';
   }
 
