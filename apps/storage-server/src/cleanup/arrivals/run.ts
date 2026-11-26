@@ -3201,21 +3201,9 @@ export class BookArrivals {
     ).n;
     const cm = this.count(p, 'move');
     cm.total = p.move.auto;
-    // A move batch's proposals stay queued until the whole batch ends (1,025 books in one batch
-    // in run 7, ~13 s each): count its books already moved or settled, so the bar moves.
-    const open = p.move.batches;
-    const inFlight = open.length
-      ? (
-          this.db
-            .prepare(
-              `SELECT COUNT(*) AS n FROM batch_items i JOIN batches b ON b.id = i.batch_id
-               WHERE i.batch_id IN (${open.map(() => '?').join(', ')}) AND b.finished_at IS NULL
-                 AND i.state IN ('removed', 'failed', 'skipped')`,
-            )
-            .get(...open) as { n: number }
-        ).n
-      : 0;
-    cm.done = Math.min(p.move.auto, Math.max(0, p.move.auto - left) + inFlight);
+    // Each moved book's proposal is applied as it moves (move-batches.ts), so this counts
+    // inside an open batch too; it runs before the wait on that batch so the bar moves.
+    cm.done = Math.max(0, p.move.auto - left);
     const wait = mv.writeWait(libraryId, target);
     if (wait) {
       p.waiting = wait;
