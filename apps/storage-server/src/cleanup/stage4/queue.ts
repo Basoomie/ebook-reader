@@ -199,6 +199,25 @@ export class FetchQueue {
       .get(site, key);
   }
 
+  /**
+   * Answered requests of a site whose address starts with `urlPrefix`, finished at or after
+   * `since`, oldest first (store ratings read 読書メーター's 登録数 from the saved searches).
+   */
+  answeredSince(
+    site: string,
+    urlPrefix: string,
+    since: number,
+  ): { id: number; finishedAt: number }[] {
+    return this.db
+      .prepare(
+        `SELECT id, finished_at AS finishedAt FROM fetch_requests
+         WHERE site = ? AND state = 'done' AND cache_file IS NOT NULL
+           AND substr(url, 1, ?) = ? AND finished_at >= ?
+         ORDER BY finished_at`,
+      )
+      .all(site, urlPrefix.length, urlPrefix, since) as { id: number; finishedAt: number }[];
+  }
+
   /** A request's state ('queued', 'leased', 'done', 'gone', 'failed'), or null when unknown. */
   requestState(id: number): string | null {
     const r = this.db.prepare('SELECT state FROM fetch_requests WHERE id = ?').get(id) as

@@ -59,6 +59,7 @@
   import BookLinksSettings from '$lib/components/settings/book-links-settings.svelte';
   import NativelyLevelSettings from '$lib/components/settings/natively-level-settings.svelte';
   import StoreRatingsSettings from '$lib/components/settings/store-ratings-settings.svelte';
+  import BookmeterSettings from '$lib/components/settings/bookmeter-settings.svelte';
   import {
     bookLinksMoreAs$,
     bookLinksPlacement$,
@@ -1540,6 +1541,12 @@
       </SettingRow>
       <SettingRow id="store-ratings" shared layout="stack">
         {#if browser}<StoreRatingsSettings />{/if}
+      </SettingRow>
+    </SettingsGroup>
+    <!-- Bookmeter sync (2026-11-25): after Book page. -->
+    <SettingsGroup id="library-bookmeter">
+      <SettingRow id="bookmeter-sync" shared layout="stack">
+        {#if browser}<BookmeterSettings />{/if}
       </SettingRow>
     </SettingsGroup>
     <!-- Book summaries session 4: after Book page. -->
