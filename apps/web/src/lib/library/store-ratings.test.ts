@@ -10,6 +10,7 @@ import {
   RATING_PARTS,
   cardRatingText,
   ratingPieces,
+  ratingSummary,
   refreshLeftText,
   volumeOneText
 } from './store-ratings';
@@ -35,7 +36,7 @@ const answer: BookRatingsAnswer = {
 };
 
 describe('ratingPieces (the book page line)', () => {
-  it('leads with the pooled figure, then each store, never stars', () => {
+  it('leads with the pooled figure, then each store (stars are drawn, not in the text)', () => {
     const texts = ratingPieces(answer, RATING_PARTS, { bookmeter: true }).map((p) => [
       p.label,
       p.text
@@ -83,6 +84,41 @@ describe('ratingPieces (the book page line)', () => {
       refreshing: false
     };
     expect(ratingPieces(none, RATING_PARTS, { bookmeter: true })).toEqual([]);
+  });
+});
+
+describe('ratingSummary (the book page: one line, breakdown on tap)', () => {
+  const features = { bookmeter: true };
+  it('heads with the pooled figure, readers beside it, every store in the breakdown', () => {
+    const s = ratingSummary(ratingPieces(answer, RATING_PARTS, features));
+    expect(s.headline?.part).toBe('pooled');
+    expect([s.headline?.avg, s.headline?.count]).toEqual([4.3, 251]);
+    expect(s.readers?.count).toBe(12850);
+    expect(s.rows.map((r) => r.part)).toEqual(['amazon_jp', 'bookwalker', 'bookmeter', 'natively']);
+    expect(s.checkedAt).toBe(1_700_000_000_000);
+  });
+
+  it('heads with a named store when the pooled figure is not shown', () => {
+    const s = ratingSummary(ratingPieces(answer, ['bookwalker', 'natively'], features));
+    expect(s.headline?.part).toBe('bookwalker');
+    expect(s.headline?.label).toBe('BOOK☆WALKER');
+    // Natively's learners head only when no store has stars.
+    const n = ratingSummary(ratingPieces(answer, ['natively', 'bookmeter'], features));
+    expect(n.headline?.part).toBe('natively');
+    expect(n.readers?.count).toBe(12850);
+  });
+
+  it('readers alone, or nothing', () => {
+    const r = ratingSummary(ratingPieces(answer, ['bookmeter'], features));
+    expect(r.headline).toBeNull();
+    expect(r.readers?.count).toBe(12850);
+    expect(ratingSummary([])).toEqual({ headline: null, readers: null, rows: [], checkedAt: null });
+  });
+
+  it('offline: the pooled figure with nothing to open', () => {
+    const s = ratingSummary(ratingPieces({ ...answer, sites: {} }, RATING_PARTS, features));
+    expect(s.headline?.part).toBe('pooled');
+    expect(s.rows).toEqual([]);
   });
 });
 
