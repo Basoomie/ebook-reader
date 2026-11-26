@@ -37,6 +37,21 @@ describe('library sorts', () => {
     expect(sortChoices('list')[0]).toMatchObject({ key: 'list', label: 'Collection order' });
   });
 
+  it('offers Date completed only in the Completed collection, newest first', () => {
+    expect(sortChoices('books').some((c) => c.key === 'completed')).toBe(false);
+    expect(sortChoices('completed').map((c) => c.key)[0]).toBe('completed');
+    // The device's remembered sort doesn't change the Completed collection's default.
+    expect(defaultSort('completed', { books: 'title-asc', groups: '' })).toEqual({
+      key: 'completed',
+      dir: 'desc'
+    });
+    expect(parseSort('completed-asc', 'completed')).toEqual({ key: 'completed', dir: 'asc' });
+    expect(parseSort('completed-asc', 'books')).toBeNull();
+    expect(sortLabel({ key: 'completed', dir: 'desc' }, 'completed')).toBe(
+      'Date completed · Newest first'
+    );
+  });
+
   it('starts series and lists in their own order, others in the remembered sort', () => {
     expect(defaultSort('series', { books: 'title-asc', groups: '' })).toEqual({
       key: 'series',

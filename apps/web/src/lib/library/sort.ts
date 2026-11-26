@@ -13,6 +13,8 @@
  * - series: one series; its own order ("Series order") comes first and is the default.
  * - list: a manual collection; its own order ("Collection order") comes first and is the
  *   default (the device's order, with Reorder).
+ * - completed: the built-in Completed collection; "Date completed" comes first, newest first,
+ *   and is the default there.
  * - groups: the Series, Authors and Tags tabs.
  * - notes-books, notes-highlights: the Notes page's two views (sorted on the device; the
  *   last pick per view is remembered there, `notesBookSort` / `notesHighlightSort`).
@@ -31,7 +33,8 @@ export type BookSortKey =
   | 'level'
   | 'rating'
   | 'ratings'
-  | 'readers';
+  | 'readers'
+  | 'completed';
 
 /** The store ratings' sorts (the cards show their figure only under these). */
 export const RATING_SORT_KEYS: readonly BookSortKey[] = ['rating', 'ratings', 'readers'];
@@ -46,6 +49,7 @@ export interface ServerSort<K extends string> {
 
 export type SortContext =
   | 'books'
+  | 'completed'
   | 'series'
   | 'list'
   | 'groups'
@@ -112,6 +116,14 @@ const BOOK_CHOICES: SortChoice[] = [
   }
 ];
 
+/** Date completed: offered only in the Completed collection, where it is the default. */
+const COMPLETED_CHOICE: SortChoice = {
+  key: 'completed',
+  label: 'Date completed',
+  dirLabels: { asc: 'Oldest first', desc: 'Newest first' },
+  defaultDir: 'desc'
+};
+
 const GROUP_CHOICES: SortChoice[] = [
   {
     key: 'newest',
@@ -177,6 +189,7 @@ const OWN_LABEL: Record<'series' | 'list', string> = {
 export function sortChoices(context: SortContext): SortChoice[] {
   if (context === 'groups') return GROUP_CHOICES;
   if (context === 'books') return BOOK_CHOICES;
+  if (context === 'completed') return [COMPLETED_CHOICE, ...BOOK_CHOICES];
   if (context === 'notes-books') return NOTES_BOOK_CHOICES;
   if (context === 'notes-highlights') return NOTES_HIGHLIGHT_CHOICES;
   return [
@@ -206,6 +219,8 @@ export function defaultSort(
   remembered: { books: string; groups: string }
 ): SortValue {
   if (context === 'series' || context === 'list') return { key: context, dir: 'asc' };
+  // The Completed collection always opens newest completed first (not the device's last pick).
+  if (context === 'completed') return { key: 'completed', dir: 'desc' };
   if (context === 'groups') return parseSort(remembered.groups, 'groups') ?? DEFAULT_GROUP_SORT;
   return parseSort(remembered.books, 'books') ?? DEFAULT_BOOK_SORT;
 }

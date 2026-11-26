@@ -40,7 +40,15 @@ export function compareCodePoints(a: string, b: string): number {
   return 0;
 }
 
-function sortValue(book: CatalogBook, key: BookSortKey, dir: SortDir): number | string {
+/** The day (UTC midnight, seconds) a book was last finished, or null: the server's `sort_completed`. */
+export type CompletedAt = (bookId: string) => number | null;
+
+function sortValue(
+  book: CatalogBook,
+  key: BookSortKey,
+  dir: SortDir,
+  completedAt?: CompletedAt
+): number | string {
   const asc = dir === 'asc';
   switch (key) {
     case 'added':
@@ -62,6 +70,8 @@ function sortValue(book: CatalogBook, key: BookSortKey, dir: SortDir): number | 
       return book.storeRating?.count ?? (asc ? HIGH_NUMBER : -1);
     case 'readers':
       return book.readers ?? (asc ? HIGH_NUMBER : -1);
+    case 'completed':
+      return completedAt?.(book.id) ?? (asc ? HIGH_NUMBER : -1);
   }
 }
 
@@ -75,13 +85,16 @@ export const DEFAULT_SORT: ServerSort<BookSortKey> = { key: 'added', dir: 'desc'
 
 /** A book comparator for a sort (ties by id in the same direction). */
 export function bookComparator(
-  sort: ServerSort<BookSortKey> = DEFAULT_SORT
+  sort: ServerSort<BookSortKey> = DEFAULT_SORT,
+  completedAt?: CompletedAt
 ): (a: CatalogBook, b: CatalogBook) => number {
   const sign = sort.dir === 'asc' ? 1 : -1;
   return (a, b) =>
     sign *
-    (compareValues(sortValue(a, sort.key, sort.dir), sortValue(b, sort.key, sort.dir)) ||
-      compareCodePoints(a.id, b.id));
+    (compareValues(
+      sortValue(a, sort.key, sort.dir, completedAt),
+      sortValue(b, sort.key, sort.dir, completedAt)
+    ) || compareCodePoints(a.id, b.id));
 }
 
 /** Series order: index (none = -1), date added, id. */

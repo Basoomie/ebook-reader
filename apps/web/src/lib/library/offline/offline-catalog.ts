@@ -108,6 +108,16 @@ export function offlineNext(data: OfflineData): NextEntry[] {
   return entries;
 }
 
+/** Date completed: the latest finished read-through's day as seconds (UTC), else null. */
+function completedAtOf(state: BookState | undefined): number | null {
+  let best: string | null = null;
+  for (const rt of state?.readThroughs ?? []) {
+    if (rt.finished && rt.finishedOn && (best === null || rt.finishedOn > best))
+      best = rt.finishedOn;
+  }
+  return best === null ? null : Date.parse(`${best}T00:00:00Z`) / 1000;
+}
+
 const NO_LISTS: ReadonlySet<string> = new Set();
 
 const DEFAULT_PAGE_SIZE = 50;
@@ -125,7 +135,8 @@ const BOOK_SORTS: BookSortKey[] = [
   'level',
   'rating',
   'ratings',
-  'readers'
+  'readers',
+  'completed'
 ];
 const GROUP_SORTS: GroupSortKey[] = ['newest', 'name', 'count'];
 
@@ -337,7 +348,9 @@ export class OfflineCatalog {
       query.sort && BOOK_SORTS.includes(query.sort.key as BookSortKey)
         ? (query.sort as ServerSort<BookSortKey>)
         : DEFAULT_SORT;
-    list.sort(bySeriesIndex ? seriesOrder : bookComparator(sort));
+    list.sort(
+      bySeriesIndex ? seriesOrder : bookComparator(sort, (id) => completedAtOf(data.states.get(id)))
+    );
     const { items, nextCursor } = page(list, query.cursor, query.limit);
     return { books: items.map(summaryOf), nextCursor };
   }

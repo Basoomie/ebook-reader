@@ -1307,7 +1307,8 @@
     if (group) return 'books';
     if (collectionId !== null) {
       const c = collectionList.find((x) => x.id === collectionId);
-      return c?.type === 'manual' ? 'list' : 'books';
+      if (c?.type === 'manual') return 'list';
+      return collectionId === 'completed' ? 'completed' : 'books';
     }
     return 'books';
   }
@@ -1645,7 +1646,7 @@
         {
           q: appliedQuery || undefined,
           scope,
-          sort: serverSort(sortValue, 'books'),
+          sort: serverSort(sortValue, sortContext),
           cursor: reset ? undefined : (nextCursor ?? undefined)
         },
         { signal }
