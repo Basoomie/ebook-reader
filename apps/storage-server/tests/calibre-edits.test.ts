@@ -803,6 +803,31 @@ describe('the user’s edits through the apply sidecar', () => {
     expect(quarantinePictures()).toEqual([]);
   });
 
+  it('book covers: the same picture at another size stays pickable, marked as a look-alike', async () => {
+    // Found live 2026-11-25 (吾輩は猫である): the earlier 1549 × 2200 picture beside the
+    // 1803 × 2560 cover now was taken for "now" and the Earlier covers row was hidden.
+    const id = book(ids.A);
+    const w = worker();
+    const big = await patterned(3);
+    const small = await sharp(big).resize(400, 600).jpeg().toBuffer();
+    await newCover(id, small, w);
+    await newCover(id, big, w);
+    const list = await request(env.app)
+      .get(`/api/v1/books/${id}/calibre-edit/covers`)
+      .set(auth(user))
+      .expect(200);
+    const rows = list.body.covers as {
+      width: number;
+      current: boolean;
+      same: boolean;
+    }[];
+    expect(rows.filter((c) => c.current).map((c) => c.width)).toEqual([600]);
+    const smaller = rows.find((c) => c.width === 400)!;
+    expect(smaller).toMatchObject({ current: false, same: true });
+    // The original (a different picture) is neither.
+    expect(rows[0]).toMatchObject({ current: false, same: false });
+  });
+
   it('book covers: a cover changed in Calibre’s own program is kept too', async () => {
     const id = book(ids.A);
     await env.lib.setCover(ids.A, 150);

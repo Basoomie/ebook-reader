@@ -10,7 +10,7 @@
  * (a stage paused, a refused change, a snapshot) only add to this or ask for a round now.
  */
 import type Database from 'better-sqlite3';
-import { getEvent, listEvents, SECTIONS } from './events';
+import { defaultSwitches, getEvent, listEvents, SECTIONS } from './events';
 import {
   DISCORD_MAX,
   FetchLike,
@@ -176,7 +176,7 @@ export class NotificationService {
   channelsFor(event: string, settings = this.settings()): Channel[] {
     const def = getEvent(event);
     if (!def || !settings.sections[def.section]) return [];
-    const sw = settings.events[event] ?? { discord: true, email: true };
+    const sw = settings.events[event] ?? defaultSwitches(event);
     return CHANNELS.filter((c) => sw[c] && this.channelReady(c, settings));
   }
 

@@ -641,6 +641,22 @@ export class BookArrivals {
 
   // ---------------------------------------------------------------- runs
 
+  /**
+   * The new arrivals are done with the books the reader's index first saw before this time
+   * (series-arrivals.md 3.2): Off: every book (Infinity); a run open: none (-Infinity); else
+   * the last run's end (the run that added a book, or the one that took in a book added by
+   * hand, ended after it was seen). Read only.
+   */
+  doneBefore(): number {
+    const s = this.state();
+    if (s.mode === 'off') return Infinity;
+    if (s.current_run !== null) return -Infinity;
+    const r = this.db.prepare('SELECT MAX(finished_at) AS at FROM calibre_arrival_runs').get() as {
+      at: number | null;
+    };
+    return r.at ?? -Infinity;
+  }
+
   currentRun(): (RunRow & { p: RunProgress }) | null {
     const s = this.state();
     if (s.current_run === null) return null;

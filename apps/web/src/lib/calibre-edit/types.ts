@@ -114,8 +114,10 @@ export interface EarlierCover {
   bytes: number;
   firstAt: number;
   lastAt: number;
-  /** Looks like the cover Calibre has now. */
+  /** Calibre's cover now (its exact bytes). */
   current: boolean;
+  /** Looks like the cover now (another file of the same picture, e.g. another size). */
+  same: boolean;
 }
 
 export interface EarlierCovers {

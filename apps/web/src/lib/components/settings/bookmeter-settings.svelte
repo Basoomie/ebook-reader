@@ -35,10 +35,7 @@
   let api: LibraryApi | null = null;
   let status: BookmeterStatusAnswer | null = null;
   let libraries: { id: string; name: string }[] = [];
-  let draft: Pick<
-    BookmeterServerSettings,
-    'quickMinutes' | 'fullHours' | 'askAbove' | 'notifyArrived'
-  > | null = null;
+  let draft: Pick<BookmeterServerSettings, 'quickMinutes' | 'fullHours' | 'askAbove'> | null = null;
   let loadError = '';
   let saveError = '';
   let savedNote = '';
@@ -70,8 +67,7 @@
         draft = {
           quickMinutes: s.quickMinutes,
           fullHours: s.fullHours,
-          askAbove: s.askAbove,
-          notifyArrived: s.notifyArrived
+          askAbove: s.askAbove
         };
       }
       loadError = '';
@@ -119,8 +115,7 @@
     !!settings &&
     (draft.quickMinutes !== settings.quickMinutes ||
       draft.fullHours !== settings.fullHours ||
-      draft.askAbove !== settings.askAbove ||
-      draft.notifyArrived !== settings.notifyArrived);
+      draft.askAbove !== settings.askAbove);
 
   function libraryName(id: string): string {
     return libraries.find((l) => l.id === id)?.name ?? id;
@@ -488,17 +483,6 @@
           <span>changes at once</span>
         </label>
         <p class="text-sm text-c-muted">The first changes of a new account always ask first.</p>
-        <label class="flex items-center gap-3">
-          <input
-            type="checkbox"
-            checked={draft.notifyArrived}
-            on:change={(e) =>
-              draft && (draft = { ...draft, notifyArrived: e.currentTarget.checked })}
-          />
-          <span
-            >Tell me when a book on 読みたい本 arrives in the library (Settings › Notifications)</span
-          >
-        </label>
         <div class="flex items-center gap-3">
           <button
             type="button"

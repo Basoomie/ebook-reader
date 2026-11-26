@@ -43,7 +43,7 @@ export const PART_LABELS: Record<RatingPart, string> = {
   amazon_jp: 'Amazon',
   bookwalker: 'BOOK☆WALKER',
   bookmeter: '読書メーター readers',
-  natively: 'Natively learners'
+  natively: 'Natively'
 };
 
 /** What the server shows (GET /ratings/features); 読書メーター off until it says so. */
@@ -161,9 +161,25 @@ export function ratingSummary(pieces: readonly RatingPiece[]): RatingSummary {
     pieces.find((p) => p.avg !== null) ??
     null;
   const readers = pieces.find((p) => p.part === 'bookmeter') ?? null;
-  const rows = pieces.filter((p) => p.part !== 'pooled');
+  // Every store with stars first, so the stars line up; 読書メーター's readers last.
+  const rows = pieces
+    .filter((p) => p.part !== 'pooled')
+    .sort((a, b) => Number(a.avg === null) - Number(b.avg === null));
   const latest = Math.max(0, ...pieces.map((p) => p.checkedAt ?? 0));
   return { headline, readers, rows, checkedAt: latest > 0 ? latest : null };
+}
+
+/** A store's name in the breakdown (its rows say what the figure counts). */
+export function breakdownLabel(piece: RatingPiece): string {
+  if (piece.part === 'bookmeter') return '読書メーター';
+  return piece.label;
+}
+
+const COMPACT = new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 });
+
+/** "87.1K": the summary line's numbers when the full ones don't fit on one line. */
+export function formatCompact(n: number): string {
+  return n < 1000 ? formatCount(n) : COMPACT.format(n);
 }
 
 /** "4,731 ratings", "1 rating". */

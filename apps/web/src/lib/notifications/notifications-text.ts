@@ -66,6 +66,13 @@ export const WAIT_FIELDS: {
     unit: 'hours',
     min: 1,
     max: 168
+  },
+  {
+    key: 'seriesArrivalWaitHours',
+    label: 'A new volume of a series you’re reading waits for the new-arrivals run, at most',
+    unit: 'hours',
+    min: 1,
+    max: 168
   }
 ];
 

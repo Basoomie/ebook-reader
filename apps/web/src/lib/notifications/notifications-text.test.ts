@@ -44,13 +44,14 @@ describe('notifications text', () => {
     );
   });
 
-  it('has the five wait times with the server’s limits', () => {
+  it('has the six wait times with the server’s limits', () => {
     expect(WAIT_FIELDS.map((w) => w.key)).toEqual([
       'pcWaitingHours',
       'pcProblemMinutes',
       'applyHelperMinutes',
       'fetchHelperMinutes',
-      'refusalQuietHours'
+      'refusalQuietHours',
+      'seriesArrivalWaitHours'
     ]);
   });
 

@@ -584,7 +584,8 @@ export class BookmeterSync {
           'INSERT INTO bookmeter_arrivals (account_id, listing_id, book_id, told_at) VALUES (?, ?, ?, ?)',
         )
         .run(a.id, e.listing_id, bookId, this.now());
-      if (any || !s.notifyArrived || !this.notifications) continue;
+      // On or off in Settings › Notifications (its own switch per channel).
+      if (any || !this.notifications) continue;
       try {
         const link = `/library/book?id=${encodeURIComponent(bookId)}`;
         const text = `A book on your 読みたい本 is in the library: ${e.title}`;
