@@ -47,6 +47,8 @@ module.exports = (async () => {
         // WP21e-1: the audiobook linking sidecar's build output.
         'apps/cleanup-link/dist/**',
         'apps/storage-server/tests/fixtures/wp20a/**',
+        // Books without an EPUB: the stand-in ebook-convert and calibre-debug of its tests.
+        'apps/storage-server/tests/fixtures/formats/**',
         // Plain Node test tooling shared by the apps (the per-run temp folder for vitest).
         'tools/**'
       ]

@@ -1183,7 +1183,7 @@ export class BookArrivals {
     const rows = this.db
       .prepare(
         `SELECT calibre_id, added_at FROM calibre_known_books INDEXED BY calibre_known_books_waiting
-         WHERE library_id = ? AND origin = 'hand' AND run_id IS NULL`,
+         WHERE library_id = ? AND origin IN ('hand', 'format') AND run_id IS NULL`,
       )
       .all(libraryId) as { calibre_id: number; added_at: number }[];
     // Books a Preview run took in were only shown: the first On run takes them in again and
@@ -1194,7 +1194,7 @@ export class BookArrivals {
           .prepare(
             `SELECT k.calibre_id, k.added_at FROM calibre_known_books k INDEXED BY calibre_known_books_waiting
              JOIN calibre_arrival_runs r ON r.id = k.run_id
-             WHERE k.library_id = ? AND k.origin = 'hand' AND k.run_id IS NOT NULL AND r.mode = 'analyse'`,
+             WHERE k.library_id = ? AND k.origin IN ('hand', 'format') AND k.run_id IS NOT NULL AND r.mode = 'analyse'`,
           )
           .all(libraryId) as { calibre_id: number; added_at: number }[]),
       );

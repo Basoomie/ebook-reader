@@ -9,7 +9,7 @@
 #
 # Allowed: `list`; `set_metadata <id> --field ...` for the fields the sidecar may set;
 # `remove <id>` (one book, to Calibre's trash, never --permanent); `export <id>` into a folder
-# under TTSU_EXPORT_DIRS (the quarantine) only; `add` (1.6.1) in exactly the sidecar's three forms:
+# under TTSU_EXPORT_DIRS (the quarantine; 1.7.0 also its conversion folder) only; `add` (1.6.1) in exactly the sidecar's three forms:
 # a quarantined export folder (`--duplicates --one-book-per-directory <folder>` under
 # TTSU_EXPORT_DIRS: the move and Undo's re-add) and one arrival EPUB from its own temporary
 # folder (`--duplicates [--title <title>] <…/ttsu-arrival-<n>/<name>.epub>`). The sidecar builds

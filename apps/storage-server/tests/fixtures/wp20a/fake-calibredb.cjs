@@ -901,6 +901,52 @@ switch (sub) {
     process.stdout.write(`Added book ids: ${id}\n`);
     break;
   }
+  case 'add_format': {
+    // 1.7.0: add_format --dont-replace <id> <file>. FAKE_ADD_FORMAT_TIMEOUT=after: the request
+    // times out (408) although the format was added.
+    if (!has('--dont-replace')) fail('add_format needs --dont-replace here');
+    const file = argv[argv.length - 1];
+    const id = Number(argv[argv.length - 2]);
+    const b = bookRow(id);
+    if (!b) fail(`No book with id ${id}`);
+    const fmt = path.extname(file).slice(1).toUpperCase();
+    const have = formats(id);
+    if (have.some((f) => f.format === fmt)) break; // --dont-replace: left as it is
+    const name = have[0] ? have[0].name : `Book ${id} - Author ${id}`;
+    const folder = path.join(lib, ...b.path.split('/'));
+    fs.mkdirSync(folder, { recursive: true });
+    fs.copyFileSync(file, path.join(folder, `${name}.${fmt.toLowerCase()}`));
+    db.prepare('INSERT INTO data (book, format, uncompressed_size, name) VALUES (?, ?, ?, ?)').run(
+      id,
+      fmt,
+      fs.statSync(file).size,
+      name,
+    );
+    db.prepare('UPDATE books SET last_modified = ? WHERE id = ?').run(nowText(), id);
+    touchDb();
+    if (process.env.FAKE_ADD_FORMAT_TIMEOUT === 'after')
+      fail(
+        'mechanize._response.get_seek_wrapper_class.<locals>.httperror_seek_wrapper: HTTP Error 408: Request Timeout',
+      );
+    break;
+  }
+  case 'remove_format': {
+    // 1.7.0: remove_format <id> <fmt>.
+    const fmt = argv[argv.length - 1].toUpperCase();
+    const id = Number(argv[argv.length - 2]);
+    const b = bookRow(id);
+    if (!b) fail(`No book with id ${id}`);
+    const f = formats(id).find((x) => x.format === fmt);
+    if (f) {
+      fs.rmSync(path.join(lib, ...b.path.split('/'), `${f.name}.${fmt.toLowerCase()}`), {
+        force: true,
+      });
+      db.prepare('DELETE FROM data WHERE book = ? AND format = ?').run(id, fmt);
+      db.prepare('UPDATE books SET last_modified = ? WHERE id = ?').run(nowText(), id);
+      touchDb();
+    }
+    break;
+  }
   default:
     fail(`Unknown command ${sub}`);
 }

@@ -52,6 +52,7 @@ import {
 import type { CleanupOptions } from './cleanup/routes';
 import { onStagePaused } from './cleanup/stages';
 import { setOnMovePaused } from './cleanup/move/state';
+import { setOnFormatsPaused } from './cleanup/formats/state';
 import { onAudioStagePaused } from './cleanup/audio/audio-stages';
 import { parseNotificationsConfig } from './notifications/config';
 import { NotificationService } from './notifications/service';
@@ -578,6 +579,7 @@ if (notifications && database.ok) {
   onStagePaused(() => notifier.poke());
   onAudioStagePaused(() => notifier.poke());
   setOnMovePaused(() => notifier.poke());
+  setOnFormatsPaused(() => notifier.poke());
 }
 
 // Book summaries session 2: the accuracy test, only on the PC's test copy (SUMMARIES_TEST=1).

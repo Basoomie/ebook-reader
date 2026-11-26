@@ -303,6 +303,7 @@ export function arrivalsList(
   if (list === 'hand') {
     const total = (
       db
+<<<<<<< HEAD
         .prepare(
           `SELECT COUNT(*) AS n FROM calibre_known_books WHERE origin = 'hand'${libraryId ? ' AND library_id = ?' : ''}`,
         )
@@ -312,6 +313,17 @@ export function arrivalsList(
       .prepare(
         `SELECT calibre_id, calibre_uuid, added_at, settled_at, run_id FROM calibre_known_books
          WHERE origin = 'hand'${libraryId ? ' AND library_id = ?' : ''} ORDER BY added_at DESC LIMIT ? OFFSET ?`,
+=======
+        .prepare(`SELECT COUNT(*) AS n FROM calibre_known_books WHERE origin IN ('hand', 'format')`)
+        .get() as {
+        n: number;
+      }
+    ).n;
+    const items = db
+      .prepare(
+        `SELECT calibre_id, calibre_uuid, origin, added_at, settled_at, run_id FROM calibre_known_books
+         WHERE origin IN ('hand', 'format') ORDER BY added_at DESC LIMIT ? OFFSET ?`,
+>>>>>>> b52509d8 (feat(cleanup): books without an EPUB: convert, check, fold proven copies (sidecar 1.7.0))
       )
       .all(...L, lim, off);
     return { total, items };

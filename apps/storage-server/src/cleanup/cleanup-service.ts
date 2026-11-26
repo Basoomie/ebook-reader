@@ -58,7 +58,15 @@ import { SeriesPairs, seriesPairsAnalysisId } from './series-pairs/pass';
 import { MovePass } from './move/pass';
 import { recentPaceLeftMs } from './move/pace';
 import { moveAnalysisId } from './move/state';
-import { MOVE_SIDECAR_VERSION, MOVE_STAGE } from './field-stages';
+import {
+  FORMATS_SIDECAR_VERSION,
+  FORMATS_STAGE,
+  MOVE_SIDECAR_VERSION,
+  MOVE_STAGE,
+} from './field-stages';
+import { FormatsPass } from './formats/pass';
+import { formatsAnalysisId } from './formats/state';
+import { LISTED_TEXT } from './formats/select';
 import { booksWithReaderData } from './handoff';
 import { LinkDiscovery } from './stage4/link-discovery';
 import { BookmeterListings } from './stage4/bookmeter-listing';
@@ -1297,6 +1305,7 @@ export class CleanupService {
     this.runBookmeter();
     this.runSeriesPairs();
     this.runMove();
+    this.runFormats();
     this.runLinks();
     this.runListings();
   }
@@ -1327,6 +1336,95 @@ export class CleanupService {
   /** After the user's change on the card: work at once. */
   moveChanged(): void {
     this.runMove();
+  }
+
+  /**
+   * Books without an EPUB: the pass in its own loop (each step short: a select reads the
+   * snapshot once; a check or a comparison is one book). Woken by the 5 s round, the card and
+   * each answer from the sidecar.
+   */
+  runFormats(): void {
+    if (this.formatsRunning || this.stopped) return;
+    const pass = this.formats;
+    this.formatsRunning = (async () => {
+      try {
+        for (let i = 0; i < 1000; i++) {
+          if (this.stopped) break;
+          const r = await pass.step(() => this.stopped);
+          if (r === 'idle' || r === 'wait') break;
+          await new Promise((res) => setImmediate(res));
+        }
+      } catch (err) {
+        this.logError('Cleanup: books without an EPUB failed:', err);
+      } finally {
+        this.formatsRunning = null;
+      }
+    })();
+  }
+
+  formatsChanged(): void {
+    this.runFormats();
+  }
+
+  /**
+   * Why the pass's write must wait now: a batch open, an earlier stage still writing, the safety
+   * checks, and a sidecar that converts and adds formats (1.7.0).
+   */
+  private formatsWriteWait(lib: string): string | null {
+    if (this.batches.open()) return 'A batch is being applied';
+    for (const [s, left] of [
+      [1, () => this.remaining(lib)],
+      [2, () => this.remaining2(lib)],
+      [3, () => this.remaining3(lib)],
+      [4, () => this.remaining4(lib)],
+      [5, () => this.remaining5(lib)],
+    ] as [number, () => number][]) {
+      if (getStage(this.db, s).mode === 'on' && left() > 0)
+        return `Waiting for stage ${s} to finish writing`;
+    }
+    const checks = this.checksPass();
+    if (!checks.ok) return `Waiting for the safety checks: ${checks.failing.join('; ')}`;
+    if (!this.batches.sidecarAtLeast(FORMATS_SIDECAR_VERSION))
+      return `The cleanup sidecar is older than ${FORMATS_SIDECAR_VERSION}: rebuild ttsu-cleanup-apply`;
+    return null;
+  }
+
+  /** The books-without-an-EPUB card: mode, phase, counts, bars with the time left, the spot check. */
+  formatsStatus(): unknown {
+    const pass = this.formats;
+    const st = pass.state();
+    const p = st.progress;
+    const lib = p.libraryId ?? this.targetLibrary();
+    const sidecarReady = this.batches.sidecarAtLeast(FORMATS_SIDECAR_VERSION);
+    return {
+      mode: st.mode,
+      pausedReason: st.pausedReason,
+      pausedDetail: st.pausedDetail,
+      analysisId: formatsAnalysisId(p.run),
+      progress: p,
+      bars: lib ? pass.bars(lib) : [],
+      counts: lib ? pass.counts(lib) : null,
+      listedText: LISTED_TEXT,
+      spot: pass.spotCounts(),
+      spotPassed: pass.spotPassed(),
+      sidecar: {
+        ready: sidecarReady,
+        need: FORMATS_SIDECAR_VERSION,
+      },
+      batches: pass.batchesOf(20).map((b) => ({
+        id: b.id,
+        kind: b.kind,
+        state: b.state,
+        itemCount: b.itemCount,
+        createdAt: b.createdAt,
+        finishedAt: b.finishedAt,
+        undoOf: b.undoOf,
+        error: b.error,
+        counts: this.batches.itemCounts(b.id),
+      })),
+      stage: FORMATS_STAGE,
+      library: lib ? { id: lib, folder: getLibrary(this.opts.main, lib)?.folder ?? null } : null,
+    };
   }
 
   /**

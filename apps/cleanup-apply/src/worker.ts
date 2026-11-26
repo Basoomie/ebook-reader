@@ -47,6 +47,7 @@ import { CalibredbHelper } from './calibredb-helper';
 import { exists, Quarantine, sha256File } from './quarantine';
 import { ArrivalWorker } from './arrivals';
 import { columnShape, MOVE_STAGE, MoveWorker } from './move';
+import { FORMATS_STAGE, FormatWorker, type FormatPrograms } from './formats';
 
 /**
  * 1.1.0 (WP20e): stage 4 batches write fields as stage 2's do (series, series_index, comments).
@@ -67,6 +68,10 @@ import { columnShape, MOVE_STAGE, MoveWorker } from './move';
  * 1.7.0 (manga part B): an add batch of the new arrivals names its library (the folder's pair:
  * japanese-library or manga-library) and is added there; #illustrator is checked in every library
  * the cleanup works on, each result naming its library.
+ * 1.8.0 (books without an EPUB): conversion jobs (formats.ts: export, inspect, ebook-convert in
+ * its own work folder, upload) when no batch waits, and stage-12 batches: add_format of a checked
+ * EPUB to its own book, or a proven copy folded into its EPUB twin (its file added there, the
+ * copy removed the stage-1 way); Undo by remove_format (only a format the pass added).
  */
 export const SIDECAR_VERSION = '1.7.0';
 
@@ -177,6 +182,8 @@ export interface WorkerOptions {
   retryMinMs?: number;
   retryMaxMs?: number;
   fetchImpl?: typeof fetch;
+  /** For tests: stand-ins for ebook-convert and calibre-debug (1.7.0). */
+  formatPrograms?: FormatPrograms;
 }
 
 export class Worker {
@@ -187,6 +194,8 @@ export class Worker {
   readonly arrivals: ArrivalWorker;
   /** 1.6.0: moving books to another library (manga part A). */
   readonly moves: MoveWorker;
+  /** 1.7.0: books without an EPUB (conversion jobs and stage-12 items). */
+  readonly formats: FormatWorker;
   /** 1.6.0: the running batch's own library (null: the login's). */
   private batchLibrary: string | null = null;
   /** 1.6.0: the library the move puts books in (from the server), checked with the others. */
@@ -235,7 +244,8 @@ export class Worker {
               program: c.helper.program,
               args: ['-e', c.helper.script],
               // The only folder the helper may export into (checked again in Python).
-              env: { TTSU_EXPORT_DIRS: c.quarantineDir },
+              // 1.7.0: and the conversion jobs' own folder (a book's file exported to convert it).
+              env: { TTSU_EXPORT_DIRS: `${c.quarantineDir}:${c.formatTmpDir}` },
               log: (m) => this.log.info(m)
             })
           : null
@@ -269,12 +279,32 @@ export class Worker {
         writeWaitSeconds: c.writeWaitSeconds
       }
     });
+    this.formats = new FormatWorker({
+      calibredb: this.calibredb,
+      quarantine: this.quarantine,
+      api: this.api.formats,
+      tmpDir: c.formatTmpDir,
+      programs: opts.formatPrograms ?? {
+        ebookConvert: c.ebookConvert,
+        calibreDebug: c.calibreDebug,
+        helperScript: c.formatsHelper
+      },
+      log: this.log,
+      isStopped: () => this.stopped,
+      retry: (fn) => this.retry(fn),
+      report: (batch, item, r) => this.report(batch, item, r),
+      pollUntil: (until, check) => this.pollUntil(until, check),
+      undoRemoval: (batch, item, plan, after) =>
+        this.undoItem(batch, item, plan as TrashRestorePlan, after),
+      waits: { writeWaitSeconds: c.writeWaitSeconds, removeWaitSeconds: c.removeWaitSeconds }
+    });
     this.retryMinMs = opts.retryMinMs ?? 2000;
     this.retryMaxMs = opts.retryMaxMs ?? 60000;
   }
 
   stop(): void {
     this.stopped = true;
+    this.formats.kill();
   }
 
   /** Runs until stop(). */
@@ -334,6 +364,8 @@ export class Worker {
       // WP20g: the import's add batches when no cleanup batch is waiting.
       const lib: Login = { ...this.login, libraryId: this.login.libraryId };
       if (await this.retry(() => this.arrivals.cycle(lib))) return 'batch';
+      // 1.7.0: a conversion job of the books without an EPUB (reads Calibre, writes nothing).
+      if (await this.formats.cycle(lib)) return 'batch';
       if (wait) this.log.info(`No batch yet: ${wait}`);
       return 'idle';
     }
@@ -662,11 +694,15 @@ export class Worker {
         }
         const final =
           batch.kind === 'apply'
-            ? ['removed', 'failed', 'skipped']
+            ? ['removed', 'written', 'failed', 'skipped']
             : ['restored', 'failed', 'skipped'];
         if (final.includes(item.state)) continue;
         try {
-          if (batch.stage === MOVE_STAGE) {
+          if (batch.stage === FORMATS_STAGE) {
+            if (batch.kind === 'apply')
+              await this.formats.applyItem(batch, item, this.requireLogin());
+            else await this.formats.undoItem(batch, item, this.requireLogin(), plan!);
+          } else if (batch.stage === MOVE_STAGE) {
             if (batch.kind === 'apply')
               await this.moves.applyItem(batch, item, this.requireLogin(), this.targetLogin(batch));
             else
@@ -1136,7 +1172,12 @@ export class Worker {
    * Undo: the tags this removal added to the kept copy come off again (only those; other tags,
    * also ones the user added since, stay), then the item is reported as brought back.
    */
-  private async restored(batch: Batch, item: BatchItem, report: StepReport): Promise<void> {
+  private async restored(
+    batch: Batch,
+    item: BatchItem,
+    report: StepReport,
+    after?: () => Promise<void>
+  ): Promise<void> {
     if (item.addTags.length > 0) {
       const login = this.requireLogin();
       const kept = await this.calibredb.book(login, item.kept.calibreId);
@@ -1146,6 +1187,8 @@ export class Worker {
         if (left.length !== kept.tags.length) await this.calibredb.setTags(login, kept.id, left);
       }
     }
+    // 1.7.0: a fold's Undo takes the format it gave the twin off again, once the copy is back.
+    if (after) await after();
     await this.report(batch, item, report);
   }
 
@@ -1280,7 +1323,12 @@ export class Worker {
     });
   }
 
-  private async undoItem(batch: Batch, item: BatchItem, plan: TrashRestorePlan): Promise<void> {
+  private async undoItem(
+    batch: Batch,
+    item: BatchItem,
+    plan: TrashRestorePlan,
+    after?: () => Promise<void>
+  ): Promise<void> {
     const login = this.requireLogin();
     // Already back (an earlier attempt's report was lost, or Calibre finished after a restart)?
     let present: Awaited<ReturnType<Calibredb['book']>> | undefined;
@@ -1291,12 +1339,17 @@ export class Worker {
       this.log.info(`Calibre didn't answer yet: ${shorten((err as Error).message, 160)}`);
     }
     if (present && present.uuid === item.uuid) {
-      await this.restored(batch, item, {
-        step: 'restored',
-        method: 'trash',
-        calibreId: item.calibreId,
-        uuid: item.uuid
-      });
+      await this.restored(
+        batch,
+        item,
+        {
+          step: 'restored',
+          method: 'trash',
+          calibreId: item.calibreId,
+          uuid: item.uuid
+        },
+        after
+      );
       return;
     }
     if (plan.requested.includes(item.calibreId)) {
@@ -1307,12 +1360,17 @@ export class Worker {
           `Calibre hasn't brought this book back from its trash within ${min} min of asking. It may still be working on it: Undo again later (books already back are recognized; nothing is added twice).`
         );
       }
-      await this.restored(batch, item, {
-        step: 'restored',
-        method: 'trash',
-        calibreId: back.id,
-        uuid: back.uuid
-      });
+      await this.restored(
+        batch,
+        item,
+        {
+          step: 'restored',
+          method: 'trash',
+          calibreId: back.id,
+          uuid: back.uuid
+        },
+        after
+      );
       this.log.info(`Restored ${item.calibreId} from Calibre's trash`);
       return;
     }
@@ -1322,7 +1380,13 @@ export class Worker {
     // Not in Calibre's trash any more (expired or emptied): the quarantine copy below.
     // Re-add the quarantined export (new Calibre id and UUID).
     const dir = item.quarantineDir;
-    if (!dir || !(await this.quarantine.epubIn(dir))) {
+    // 1.7.0: a folded copy has no EPUB; its export holds its own file (AZW3, ZIP…).
+    const bookFile = !dir
+      ? null
+      : batch.stage === FORMATS_STAGE
+        ? await this.quarantine.bookFileIn(dir)
+        : await this.quarantine.epubIn(dir);
+    if (!dir || !bookFile) {
       await this.report(batch, item, {
         step: 'failed',
         detail: "Not in Calibre's trash and the quarantine copy is gone"
@@ -1337,12 +1401,17 @@ export class Worker {
       ).then((r) => (r ? r.book : undefined));
       if (present === undefined) throw new Error("Calibre didn't answer; Undo again later");
       if (present && present.uuid === item.uuid) {
-        await this.restored(batch, item, {
-          step: 'restored',
-          method: 'trash',
-          calibreId: item.calibreId,
-          uuid: item.uuid
-        });
+        await this.restored(
+          batch,
+          item,
+          {
+            step: 'restored',
+            method: 'trash',
+            calibreId: item.calibreId,
+            uuid: item.uuid
+          },
+          after
+        );
         return;
       }
     }
@@ -1361,12 +1430,17 @@ export class Worker {
       before = (JSON.parse(await fsp.readFile(note, 'utf8')) as { idsBefore: number[] }).idsBefore;
       const earlier = await newSinceNote(before);
       if (earlier) {
-        await this.restored(batch, item, {
-          step: 'restored',
-          method: 'readd',
-          calibreId: earlier.id,
-          uuid: earlier.uuid
-        });
+        await this.restored(
+          batch,
+          item,
+          {
+            step: 'restored',
+            method: 'readd',
+            calibreId: earlier.id,
+            uuid: earlier.uuid
+          },
+          after
+        );
         return;
       }
     } else {
@@ -1402,12 +1476,17 @@ export class Worker {
       );
       if (!back) throw err;
     }
-    await this.restored(batch, item, {
-      step: 'restored',
-      method: 'readd',
-      calibreId: back.id,
-      uuid: back.uuid
-    });
+    await this.restored(
+      batch,
+      item,
+      {
+        step: 'restored',
+        method: 'readd',
+        calibreId: back.id,
+        uuid: back.uuid
+      },
+      after
+    );
     this.log.info(`Re-added ${item.calibreId} from the quarantine as ${back.id}`);
   }
 }

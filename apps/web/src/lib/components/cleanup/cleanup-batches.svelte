@@ -24,7 +24,8 @@
     undoFileMetadataBatchCopy,
     undoOnlineSourcesBatchCopy,
     undoGenresTagsBatchCopy,
-    undoMoveBatchCopy
+    undoMoveBatchCopy,
+    undoFormatsBatchCopy
   } from '$lib/confirm/confirm-copy';
   import { formatWhen } from '$lib/notes/notes-format';
   import CopyRow from './cleanup-copy-row.svelte';
@@ -48,6 +49,20 @@
     failed: 'Failed'
   };
   const moveItemState = (s: string) => MOVE_ITEM_STATES[s] ?? s;
+  // Books without an EPUB (stage 12): an EPUB added to its book, or a copy folded into its twin.
+  const FORMAT_ITEM_STATES: Record<string, string> = {
+    pending: 'Waiting',
+    verified: 'Checked',
+    exported: 'Copy saved to the quarantine',
+    tagged: 'Its file and tags given to the EPUB book',
+    written: 'EPUB added',
+    removed: 'Copy folded into its EPUB book',
+    restored: 'Taken back',
+    skipped: 'Skipped',
+    failed: 'Failed'
+  };
+  const itemState = (stage: number, s: string) =>
+    stage === 12 ? (FORMAT_ITEM_STATES[s] ?? s) : moveItemState(s);
   export let batches: CleanupBatch[] = [];
 
   const dispatch = createEventDispatcher<{ changed: void }>();
@@ -77,17 +92,23 @@
   async function undo(batch: CleanupBatch) {
     undoError = '';
     const count =
-      (writesFields(batch) ? batch.counts?.written : batch.counts?.removed) ?? batch.itemCount;
+      (batch.stage === 12
+        ? (batch.counts?.written ?? 0) + (batch.counts?.removed ?? 0)
+        : writesFields(batch)
+          ? batch.counts?.written
+          : batch.counts?.removed) ?? batch.itemCount;
     const copy =
       batch.stage === 5
         ? undoGenresTagsBatchCopy(count)
         : batch.stage === 11
           ? undoMoveBatchCopy(count)
-          : batch.stage === 4
-            ? undoOnlineSourcesBatchCopy(count)
-            : batch.stage === 2
-              ? undoFileMetadataBatchCopy(count)
-              : undoCleanupBatchCopy(count);
+          : batch.stage === 12
+            ? undoFormatsBatchCopy(count)
+            : batch.stage === 4
+              ? undoOnlineSourcesBatchCopy(count)
+              : batch.stage === 2
+                ? undoFileMetadataBatchCopy(count)
+                : undoCleanupBatchCopy(count);
     if (!(await confirmDestructive({ ...copy, testid: 'cleanup-undo-confirm' }))) {
       return;
     }
@@ -155,7 +176,7 @@
               {#each items as item (item.id)}
                 {#if openStage === 2 || openStage === 4}
                   <FieldRow {item} state={item.state} detail={item.detail ?? null} />
-                {:else if openStage === 11}
+                {:else if openStage === 11 || openStage === 12}
                   <!-- Manga part A: a moved book (its title, the state, and why it failed). -->
                   <li
                     class="c-tile flex flex-col gap-1 rounded p-3 text-sm"
@@ -163,7 +184,7 @@
                   >
                     <span class="font-bold">{moveItemTitle(item)}</span>
                     <span class="text-c-muted"
-                      >Calibre #{item.calibre_id} · {moveItemState(item.state)}</span
+                      >Calibre #{item.calibre_id} · {itemState(openStage, item.state)}</span
                     >
                     {#if item.detail}<span>{item.detail}</span>{/if}
                   </li>

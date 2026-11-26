@@ -13,6 +13,7 @@ import type {
 } from './series-pairs-text';
 import type { ArrivalsStatus } from './arrivals-text';
 import type { MoveBook, MoveHold, MoveMode, MoveStatus } from './move-text';
+import type { FormatsBook, FormatsList, FormatsMode, FormatsStatus } from './formats-text';
 import type {
   BookmeterMatch,
   BookmeterMode,
@@ -2899,5 +2900,65 @@ export class CleanupApi {
     return this.request('PUT', `/cleanup/move/spot/${encodeURIComponent(uuid)}`, {
       verdict
     }) as Promise<MoveStatus>;
+  }
+
+  // ---- Books without an EPUB (non-epub-books.md) ----
+
+  formats(): Promise<FormatsStatus> {
+    return this.request('GET', '/cleanup/formats') as Promise<FormatsStatus>;
+  }
+
+  setFormatsMode(mode: FormatsMode): Promise<FormatsStatus> {
+    return this.request('PUT', '/cleanup/formats/mode', { mode }) as Promise<FormatsStatus>;
+  }
+
+  formatsAgain(): Promise<FormatsStatus> {
+    return this.request('POST', '/cleanup/formats/again') as Promise<FormatsStatus>;
+  }
+
+  formatsResume(): Promise<FormatsStatus> {
+    return this.request('POST', '/cleanup/formats/resume') as Promise<FormatsStatus>;
+  }
+
+  formatsBooks(
+    which: FormatsList,
+    reason: string | null,
+    offset = 0,
+    limit = 20
+  ): Promise<{ total: number; books: FormatsBook[] }> {
+    const q = new URLSearchParams({ which, offset: String(offset), limit: String(limit) });
+    if (reason) q.set('reason', reason);
+    return this.request('GET', `/cleanup/formats/books?${q}`) as Promise<{
+      total: number;
+      books: FormatsBook[];
+    }>;
+  }
+
+  chooseFormats(changeId: number, choice: 'fold' | 'convert' | 'leave'): Promise<FormatsStatus> {
+    return this.request('POST', `/cleanup/formats/review/${changeId}`, {
+      choice
+    }) as Promise<FormatsStatus>;
+  }
+
+  formatsSpot(): Promise<{ books: FormatsBook[] }> {
+    return this.request('GET', '/cleanup/formats/spot') as Promise<{ books: FormatsBook[] }>;
+  }
+
+  setFormatsVerdict(uuid: string, verdict: 'right' | 'wrong' | null): Promise<FormatsStatus> {
+    return this.request('PUT', `/cleanup/formats/spot/${encodeURIComponent(uuid)}`, {
+      verdict
+    }) as Promise<FormatsStatus>;
+  }
+
+  /** The checked EPUB of a book on the card (to open it in a reader before marking it). */
+  async formatsEpub(uuid: string): Promise<Blob> {
+    const response = await send(
+      this.fetchImpl,
+      `${this.serverUrl}/api/v1/cleanup/formats/epub/${encodeURIComponent(uuid)}`,
+      { method: 'GET', headers: { Authorization: `Bearer ${this.token}` } },
+      { timeoutSeconds: 0 }
+    );
+    if (!response.ok) throw await errorFrom(response);
+    return response.blob();
   }
 }

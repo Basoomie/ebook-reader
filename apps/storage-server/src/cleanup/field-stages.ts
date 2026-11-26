@@ -22,3 +22,13 @@ export const MOVE_STAGE = 11;
 
 /** The sidecar version that moves books and uses each batch's own library (1.6.0). */
 export const MOVE_SIDECAR_VERSION = '1.6.0';
+
+/**
+ * Books without an EPUB (non-epub-books.md): the batches that add an EPUB made for a book to its
+ * own record (add_format), or fold a proven copy into its EPUB twin (its file added there, the
+ * copy removed the stage-1 way). Their items have their own steps (formats/format-batches.ts).
+ */
+export const FORMATS_STAGE = 12;
+
+/** The sidecar version that converts books and runs add_format / remove_format (1.7.0). */
+export const FORMATS_SIDECAR_VERSION = '1.7.0';

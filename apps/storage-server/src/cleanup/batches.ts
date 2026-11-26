@@ -28,10 +28,14 @@ import type Database from 'better-sqlite3';
 import {
   EDIT_SIDECAR_VERSION,
   EDIT_STAGE,
+  FORMATS_SIDECAR_VERSION,
+  FORMATS_STAGE,
   isFieldStage,
   MOVE_SIDECAR_VERSION,
   MOVE_STAGE,
 } from './field-stages';
+import { FormatBatches } from './formats/format-batches';
+import { pauseFormats } from './formats/state';
 import { MoveBatches } from './move/move-batches';
 import { pauseMove } from './move/state';
 import { movedFrom } from './move/rekey';
@@ -321,6 +325,8 @@ export class BatchService {
   readonly edits: Stage2Batches;
   /** Manga part A: moving books to another Calibre library (stage 11). */
   readonly moves: MoveBatches;
+  /** Books without an EPUB: an EPUB added to its book, or a copy folded into its twin (stage 12). */
+  readonly formats: FormatBatches;
 
   /** The field-write path of a stage (2, 4, 5 or the user's edits). */
   fieldWriter(stage: number): Stage2Batches {
@@ -345,6 +351,7 @@ export class BatchService {
     this.stage5 = new Stage2Batches(this, deps, 5);
     this.edits = new Stage2Batches(this, deps, EDIT_STAGE);
     this.moves = new MoveBatches(this, deps);
+    this.formats = new FormatBatches(this, deps);
   }
 
   private get db() {
@@ -909,6 +916,11 @@ export class BatchService {
           wait: `The cleanup sidecar is older than 1.${need}.0: rebuild ttsu-cleanup-apply before stage ${batch.stage} writes`,
         };
     }
+    if (batch.stage === FORMATS_STAGE && !this.sidecarAtLeast(FORMATS_SIDECAR_VERSION))
+      return {
+        batch: null,
+        wait: `The cleanup sidecar is older than ${FORMATS_SIDECAR_VERSION}: rebuild ttsu-cleanup-apply before books without an EPUB are written`,
+      };
     // 1.6.0 (manga part A): a move batch, and any batch of another library than the sidecar's
     // own (the reader's edits of a moved book), go only to a sidecar that uses each batch's
     // library: an older one would write to its one library (another book with that id).
@@ -979,7 +991,10 @@ export class BatchService {
       .run(now, now + this.leaseSeconds * 1000, now, batch.id).changes;
     if (changed !== 1) return { batch: null, wait: null };
     const view = this.sidecarView(batch.id);
-    if (view.kind === 'undo' && (isRemovalStage(view.stage) || view.stage === MOVE_STAGE))
+    if (
+      view.kind === 'undo' &&
+      (isRemovalStage(view.stage) || view.stage === MOVE_STAGE || view.stage === FORMATS_STAGE)
+    )
       await this.markCalibreTrash(view, batch.libraryId);
     return { batch: view, wait: null };
   }
@@ -1080,6 +1095,17 @@ export class BatchService {
 
   private sidecarViewOf(batch: BatchRow): SidecarBatch {
     const settings = getSettings(this.db);
+    if (batch.stage === FORMATS_STAGE)
+      return this.formats.sidecarView(batch, {
+        id: batch.id,
+        kind: batch.kind,
+        stage: batch.stage,
+        createdAt: batch.createdAt,
+        leaseSeconds: this.leaseSeconds,
+        itemDelaySeconds: settings.pacing.itemDelaySeconds,
+        snapshotSha256: batch.snapshotSha256,
+        snapshotSaved: batch.snapshotSaved,
+      });
     if (batch.stage === MOVE_STAGE)
       return this.moves.sidecarView(batch, {
         id: batch.id,
@@ -1221,6 +1247,7 @@ export class BatchService {
   ): { state: ItemState } {
     const batch = this.requireClaimed(batchId);
     if (batch.stage === MOVE_STAGE) return this.moves.report(batch, itemId, report, now);
+    if (batch.stage === FORMATS_STAGE) return this.formats.report(batch, itemId, report, now);
     if (isFieldStage(batch.stage)) {
       throw new BatchError(
         409,
@@ -1441,7 +1468,9 @@ export class BatchService {
       batch.kind === 'apply'
         ? isFieldStage(batch.stage)
           ? STAGE2_TERMINAL_APPLY
-          : TERMINAL_APPLY
+          : batch.stage === FORMATS_STAGE
+            ? [...TERMINAL_APPLY, 'written' as ItemState]
+            : TERMINAL_APPLY
         : TERMINAL_UNDO;
     if (!error && states.some((s) => !terminal.includes(s))) {
       throw new BatchError(409, 'not_done', 'Some items are not finished');
@@ -1449,7 +1478,9 @@ export class BatchService {
     const good =
       batch.kind === 'apply' ? (isFieldStage(batch.stage) ? 'written' : 'removed') : 'restored';
     const failed = states.filter((s) => s === 'failed' || !terminal.includes(s)).length;
-    const doneCount = states.filter((s) => s === good).length;
+    const doneCount = states.filter(
+      (s) => s === good || (batch.stage === FORMATS_STAGE && s === 'written'),
+    ).length;
     const state: BatchState =
       failed === 0
         ? 'applied'
@@ -1507,15 +1538,17 @@ export class BatchService {
         const left =
           batch.stage === MOVE_STAGE
             ? this.moves.leftToUndo(batch.undoOf)
-            : (
-                this.db
-                  .prepare(
-                    isFieldStage(batch.stage)
-                      ? `SELECT COUNT(*) AS n FROM field_undo WHERE batch_id = ? AND restored_at IS NULL`
-                      : `SELECT COUNT(*) AS n FROM undo_records WHERE batch_id = ? AND restored_at IS NULL`,
-                  )
-                  .get(batch.undoOf) as { n: number }
-              ).n;
+            : batch.stage === FORMATS_STAGE
+              ? this.formats.leftToUndo(batch.undoOf)
+              : (
+                  this.db
+                    .prepare(
+                      isFieldStage(batch.stage)
+                        ? `SELECT COUNT(*) AS n FROM field_undo WHERE batch_id = ? AND restored_at IS NULL`
+                        : `SELECT COUNT(*) AS n FROM undo_records WHERE batch_id = ? AND restored_at IS NULL`,
+                    )
+                    .get(batch.undoOf) as { n: number }
+                ).n;
         if (left === 0) {
           this.db
             .prepare(`UPDATE batches SET state = 'undone', updated_at = ? WHERE id = ?`)
@@ -1538,6 +1571,13 @@ export class BatchService {
       // A few failed items don't stop the run (decided 2026-11-15): they stay listed in the batch.
       this.deps.log?.(
         `Cleanup: ${failed} of ${states.length} items failed in batch ${batchId} (not above ${failedLimit} %): going on`,
+      );
+    } else if (failed > 0 && batch.kind === 'apply' && batch.stage === FORMATS_STAGE) {
+      pauseFormats(
+        this.db,
+        'batch_failed',
+        `${failed} of ${states.length} books failed in the last batch of books without an EPUB${error ? `: ${error}` : ''}. ` +
+          'Check the batch, then resume.',
       );
     } else if (failed > 0 && batch.kind === 'apply' && batch.stage === MOVE_STAGE) {
       pauseMove(
@@ -1574,6 +1614,7 @@ export class BatchService {
       throw new BatchError(409, 'busy', 'Another batch is being applied; try again after it');
     if (isFieldStage(batch.stage)) return this.fieldWriter(batch.stage).undo(batch, now);
     if (batch.stage === MOVE_STAGE) return this.moves.undo(batch, now);
+    if (batch.stage === FORMATS_STAGE) return this.formats.undo(batch, now);
     const records = this.db
       .prepare(
         `SELECT change_id, removed_uuid, kept_uuid FROM undo_records
