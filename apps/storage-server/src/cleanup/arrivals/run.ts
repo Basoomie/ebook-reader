@@ -202,6 +202,33 @@ export function continueArrivalsStage4(
   return { runId, books: n };
 }
 
+/** The key of the step the bar counts: its phase and its part or compare stage. */
+export function paceKey(p: RunProgress): string {
+  return `${p.phase}:${p.phase === 'compare' && p.cmp ? p.cmp.stage : (p.part?.name ?? '')}`;
+}
+
+/** The bar's done count (bytes when the step counts bytes). */
+export function barDone(p: RunProgress): number {
+  const c = p.counts[p.phase];
+  if (!c) return 0;
+  return c.bytesTotal !== undefined && c.bytesTotal > 0 ? (c.bytesDone ?? 0) : c.done;
+}
+
+export const PACE_WINDOW_MS = 60 * 60_000;
+
+/** Keeps a mark of the step's done count about every minute, for the last hour and one before. */
+export function notePace(p: RunProgress, now = Date.now()): void {
+  if (p.waitingSince !== undefined) return;
+  const key = paceKey(p);
+  if (!p.pace || p.pace.key !== key) p.pace = { key, marks: [] };
+  const marks = p.pace.marks;
+  const last = marks[marks.length - 1];
+  const done = barDone(p);
+  if (last && done < last[1]) marks.length = 0;
+  if (!last || now - last[0] >= 60_000 || done < last[1]) marks.push([now, done]);
+  while (marks.length > 2 && now - marks[1][0] >= PACE_WINDOW_MS) marks.shift();
+}
+
 export const RUN_PHASES: readonly RunPhase[] = [
   'scan',
   'archives',
@@ -377,6 +404,12 @@ export interface RunProgress {
    * no record of its end, and a restart in it left ~10,000 books unread and never looked up).
    */
   stage4Read?: boolean;
+  /**
+   * The step's done count over the last hour (time, done), for the bar's time left from the
+   * recent pace (WP20g run 10, 2026-11-26: stage 4's lookups said "1 h 57 min" for two hours,
+   * the average since the part's start counting the first, fast books with saved answers).
+   */
+  pace?: { key: string; marks: [number, number][] };
   cost: number;
 }
 
@@ -864,6 +897,7 @@ export class BookArrivals {
   }
 
   private save(runId: number, p: RunProgress): void {
+    notePace(p);
     this.db
       .prepare('UPDATE calibre_arrival_runs SET phase = ?, progress_json = ? WHERE id = ?')
       .run(p.phase, JSON.stringify(p), runId);
@@ -1269,6 +1303,7 @@ export class BookArrivals {
       p.phaseStartedAt += waited;
       if (p.cmp) p.cmp.startedAt += waited;
       if (p.part) p.part.startedAt += waited;
+      if (p.pace) for (const m of p.pace.marks) m[0] += waited;
       delete p.waitingSince;
     }
     // A stage set Off is not run for the arrivals either: the run waits for it (as the

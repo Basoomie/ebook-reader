@@ -24,6 +24,8 @@ import { qualityOfFile } from '../src/cleanup/arrivals/compare';
 import {
   continueArrivalsStage4,
   inPool,
+  notePace,
+  type RunProgress,
   sameTextNoWinner,
   type CompareFacts,
 } from '../src/cleanup/arrivals/run';
@@ -233,6 +235,35 @@ describe('wp20g: files and formats', () => {
       now,
     );
     expect(waiting.secondsLeft).toBeNull();
+    // Run 10's lookups: 6,716 of 9,798 after 4 h 17 min (the first books fast, from saved
+    // answers), but 526 in the last hour. The time left follows the last hour: ~5.9 h, not ~2 h.
+    const p = {
+      phase: 'stage4',
+      phaseStartedAt: now - 20_000_000,
+      phaseStartDone: 0,
+      part: { name: 'lookups', index: 1, count: 2, startedAt: 0, startDone: 0 },
+      counts: { stage4: { done: 0, total: 9_798 } },
+    } as unknown as RunProgress;
+    const t0 = 50_000_000;
+    p.part!.startedAt = t0;
+    for (let m = 0; m <= 257; m++) {
+      const t = t0 + m * 60_000;
+      // 6,190 in the first 197 minutes, then 526 an hour.
+      p.counts.stage4!.done =
+        m <= 197 ? Math.round((6_190 * m) / 197) : 6_190 + Math.round(((m - 197) * 526) / 60);
+      notePace(p, t);
+    }
+    const tEnd = t0 + 257 * 60_000;
+    expect(p.counts.stage4!.done).toBe(6_716);
+    const recent = runBar(p, tEnd);
+    expect(recent.secondsLeft! / 3600).toBeGreaterThan(5.7);
+    expect(recent.secondsLeft! / 3600).toBeLessThan(6.1);
+    // Under 10 minutes of marks, the average since the part's start.
+    const fresh = runBar(
+      { ...p, pace: { key: 'stage4:lookups', marks: [[tEnd - 60_000, 6_700]] } },
+      tEnd,
+    );
+    expect(fresh.secondsLeft! / 3600).toBeLessThan(2.1);
   });
 
   it('reads a copy’s quality without hashing it (no rule uses the hash; it read every file twice)', async () => {

@@ -8,6 +8,7 @@ import { getSettings } from '../settings';
 import {
   COMPARE_STAGES,
   RUN_PHASES,
+  paceKey,
   type CompareStage,
   type BookArrivals,
   type RunPhase,
@@ -61,7 +62,15 @@ export function runBar(p: RunProgress, now = Date.now()): Bar {
   const done = byBytes ? (c.bytesDone ?? 0) : c.done;
   const total = byBytes ? c.bytesTotal! : c.total;
   const fresh = done - (sub ? sub.startDone : 0);
-  const rate = fresh > 0 && elapsed > 0 ? fresh / elapsed : 0;
+  let rate = fresh > 0 && elapsed > 0 ? fresh / elapsed : 0;
+  // The pace over the last hour once there are 10 minutes of it: a step whose books differ
+  // (saved answers first, then the slow sites) slows down, and its average since the start
+  // says too little time left.
+  const marks = p.pace?.key === paceKey(p) ? p.pace.marks : [];
+  if (marks.length >= 2 && now - marks[0][0] >= 10 * 60_000) {
+    const [t0, d0] = marks[0];
+    rate = done > d0 ? (done - d0) / (now - t0) : 0;
+  }
   return {
     phase: p.phase,
     index: RUN_PHASES.indexOf(p.phase),
