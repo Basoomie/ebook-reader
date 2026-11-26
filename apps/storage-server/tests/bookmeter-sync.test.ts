@@ -391,6 +391,49 @@ describe('the checks, matching and records', () => {
     ]);
     expect(await titles('-bookmeter:read,wish')).toEqual([]);
 
+    // The 読みたい本 order: the place on Bookmeter's wish list, newest added first.
+    const wishRows = e.db
+      .prepare(
+        `SELECT e.account_id, e.listing_id, e.rank FROM bookmeter_entries e
+         JOIN bookmeter_links l ON l.account_id = e.account_id AND l.listing_id = e.listing_id
+         WHERE e.list = 'wish'`,
+      )
+      .all() as { account_id: string; listing_id: string; rank: number }[];
+    expect(wishRows).toHaveLength(1);
+    const wishOrder = async (dir: string) =>
+      (
+        (
+          await request(e.app)
+            .get('/api/v1/books')
+            .query({ q: 'bookmeter:wish', sort: 'wish', dir })
+            .set(auth)
+        ).body.books as { id: string }[]
+      ).map((b) => b.id);
+    const wishBook = (
+      e.db
+        .prepare('SELECT book_id FROM bookmeter_links WHERE listing_id = ?')
+        .get(wishRows[0].listing_id) as {
+        book_id: string;
+      }
+    ).book_id;
+    expect(await wishOrder('desc')).toEqual([wishBook]);
+    // Another book on the same list, added later (a higher rank), comes first.
+    e.db
+      .prepare(
+        `INSERT INTO bookmeter_entries (account_id, listing_id, list, date, title, authors, cover, pages, rank, first_seen_at, seen_at)
+         VALUES (?, 'zz1', 'wish', NULL, 't', '[]', NULL, NULL, ?, 1, 1)`,
+      )
+      .run(wishRows[0].account_id, wishRows[0].rank + 5);
+    e.db
+      .prepare(
+        "INSERT INTO bookmeter_links (account_id, listing_id, book_id, how) VALUES (?, 'zz1', ?, 'user')",
+      )
+      .run(wishRows[0].account_id, imouto.id);
+    expect(await wishOrder('desc')).toEqual([imouto.id, wishBook]);
+    expect(await wishOrder('asc')).toEqual([wishBook, imouto.id]);
+    e.db.prepare("DELETE FROM bookmeter_entries WHERE listing_id = 'zz1'").run();
+    e.db.prepare("DELETE FROM bookmeter_links WHERE listing_id = 'zz1'").run();
+
     // The 読みたい本 collection was made for every user.
     const acc = s.settings().accounts[0];
     const col = e.db

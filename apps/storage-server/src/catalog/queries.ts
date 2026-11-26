@@ -467,7 +467,11 @@ export function planBooks(
   const select = extra ? BOOK_SELECT.replace('SELECT b.id,', `SELECT ${extra} b.id,`) : BOOK_SELECT;
   return {
     sql: `${select} ${where} ${order} LIMIT ?`,
-    params: [...(extra ? [user.id] : []), ...conds.flatMap((c) => c.params), limit + 1],
+    params: [
+      ...(extra && sort.key !== 'wish' ? [user.id] : []),
+      ...conds.flatMap((c) => c.params),
+      limit + 1,
+    ],
     regex,
     finish(raw) {
       const rows = raw as BookRow[];
