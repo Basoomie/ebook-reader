@@ -8,6 +8,8 @@ import { describe, expect, it } from 'vitest';
 import type { BookRatingsAnswer } from './api';
 import {
   RATING_PARTS,
+  breakdownLabel,
+  formatCompact,
   cardRatingText,
   ratingPieces,
   ratingSummary,
@@ -94,7 +96,14 @@ describe('ratingSummary (the book page: one line, breakdown on tap)', () => {
     expect(s.headline?.part).toBe('pooled');
     expect([s.headline?.avg, s.headline?.count]).toEqual([4.3, 251]);
     expect(s.readers?.count).toBe(12850);
-    expect(s.rows.map((r) => r.part)).toEqual(['amazon_jp', 'bookwalker', 'bookmeter', 'natively']);
+    // Stars first (Natively before 読書メーター's readers).
+    expect(s.rows.map((r) => r.part)).toEqual(['amazon_jp', 'bookwalker', 'natively', 'bookmeter']);
+    expect(s.rows.map(breakdownLabel)).toEqual([
+      'Amazon',
+      'BOOK☆WALKER',
+      'Natively',
+      '読書メーター'
+    ]);
     expect(s.checkedAt).toBe(1_700_000_000_000);
   });
 
@@ -113,6 +122,14 @@ describe('ratingSummary (the book page: one line, breakdown on tap)', () => {
     expect(r.headline).toBeNull();
     expect(r.readers?.count).toBe(12850);
     expect(ratingSummary([])).toEqual({ headline: null, readers: null, rows: [], checkedAt: null });
+  });
+
+  it('compact numbers for a tight line', () => {
+    expect([formatCompact(950), formatCompact(4731), formatCompact(87105)]).toEqual([
+      '950',
+      '4.7K',
+      '87.1K'
+    ]);
   });
 
   it('offline: the pooled figure with nothing to open', () => {
