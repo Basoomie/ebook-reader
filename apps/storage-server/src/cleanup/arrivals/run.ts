@@ -143,12 +143,11 @@ export function continueArrivalsStage4(
   fromRunId: number,
   present: (libraryId: string) => Map<number, string>,
 ): { runId: number; books: number } {
-  const state = db
-    .prepare('SELECT current_run, mode FROM calibre_arrivals_state WHERE id = 1')
-    .get() as { current_run: number | null; mode: string } | undefined;
-  if (!state) throw new Error('No new-arrivals state');
-  if (state.current_run !== null) throw new Error(`Run ${state.current_run} is going on`);
-  if (state.mode !== 'on') throw new Error('New arrivals must be On');
+  // One run at a time across the libraries (manga part B).
+  const going = db
+    .prepare('SELECT current_run FROM calibre_arrivals_state WHERE current_run IS NOT NULL LIMIT 1')
+    .get() as { current_run: number } | undefined;
+  if (going) throw new Error(`Run ${going.current_run} is going on`);
   const from = db
     .prepare('SELECT state, mode, progress_json FROM calibre_arrival_runs WHERE id = ?')
     .get(fromRunId) as { state: string; mode: string; progress_json: string } | undefined;
@@ -156,6 +155,12 @@ export function continueArrivalsStage4(
     throw new Error(`Run ${fromRunId} is not a finished On run`);
   const fp = JSON.parse(from.progress_json) as RunProgress;
   if (!fp.libraryId) throw new Error('The run has no library');
+  // Manga part B: the run's own library's state row.
+  const state = db
+    .prepare('SELECT mode FROM calibre_arrivals_state WHERE library_id = ?')
+    .get(fp.libraryId) as { mode: string } | undefined;
+  if (!state) throw new Error('No new-arrivals state');
+  if (state.mode !== 'on') throw new Error('New arrivals must be On');
   const books = present(fp.libraryId);
   const read = new Set(
     (
@@ -182,14 +187,14 @@ export function continueArrivalsStage4(
     const id = Number(
       db
         .prepare(
-          `INSERT INTO calibre_arrival_runs (trigger, mode, state, phase, started_at, progress_json)
-           VALUES ('now', 'on', 'running', 'stage4', ?, ?)`,
+          `INSERT INTO calibre_arrival_runs (trigger, mode, state, phase, started_at, progress_json, library_id)
+           VALUES ('now', 'on', 'running', 'stage4', ?, ?, ?)`,
         )
-        .run(Date.now(), JSON.stringify(p)).lastInsertRowid,
+        .run(Date.now(), JSON.stringify(p), fp.libraryId).lastInsertRowid,
     );
     db.prepare(
-      'UPDATE calibre_arrivals_state SET current_run = ?, updated_at = ? WHERE id = 1 AND current_run IS NULL',
-    ).run(id, Date.now());
+      'UPDATE calibre_arrivals_state SET current_run = ?, updated_at = ? WHERE library_id = ? AND current_run IS NULL',
+    ).run(id, Date.now(), fp.libraryId);
     return id;
   })();
   return { runId, books: n };

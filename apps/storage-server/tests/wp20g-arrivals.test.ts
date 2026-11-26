@@ -797,29 +797,37 @@ describe('wp20g: a run end to end', () => {
         [901, 'u901'],
         [902, 'u902'],
       ]);
-    const prevMode = (
-      db.prepare('SELECT mode FROM calibre_arrivals_state').get() as { mode: string }
-    ).mode;
-    db.prepare(`UPDATE calibre_arrivals_state SET mode = 'on', current_run = NULL`).run();
+    // Manga part B: the run's own library's state row (one row per library).
+    db.prepare(
+      `INSERT INTO calibre_arrivals_state (library_id, mode, updated_at) VALUES (?, 'on', 0)`,
+    ).run(lib);
     try {
       const out = continueArrivalsStage4(db, from, present);
       expect(out.books).toBe(1);
       const r = db
-        .prepare('SELECT mode, state, phase, progress_json FROM calibre_arrival_runs WHERE id = ?')
-        .get(out.runId) as { mode: string; state: string; phase: string; progress_json: string };
-      expect([r.mode, r.state, r.phase]).toEqual(['on', 'running', 'stage4']);
+        .prepare(
+          'SELECT mode, state, phase, progress_json, library_id FROM calibre_arrival_runs WHERE id = ?',
+        )
+        .get(out.runId) as {
+        mode: string;
+        state: string;
+        phase: string;
+        progress_json: string;
+        library_id: string;
+      };
+      expect([r.mode, r.state, r.phase, r.library_id]).toEqual(['on', 'running', 'stage4', lib]);
       const np = JSON.parse(r.progress_json);
       expect(np.scope).toEqual({ import: [902], hand: [] });
       expect(np.libraryId).toBe(lib);
       expect(np.stage4Read).toBeUndefined();
-      expect(db.prepare('SELECT current_run FROM calibre_arrivals_state').get()).toEqual({
-        current_run: out.runId,
-      });
+      expect(
+        db.prepare('SELECT current_run FROM calibre_arrivals_state WHERE library_id = ?').get(lib),
+      ).toEqual({ current_run: out.runId });
       // Never while a run goes on.
       expect(() => continueArrivalsStage4(db, from, present)).toThrow(/going on/);
       db.prepare(`UPDATE calibre_arrival_runs SET state = 'stopped' WHERE id = ?`).run(out.runId);
     } finally {
-      db.prepare('UPDATE calibre_arrivals_state SET mode = ?, current_run = NULL').run(prevMode);
+      db.prepare('DELETE FROM calibre_arrivals_state WHERE library_id = ?').run(lib);
     }
   });
 
