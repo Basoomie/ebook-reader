@@ -1618,6 +1618,42 @@ export const MIGRATIONS: { version: number; name: string; sql: string }[] = [
       );
     `,
   },
+  {
+    version: 35,
+    name: 'New volumes of series you are reading',
+    // The series-arrival alert (2026-11-25, docs/design/series-arrivals.md).
+    // series_arrival_state: per user, when the alert was switched on (books created before
+    // are never announced; no row = off). series_arrival_series: the series (within one
+    // library) that count as read, and since when (a book created before is not news).
+    // series_arrival_books: every book that arrived while the alert was on, decided once
+    // when it settled (told or why not), so no book is ever told twice. books_created: the
+    // rounds find the books not decided yet by their arrival time.
+    sql: `
+      CREATE TABLE series_arrival_state (
+        user_id   TEXT PRIMARY KEY,
+        on_since  INTEGER NOT NULL
+      );
+      CREATE TABLE series_arrival_series (
+        user_id     TEXT NOT NULL,
+        library_id  TEXT NOT NULL,
+        series_id   INTEGER NOT NULL,
+        since       INTEGER NOT NULL,
+        PRIMARY KEY (user_id, library_id, series_id)
+      );
+      CREATE TABLE series_arrival_books (
+        user_id     TEXT NOT NULL,
+        book_id     TEXT NOT NULL,
+        decided_at  INTEGER NOT NULL,
+        told        INTEGER NOT NULL CHECK (told IN (0, 1)),
+        reason      TEXT NOT NULL,
+        library_id  TEXT,
+        series_id   INTEGER,
+        series_index REAL,
+        PRIMARY KEY (user_id, book_id)
+      );
+      CREATE INDEX books_created ON books (created_at);
+    `,
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

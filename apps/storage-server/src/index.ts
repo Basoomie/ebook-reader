@@ -59,6 +59,7 @@ import { NotificationWatcher } from './notifications/watcher';
 import { NativelyLevels } from './natively/levels';
 import { StoreRatings } from './ratings/service';
 import { BookmeterSync } from './bookmeter/service';
+import { SeriesArrivals } from './series-arrivals/service';
 
 // Every console line is also kept (secrets removed) for the bug report (WP18).
 captureConsole(serverLogs);
@@ -270,6 +271,19 @@ const bookmeter =
       })
     : null;
 if (cleanup && bookmeter) cleanup.onAnswerArrived(() => bookmeter.answerArrived());
+
+// New volumes of series you're reading (2026-11-25, docs/design/series-arrivals.md): told once,
+// switched on in Settings › Notifications. SERIES_ARRIVALS=0 turns it off.
+const seriesArrivals =
+  database.ok && process.env.SERIES_ARRIVALS !== '0'
+    ? new SeriesArrivals({
+        db: database.db,
+        notifications,
+        arrivalsDoneBefore: () => cleanup?.arrivals.doneBefore() ?? Infinity,
+        // Tests only: a round more often than every minute.
+        roundMs: (Number(process.env.SERIES_ARRIVALS_ROUND_SECONDS) || 60) * 1000,
+      })
+    : null;
 
 if (database.ok && config.calibre.dir) {
   try {
@@ -644,6 +658,7 @@ cleanup?.start();
 natively?.start();
 ratings?.start();
 bookmeter?.start();
+seriesArrivals?.start();
 cleanupOptions.audio?.start();
 notifications?.start();
 
@@ -672,6 +687,7 @@ function shutdown(signal: string): void {
   void natively?.stop();
   ratings?.stop();
   bookmeter?.stop();
+  seriesArrivals?.stop();
   aiCore?.stop();
   void notifications?.stop();
   void cleanup?.stop();

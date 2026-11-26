@@ -48,7 +48,7 @@ describe('ratingPieces (the book page line)', () => {
       ['Amazon', '4.3 · 201 ratings'],
       ['BOOK☆WALKER', '4.4 · 50 ratings'],
       ['読書メーター readers', '12,850 read it'],
-      ['Natively learners', '3.0 · 1 rating']
+      ['Natively', '3.0 · 1 rating']
     ]);
     expect(texts.join(' ')).not.toMatch(/★/);
   });

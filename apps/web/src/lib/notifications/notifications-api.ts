@@ -25,6 +25,7 @@ export interface NotificationWaits {
   applyHelperMinutes: number;
   fetchHelperMinutes: number;
   refusalQuietHours: number;
+  seriesArrivalWaitHours: number;
 }
 
 export interface NotificationSettings {
