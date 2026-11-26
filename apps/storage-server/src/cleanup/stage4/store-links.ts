@@ -20,6 +20,7 @@ import { decodeIgnore, textOf, unescapeHtml } from './ref-text';
 import { clean } from './rules-v3';
 import { nums, pyQuote } from './pick';
 import { COMIC_LABEL, adaptationListing, chosenDecision, type ChosenBook } from './bookmeter-rules';
+import { sameBook, type SameHow } from './bookmeter-same';
 
 // ---------------------------------------------------------------- Bookmeter
 
@@ -78,6 +79,54 @@ export function bookmeterListingSearch(
     url: bookmeterSearchUrl(t, au),
     accept: 'text/html, */*; q=0.01',
   };
+}
+
+/**
+ * Bookmeter listings, second look (bookmeter-listings.md 8, 2026-11-25): Bookmeter IGNORES the
+ * keyword when its author field is filled (checked live: エロマンガ先生 + 伏見つかさ returns
+ * 俺の妹… first, whatever the keyword), so the author-field search above only ever returned the
+ * author's 20 most-read books. What it is good for is the author's listings in "recommended"
+ * order (by registrations), page by page: every listing with more readers than a book's saved
+ * one comes before the page where the counts fall under it. One walk per author; the pages are
+ * shared by every book of the author, the pass and stage 4 (the same queue keys).
+ */
+export const BOOKMETER_AUTHOR_LIST_KEY = 'author-list:';
+
+/** Bookmeter lists 20 listings a page. */
+export const BOOKMETER_PAGE_SIZE = 20;
+
+/** The author an author walk is keyed by: the first author without spaces (null: none). */
+export function bookmeterAuthor(authors: string[]): string | null {
+  const au = (authors[0] ?? '').replace(/\s/gu, '');
+  return au && au.toLowerCase() !== 'unknown' ? au : null;
+}
+
+/** One page of an author's listings, most registered first. */
+export function bookmeterAuthorPage(
+  author: string,
+  page: number,
+): { key: string; url: string; accept: string } {
+  return {
+    key: `${BOOKMETER_AUTHOR_LIST_KEY}${author}\n${page}`,
+    url: `https://bookmeter.com/search?author=${encodeURIComponent(author)}&keyword=&partial=true&sort=recommended&type=japanese&page=${page}`,
+    accept: 'text/html, */*; q=0.01',
+  };
+}
+
+/**
+ * The walk reads the next page: this page was full, under the page limit, and its last listing
+ * still has more registrations than `stop` (what a better listing must beat). An unknown count
+ * goes on.
+ */
+export function authorWalkGoesOn(
+  hits: BookmeterHit[],
+  page: number,
+  stop: number,
+  maxPages: number,
+): boolean {
+  if (hits.length < BOOKMETER_PAGE_SIZE || page >= maxPages) return false;
+  const last = hits[hits.length - 1].registrations;
+  return typeof last !== 'number' || last > stop;
 }
 
 /** True for a Bookmeter search address that asked the old index. */
@@ -312,6 +361,46 @@ export function judgeBookmeter(hits: BookmeterHit[], book: BookmeterBook): Bookm
   return out;
 }
 
+/** A listing that is this book, and how: acceptBookmeter's tier, or the same-book form. */
+export interface BookListing {
+  hit: BookmeterHit;
+  via: 1 | 2 | SameHow;
+}
+
+/**
+ * The listings that are this book (Bookmeter listings, second look): the hits judgeBookmeter
+ * takes, and, once the book's own listing is known (one of those, or `anchor`: the saved id when
+ * the answers show it and no guard set it aside), every other hit the same-book check finds
+ * (bookmeter-same.ts). The same-book check never makes a first match.
+ */
+export function bookListings(
+  hits: BookmeterHit[],
+  book: BookmeterBook,
+  j: BookmeterJudged = judgeBookmeter(hits, book),
+  anchor: string | null = null,
+): BookListing[] {
+  const out: BookListing[] = [];
+  hits.forEach((h, i) => {
+    const t = j.tier[i];
+    if (t !== null) out.push({ hit: h, via: t });
+  });
+  const ai = anchor === null ? -1 : hits.findIndex((h) => h.id === anchor);
+  if (!out.length && (ai < 0 || j.guard[ai] !== null)) return out;
+  const sb = {
+    title: book.title,
+    authors: book.authors,
+    series: book.chosen?.series ?? null,
+    fmt: book.chosen ? book.chosen.fmt : undefined,
+    own: (book.own ?? [book.title]).filter((t): t is string => typeof t === 'string'),
+  };
+  hits.forEach((h, i) => {
+    if (j.tier[i] !== null || j.guard[i] !== null) return;
+    const s = sameBook(h, sb);
+    if (s.fails.length === 0 && s.how) out.push({ hit: h, via: s.how });
+  });
+  return out;
+}
+
 /**
  * Match acceptance for Bookmeter (plan section 6): the title, an author and the volume must all
  * agree with the book's decided values. Bookmeter's titles carry the label ("(GAノベル)"), so
@@ -336,11 +425,16 @@ export function acceptBookmeter(
 ): { hit: BookmeterHit; reason: string } | { hit: null; reason: string } {
   const j = judgeBookmeter(hits, book);
   if (j.noTitle) return { hit: null, reason: 'no title to compare' };
-  const taken = hits.filter((_, i) => j.tier[i] !== null);
-  const hit = mostRegistered(taken);
+  const taken = bookListings(hits, book, j);
+  const hit = mostRegistered(taken.map((l) => l.hit));
   if (hit) {
-    const tier = j.tier[hits.indexOf(hit)];
-    const why = tier === 1 ? 'title, author and volume agree' : WHOLE_TITLE_REASON;
+    const via = taken.find((l) => l.hit === hit)!.via;
+    const why =
+      via === 1
+        ? 'title, author and volume agree'
+        : via === 2
+          ? WHOLE_TITLE_REASON
+          : `another listing of the same book (${via})`;
     return {
       hit,
       reason:

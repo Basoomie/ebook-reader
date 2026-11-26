@@ -326,6 +326,7 @@
                 ndlOutageMinutes: Number(settings.fetch.ndlOutageMinutes),
                 nativelyRereadDays: Number(settings.fetch.nativelyRereadDays),
                 smallCoverPx: Number(settings.fetch.smallCoverPx),
+                bookmeterAuthorPages: Number(settings.fetch.bookmeterAuthorPages ?? 8),
                 offlineSeconds: Number(settings.fetch.offlineSeconds)
               }
             }
@@ -1036,6 +1037,17 @@
             min="100"
             step="1"
             bind:value={settings.fetch.smallCoverPx}
+          />
+        </label>
+        <label class={field}>
+          <span class={label}>Pages of an author’s 読書メーター listings read (20 a page)</span>
+          <input
+            class="c-input"
+            type="number"
+            min="1"
+            max="50"
+            step="1"
+            bind:value={settings.fetch.bookmeterAuthorPages}
           />
         </label>
       </fieldset>

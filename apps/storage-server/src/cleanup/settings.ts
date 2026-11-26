@@ -370,6 +370,11 @@ export interface FetchSettings {
   nativelyRereadDays: number;
   /** A file cover whose longer side is under this (px) counts as small (store image looked up). */
   smallCoverPx: number;
+  /**
+   * Bookmeter listings, second look: the most pages of an author's listings read (20 a page,
+   * most registered first) when looking for a listing with more readers (bookmeter-listings.md 8).
+   */
+  bookmeterAuthorPages: number;
   /** The fetcher counts as offline after this long without a heartbeat (s). */
   offlineSeconds: number;
 }
@@ -675,6 +680,7 @@ export const DEFAULT_SETTINGS: CleanupSettings = {
     ndlOutageMinutes: 20,
     nativelyRereadDays: 30,
     smallCoverPx: 800,
+    bookmeterAuthorPages: 8,
     offlineSeconds: 90,
   },
   backup: {
@@ -1320,6 +1326,13 @@ function validate(key: Key, value: unknown, current: CleanupSettings): unknown {
           true,
         ),
         smallCoverPx: num('Small cover below (px)', v.smallCoverPx, 100, 5000, true),
+        bookmeterAuthorPages: num(
+          "Pages of an author's 読書メーター listings",
+          v.bookmeterAuthorPages ?? 8,
+          1,
+          50,
+          true,
+        ),
         offlineSeconds: num('Fetcher offline after (s)', v.offlineSeconds, 30, 3600, true),
       };
       if (out.challengeBackoffMaxSeconds < out.challengeBackoffSeconds) {

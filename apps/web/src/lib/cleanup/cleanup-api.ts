@@ -739,6 +739,8 @@ export interface FetchSettings {
   ndlOutageMinutes: number;
   nativelyRereadDays: number;
   smallCoverPx: number;
+  /** The most pages of an author's 読書メーター listings read (bookmeter-listings.md 8). */
+  bookmeterAuthorPages?: number;
   offlineSeconds: number;
 }
 

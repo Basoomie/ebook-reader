@@ -12,7 +12,8 @@
  *
  *   npx ts-node --transpile-only scripts/bookmeter-listing-rehearse.ts --db <working cleanup.db>
  *     --main <working ttsu.db> --metadata <calibre snapshot copy> --cache <fetch cache folder>
- *     --live <sample's live pages> --gold <gold800.json> [--changes <changes.jsonl>]
+ *     [--authors <authors.json: the blind samples' live author pages, BL_SEARCH_VERSION 3>]
+ *     [--live <sample's live pages (version 2)>] --gold <gold800.json> [--changes <changes.jsonl>]
  *     [--sample <sample-live.jsonl>] [--out <report.json>]
  */
 import Database from 'better-sqlite3';
@@ -27,7 +28,7 @@ import { migrateCleanup } from '../src/cleanup/cleanup-db';
 import { getSettings, updateSettings } from '../src/cleanup/settings';
 import { loadGold, mapLabeledIds } from '../src/cleanup/stage2-gate';
 import { getStage } from '../src/cleanup/stages';
-import { Stage4Analysis, type Stage4Progress } from '../src/cleanup/stage4/analysis';
+import { Stage4Analysis } from '../src/cleanup/stage4/analysis';
 import {
   BookmeterListings,
   listingAnalysisId,
@@ -35,7 +36,10 @@ import {
 } from '../src/cleanup/stage4/bookmeter-listing';
 import { judge, type Gold } from '../src/cleanup/stage4/bookmeter-rules';
 import { FetchQueue } from '../src/cleanup/stage4/queue';
-import { BOOKMETER_AUTHOR_SEARCH_KEY } from '../src/cleanup/stage4/store-links';
+import {
+  BOOKMETER_AUTHOR_LIST_KEY,
+  BOOKMETER_AUTHOR_SEARCH_KEY,
+} from '../src/cleanup/stage4/store-links';
 import { migrate } from '../src/db/migrations';
 
 const arg = (n: string) => {
@@ -67,8 +71,15 @@ async function main() {
   quietly(() => migrateCleanup(db, { beforeAiMove: () => undefined }));
   const main = new Database(arg('main')!);
   quietly(() => migrate(main));
-  const p4 = getStage(db, 4).progress as unknown as Stage4Progress;
-  const lib = p4.libraryId!;
+  // Manga part B: one library's pass (the pass's state row, or --lib).
+  const lib: string =
+    arg('lib') ??
+    (
+      db
+        .prepare('SELECT library_id FROM bookmeter_listing_state ORDER BY updated_at DESC LIMIT 1')
+        .get() as { library_id: string }
+    ).library_id;
+  void getStage;
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'bl-rehearse-'));
   const snap = path.join(tmp, SNAPSHOT_DIRNAME, `${lib}.db`);
   fs.mkdirSync(path.dirname(snap), { recursive: true });
@@ -98,6 +109,7 @@ async function main() {
   };
   const analysis = new Stage4Analysis({
     cleanup: db,
+    libraryId: lib,
     main,
     calibreDir: '',
     cacheDir: tmp,
@@ -118,8 +130,39 @@ async function main() {
   if (pass.state().progress.libraryId) pass.again();
   pass.setMode('analyse');
 
-  /** The stand-in fetcher: the sample's live page for the search, else "not fetched". */
+  /**
+   * The stand-in fetcher (second look, BL_SEARCH_VERSION 3): an author's page from the blind
+   * samples' live walks (`--authors`: {author: listings in Bookmeter's order}), 20 a page; any
+   * other page "not fetched" (an empty page: the walk ends and the books are decided from their
+   * stored answers). Version 2's author-field searches from `--live` as before.
+   */
   const liveDir = arg('live');
+  const authorPages = arg('authors')
+    ? (JSON.parse(fs.readFileSync(arg('authors')!, 'utf8')) as Record<
+        string,
+        { id: string; title: string; authors: string[]; reg: number | null }[]
+      >)
+    : {};
+  const esc = (s: string) =>
+    s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const pageHtml = (
+    items: { id: string; title: string; authors: string[]; reg: number | null }[],
+  ) =>
+    '<ul>' +
+    items
+      .map(
+        (b) =>
+          `<li class="group__book"><a href="/books/${b.id}"><img alt="${esc(b.title)}" src="x" /></a>` +
+          `<div class="detail__title"><a href="/books/${b.id}">${esc(b.title)}</a></div>` +
+          `<ul class="detail__authors">${b.authors.map((a) => `<li><a href="/a">${esc(a)}</a></li>`).join('')}</ul>` +
+          (b.reg !== null
+            ? `<dl><dt class="options__title">登録</dt><dd class="options__item">${b.reg}</dd></dl>`
+            : '') +
+          '</li>',
+      )
+      .join('') +
+    '</ul>';
+  const pagesAsked: Record<string, number> = {};
   let livePages = 0;
   let notFetched = 0;
   const answerOpen = () => {
@@ -133,7 +176,13 @@ async function main() {
     db.transaction(() => {
       for (const r of open) {
         let body: Buffer | null = null;
-        if (liveDir && r.key.startsWith(BOOKMETER_AUTHOR_SEARCH_KEY)) {
+        if (r.key.startsWith(BOOKMETER_AUTHOR_LIST_KEY)) {
+          const au = r.key.slice(BOOKMETER_AUTHOR_LIST_KEY.length, r.key.lastIndexOf('\n'));
+          const page = Number(r.key.slice(r.key.lastIndexOf('\n') + 1));
+          pagesAsked[page] = (pagesAsked[page] ?? 0) + 1;
+          const items = (authorPages[au] ?? []).slice((page - 1) * 20, page * 20);
+          if (items.length) body = Buffer.from(pageHtml(items));
+        } else if (liveDir && r.key.startsWith(BOOKMETER_AUTHOR_SEARCH_KEY)) {
           const rest = r.key.slice(BOOKMETER_AUTHOR_SEARCH_KEY.length);
           const f = path.join(liveDir, createHash('sha1').update(rest).digest('hex') + '.html');
           if (fs.existsSync(f)) body = fs.readFileSync(f);
@@ -168,6 +217,7 @@ async function main() {
     {};
   const t0 = performance.now();
   let phase = '';
+  const slow: { ms: number; before: string }[] = [];
   for (let guard = 0; guard < 10_000_000; guard++) {
     const st = pass.state().progress;
     if (st.phase !== phase) {
@@ -181,9 +231,13 @@ async function main() {
       loop.enable();
       log(`phase ${phase}`);
     }
+    const before = JSON.stringify({ ph: st.phase, s: st.search, steps: perPhase[phase].steps });
     const t = performance.now();
     const r = await pass.step();
     const ms = performance.now() - t;
+    slow.push({ ms: Math.round(ms), before });
+    slow.sort((a, b) => b.ms - a.ms);
+    slow.length = Math.min(slow.length, 8);
     perPhase[phase].steps++;
     perPhase[phase].ms += ms;
     if (ms > perPhase[phase].longestMs) perPhase[phase].longestMs = ms;
@@ -378,7 +432,14 @@ async function main() {
         'proposed',
         listingAnalysisId(p.run),
       ),
-      openSearches: plan(`SELECT COUNT(*) AS n FROM bookmeter_listing_waiters WHERE ready = 0`),
+      openWalks: plan(
+        `SELECT COUNT(*) AS n FROM bookmeter_author_walks INDEXED BY bookmeter_author_walks_state WHERE library_id = ? AND state IN ('wait', 'walk')`,
+        lib,
+      ),
+      walkedBooks: plan(
+        `SELECT b.calibre_uuid FROM bookmeter_author_walks w INDEXED BY bookmeter_author_walks_state JOIN bookmeter_listing_books b INDEXED BY bookmeter_listing_books_author ON b.library_id = w.library_id AND b.author = w.author AND b.state = 'search' WHERE w.library_id = ? AND w.state = 'done' LIMIT 50`,
+        lib,
+      ),
       readyWaiters: plan(
         `SELECT w.request_id, w.calibre_uuid, r.state AS rstate FROM bookmeter_listing_waiters w JOIN fetch_requests r ON r.id = w.request_id WHERE w.ready = 1 AND w.library_id = ? LIMIT 100`,
         lib,
@@ -388,11 +449,6 @@ async function main() {
         lib,
         'change',
       ),
-      aiChose: plan(
-        `SELECT source, json_extract(hit_json, '$.id') AS id FROM bookmeter_more_books WHERE library_id = ? AND calibre_uuid = ?`,
-        lib,
-        'x',
-      ),
     },
   };
 
@@ -400,9 +456,10 @@ async function main() {
     copy: { db: arg('db'), main: arg('main') },
     wallSeconds: Math.round(wall / 100) / 10,
     longestStepMs: p.longestStepMs,
+    slowestSteps: slow,
     endedIn: p.phase,
     perPhase,
-    fetcher: { livePages, notFetched },
+    fetcher: { livePages, notFetched, authorPagesAsked: pagesAsked },
     progress: {
       books: p.books,
       search: p.search,
