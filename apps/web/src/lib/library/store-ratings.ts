@@ -43,7 +43,7 @@ export const PART_LABELS: Record<RatingPart, string> = {
   amazon_jp: 'Amazon',
   bookwalker: 'BOOK☆WALKER',
   bookmeter: '読書メーター readers',
-  natively: 'Natively learners'
+  natively: 'Natively'
 };
 
 /** What the server shows (GET /ratings/features); 読書メーター off until it says so. */
@@ -172,7 +172,6 @@ export function ratingSummary(pieces: readonly RatingPiece[]): RatingSummary {
 /** A store's name in the breakdown (its rows say what the figure counts). */
 export function breakdownLabel(piece: RatingPiece): string {
   if (piece.part === 'bookmeter') return '読書メーター';
-  if (piece.part === 'natively') return 'Natively';
   return piece.label;
 }
 
