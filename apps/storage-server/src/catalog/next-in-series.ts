@@ -14,8 +14,10 @@
  *   is left out when a book on that number was started (any status but Unread), and when
  *   you hid it (`series-next-hide` records, matched by library and series name).
  * - `nextInSeriesOn` off: nothing.
- * - Order: the series whose volume you finished last first (a read-through's finishedOn,
- *   else when its record or the Completed status was saved), then by book id.
+ * - Order: the series whose volume you finished last first, by the finished read-throughs'
+ *   finishedOn only (the day the Completed collection sorts by, and the web's rule), then by
+ *   book id; a series with no such day last. Never when a record was saved: a bulk import
+ *   saves every completion at once (2026-11-25, the row came out in save order).
  */
 import type Database from 'better-sqlite3';
 import { SQL_CATALOG_SOURCE } from './queries';
@@ -38,13 +40,12 @@ export function nextInSeriesSelect(userId: string): { sql: string; params: unkno
   const frac = 'ROUND(c.series_index - CAST(c.series_index AS INTEGER), 3)';
   const sql = `
     WITH fin_books AS (
-      SELECT r.id AS book_id, r.updated_at AS at FROM sync_records r
+      SELECT r.id AS book_id, 0 AS at FROM sync_records r
        WHERE r.user_id = ? AND r.kind = 'book-status' AND r.deleted_at IS NULL
          AND json_extract(r.data, '$.status') = 'completed'
       UNION ALL
       SELECT r.book_id,
-             COALESCE(CAST(strftime('%s', json_extract(r.data, '$.finishedOn')) AS INTEGER) * 1000,
-                      r.updated_at)
+             IFNULL(CAST(strftime('%s', json_extract(r.data, '$.finishedOn')) AS INTEGER) * 1000, 0)
         FROM sync_records r
        WHERE r.user_id = ? AND r.kind = 'read-through' AND r.deleted_at IS NULL
          AND json_extract(r.data, '$.finished') = 1

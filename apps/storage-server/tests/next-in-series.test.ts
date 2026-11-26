@@ -181,6 +181,15 @@ describe('next in your series: searches, order and records', () => {
     expect((res.body.ids as string[]).map((id) => names.get(id))).toEqual(['b2', 'a2']);
   });
 
+  it('orders by the finish day, not when the records were saved', async () => {
+    const { ids, names } = env.load(SERIES);
+    // A bulk import saves every completion now, b1's first: the save times say a1 was last.
+    const later = Date.now();
+    env.record('book-status', ids.get('b1')!, ids.get('b1')!, { status: 'completed' }, later);
+    env.record('book-status', ids.get('a1')!, ids.get('a1')!, { status: 'completed' }, later + 1);
+    expect(nextInSeriesIds(env.db, env.userId).map((id) => names.get(id))).toEqual(['b2', 'a2']);
+  });
+
   it('combines with other statuses, other terms and negation', async () => {
     const { names } = env.load(SERIES);
     const named = (books: { id: string }[]) => books.map((b) => names.get(b.id)).sort();
