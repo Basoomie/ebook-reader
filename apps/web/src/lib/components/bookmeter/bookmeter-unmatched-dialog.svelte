@@ -151,7 +151,7 @@
                 {#if e.near.length}
                   <div class="mt-2 flex flex-col gap-1">
                     {#each e.near as b (b.id)}
-                      <div class="flex items-center gap-2">
+                      <div class="flex items-start gap-2">
                         <button
                           type="button"
                           class="c-btn c-btn-secondary c-btn-sm shrink-0"
@@ -161,7 +161,15 @@
                         >
                           Link
                         </button>
-                        <span class="min-w-0 truncate text-sm">{b.title}</span>
+                        <a
+                          class="min-w-0 break-words text-sm underline-offset-2 hover:underline"
+                          href="/library/book?id={encodeURIComponent(b.id)}"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          title="Open this book in a new tab"
+                          >{b.title}
+                          <span class="text-c-muted">· {b.authors.join(', ')}</span></a
+                        >
                       </div>
                     {/each}
                   </div>
@@ -178,7 +186,7 @@
                     />
                     <div class="mt-1 flex flex-col gap-1">
                       {#each results as b (b.id)}
-                        <div class="flex items-center gap-2">
+                        <div class="flex items-start gap-2">
                           <button
                             type="button"
                             class="c-btn c-btn-secondary c-btn-sm shrink-0"
@@ -187,9 +195,14 @@
                           >
                             Link
                           </button>
-                          <span class="min-w-0 truncate text-sm"
+                          <a
+                            class="min-w-0 break-words text-sm underline-offset-2 hover:underline"
+                            href="/library/book?id={encodeURIComponent(b.id)}"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            title="Open this book in a new tab"
                             >{b.title}
-                            <span class="text-c-muted">· {b.authors.join(', ')}</span></span
+                            <span class="text-c-muted">· {b.authors.join(', ')}</span></a
                           >
                         </div>
                       {:else}
