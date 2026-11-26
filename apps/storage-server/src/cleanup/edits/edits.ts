@@ -39,7 +39,6 @@ import { bookHistory, editFieldOf, undoTarget, type HistoryEntry } from './histo
 import { samePicture, type ArchivedCover, type CoverArchive } from './cover-archive';
 import { imageFacts } from '../file-metadata';
 import { getSettings } from '../settings';
-import { hammingHex } from '../stage2-rules';
 
 export type EditSource = 'edit' | 'undo' | 'carried' | 'confirm';
 
@@ -639,7 +638,7 @@ export class EditService {
    */
   async earlierCovers(bookId: string): Promise<{
     current: { width: number; height: number } | null;
-    covers: (ArchivedCover & { current: boolean })[];
+    covers: (ArchivedCover & { current: boolean; same: boolean })[];
   }> {
     const ref = this.ref(bookId);
     const list = this.deps.archive?.list(ref) ?? [];
@@ -647,22 +646,17 @@ export class EditService {
     const facts = bytes ? await imageFacts(bytes) : null;
     const sha = bytes ? createHash('sha256').update(bytes).digest('hex') : null;
     const max = getSettings(this.db).covers.sameDistance;
-    // The cover now is the picture with Calibre's exact bytes. Only when none has them (a picture
-    // Calibre wrote differently) the closest one by its difference hash, within stage 4's
-    // setting: a near look-alike must never hide a picture the user can pick (found in the e2e).
-    let currentSha = list.some((c) => c.sha256 === sha) ? sha : null;
-    if (!currentSha && facts?.dhash) {
-      let best: { sha: string; d: number } | null = null;
-      for (const c of list) {
-        if (!samePicture(c.dhash, facts.dhash, max)) continue;
-        const d = hammingHex(c.dhash, facts.dhash) ?? Infinity;
-        if (!best || d < best.d) best = { sha: c.sha256, d };
-      }
-      currentSha = best?.sha ?? null;
-    }
+    // The cover now is only the picture with Calibre's exact bytes (real calibre keeps a written
+    // picture byte for byte). A look-alike is marked `same` and stays pickable: the same artwork
+    // at another size is a real choice (found live 2026-11-25: 吾輩は猫である's original
+    // 1549 × 2200 was taken for "now" beside the 1803 × 2560 cover and the row was hidden).
     return {
       current: facts ? { width: facts.width, height: facts.height } : null,
-      covers: list.map((c) => ({ ...c, current: c.sha256 === currentSha })),
+      covers: list.map((c) => ({
+        ...c,
+        current: c.sha256 === sha,
+        same: c.sha256 !== sha && samePicture(c.dhash, facts?.dhash ?? null, max),
+      })),
     };
   }
 
