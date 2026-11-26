@@ -12,6 +12,11 @@
  *   every `oldDays`. One request row per id (key `ratings:<id>`), put back in line when due; its
  *   answer is read, saved and its cached file deleted, so the cleanup's own answers are never
  *   changed and the cache doesn't grow. 読書メーター only with its setting on.
+ * - **読書メーター's 登録数 from the saved searches** (after the first fill): a linked 読書メーター
+ *   id without a figure takes its 登録 count from the newest saved Bookmeter search that lists it
+ *   (the link fix searched every saved listing; the search list shows 登録, not the 感想
+ *   count), dated by the search. No requests. 読書メーター's 感想 count is not shown (user,
+ *   2026-11-25: left to a later review showcase, which reads the same page).
  * - **On open**: a book page whose figures are older than `openMaxAgeDays` asks again ahead of
  *   the routine (still behind the cleanup).
  * - The Rating sort's `m` (the median pooled average) is worked out after each fill and daily.
@@ -25,6 +30,7 @@ import { brotliDecompressSync } from 'node:zlib';
 import type Database from 'better-sqlite3';
 import type { FetchQueue } from '../cleanup/stage4/queue';
 import type { FetchSite } from '../cleanup/settings';
+import { parseBookmeterSearch } from '../cleanup/stage4/store-links';
 import {
   parseAmazonRating,
   parseBookmeterCounts,
@@ -51,6 +57,8 @@ export const ROUTINE_PRIORITY = -5;
 export const OPEN_PRIORITY = -2;
 
 const DAY = 86_400_000;
+/** Where Bookmeter's searches start (stage4/store-links.ts `bookmeterSearchUrl`). */
+const BOOKMETER_SEARCH_PREFIX = 'https://bookmeter.com/search?';
 
 export const QUEUE_SITE: Record<FetchedSite, FetchSite> = {
   amazon_jp: 'amazon-dp',
@@ -224,12 +232,18 @@ export class StoreRatings {
 
   /** Reads every unfilled id's cached page; resolves when done (in short turns). */
   async firstFill(quiet = false): Promise<void> {
-    if (this.fill.running || !this.cacheDir) return;
-    const root = path.join(this.cacheDir, 'cleanup');
-    if (!fs.existsSync(path.join(root, 'fetch'))) return;
+    if (this.fill.running) return;
+    const root = this.cacheDir ? path.join(this.cacheDir, 'cleanup') : null;
+    if (!root || !fs.existsSync(path.join(root, 'fetch'))) {
+      // No cached pages to read here; the saved searches still give 読書メーター's 登録数.
+      this.lastFillAt = this.now();
+      await this.searchFill();
+      return;
+    }
     this.lastFillAt = this.now();
     const ids = this.unfilledIds();
     if (ids.length === 0) {
+      await this.searchFill();
       this.updateParams();
       return;
     }
@@ -282,6 +296,7 @@ export class StoreRatings {
           `Store ratings: read ${this.fill.found} of ${this.fill.total} ids from cached pages`,
         );
       }
+      await this.searchFill();
     } catch (err) {
       this.lastError = `first fill: ${(err as Error).message}`;
       console.error('Store ratings: the first fill stopped:', err);
@@ -289,6 +304,77 @@ export class StoreRatings {
       this.fill.running = false;
       this.updateParams();
     }
+  }
+
+  /**
+   * 読書メーター's 登録数 for linked ids without a figure, from the saved Bookmeter searches
+   * (stage 4's and the link fix's). Only searches finished since the oldest such book appeared
+   * (less a day) are read, so after the first time it reads only a few; ids no search lists are
+   * left to the refresher.
+   */
+  private async searchFill(): Promise<void> {
+    const q = this.queue();
+    if (!q || this.halted) return;
+    const rows = this.db
+      .prepare(
+        `SELECT bi.value AS id, MIN(b.created_at) AS created FROM book_identifiers bi
+         JOIN books b ON b.id = bi.book_id
+         JOIN book_sources s ON s.book_id = bi.book_id AND s.missing_at IS NULL
+         LEFT JOIN store_ratings r ON r.site = 'bookmeter' AND r.site_id = bi.value
+         WHERE bi.type = 'bookmeter' AND r.site IS NULL
+         GROUP BY bi.value`,
+      )
+      .all() as { id: string; created: number }[];
+    const want = new Map<string, number>();
+    for (const r of rows) {
+      const id = r.id.trim();
+      if (SITE_ID_RE.bookmeter.test(id)) want.set(id, r.created);
+    }
+    if (want.size === 0) return;
+    let oldest = Infinity;
+    for (const c of want.values()) if (c < oldest) oldest = c;
+    const since = oldest - DAY;
+    const searches = q.answeredSince('bookmeter', BOOKMETER_SEARCH_PREFIX, since);
+    // id → the newest search's count (searches come oldest first).
+    const found = new Map<string, { count: number; at: number }>();
+    for (let i = 0; i < searches.length && !this.halted; i += 200) {
+      for (const { id, finishedAt } of searches.slice(i, i + 200)) {
+        const body = q.readAnswer(id);
+        if (!body) continue;
+        for (const hit of parseBookmeterSearch(body)) {
+          if (typeof hit.registrations === 'number' && want.has(hit.id)) {
+            found.set(hit.id, { count: hit.registrations, at: finishedAt });
+          }
+        }
+      }
+      await new Promise<void>((r) => setImmediate(r));
+    }
+    if (found.size === 0) return;
+    const ids = [...found.keys()];
+    for (let i = 0; i < ids.length; i += 500) {
+      this.db.transaction(() => {
+        for (const id of ids.slice(i, i + 500)) {
+          const f = found.get(id)!;
+          // Not over a figure saved meanwhile (a book page read while the searches were read).
+          const had = this.db
+            .prepare("SELECT 1 FROM store_ratings WHERE site = 'bookmeter' AND site_id = ?")
+            .get(id);
+          if (had) continue;
+          saveRating(
+            this.db,
+            'bookmeter',
+            id,
+            { kind: 'rating', avg: null, count: f.count, reviews: null },
+            f.at,
+          );
+        }
+      })();
+      await new Promise<void>((r) => setImmediate(r));
+    }
+    this.dueAt = 0;
+    this.log(
+      `Store ratings: 読書メーター 登録数 for ${found.size} of ${want.size} ids from ${searches.length} saved searches`,
+    );
   }
 
   private updateParams(): void {
@@ -409,11 +495,16 @@ export class StoreRatings {
     for (const r of rows) {
       const id = r.id.trim();
       if (!SITE_ID_RE[site].test(id)) continue;
-      if (r.checked === null && site !== 'bookmeter') {
-        // Never read: a new book's page is fetched by the cleanup's stage 4 (new arrivals) and
-        // read from its saved copy by the first fill, so it isn't asked twice.
+      if (r.checked === null) {
+        // Never read: a new book's page (Amazon, BOOK☆WALKER) or its 読書メーター search is
+        // fetched by the cleanup's stage 4 (new arrivals) and read from that saved answer by the
+        // first fill and the search fill, so it isn't asked twice.
         if (now - r.created < s.newBookWaitHours * 3_600_000) continue;
-        if (q?.isOpen(QUEUE_SITE[site], site === 'amazon_jp' ? id : pageUrl(site, id))) continue;
+        if (
+          site !== 'bookmeter' &&
+          q?.isOpen(QUEUE_SITE[site], site === 'amazon_jp' ? id : pageUrl(site, id))
+        )
+          continue;
       }
       if (r.checked !== null) {
         // A failed read is tried again after a day (three times), then at the old-book pace.

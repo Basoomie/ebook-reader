@@ -482,6 +482,65 @@ describe('the refresher (the cleanup fetch queue)', () => {
     expect(s.dueIds('bookwalker', 10)).toEqual([BW_JAPAN_ONLY]);
   });
 
+  it("takes 読書メーター's 登録数 from a saved search, then asks the book page for its reviews", async () => {
+    const { e, link } = await env();
+    link('Beta', 'bookmeter', '6826860');
+    const { q, db: cdb } = fetchQueue();
+    // A Bookmeter search the cleanup saved, listing this book with its 登録 count.
+    const search = q.enqueue(
+      {
+        site: 'bookmeter',
+        key: 'search-jp-au:x y',
+        url: 'https://bookmeter.com/search?author=x&keyword=y&partial=true&sort=recommended&type=japanese',
+        priority: 0,
+      },
+      null,
+      Date.now(),
+    );
+    for (let got = 0; got < 1; ) {
+      for (const r of q.claim().requests) {
+        q.report(
+          r.id,
+          r.leaseToken,
+          answer(
+            '<ul><li class="group__book"><div class="detail__title"><a href="/books/6826860">本</a></div>' +
+              '<dl><dt class="options__title">登録</dt><dd class="options__item">1,234</dd></dl></li></ul>',
+          ),
+        );
+        got += 1;
+      }
+      if (got < 1) await new Promise((res) => setTimeout(res, 300));
+    }
+    const finished = (
+      cdb.prepare('SELECT finished_at FROM fetch_requests WHERE id = ?').get(search.id) as {
+        finished_at: number;
+      }
+    ).finished_at;
+    saveRatingSettings(e.db, { refresh: true });
+    const s = ratingsService(e.db, null, q);
+    await s.firstFill();
+    expect(savedRating(e.db, 'bookmeter', '6826860')).toMatchObject({
+      state: 'ok',
+      count: 1234,
+      reviews: null,
+      checkedAt: finished,
+    });
+    // Fresh from the search: no book page is asked (its 感想 count is not shown).
+    expect(s.dueIds('bookmeter', 10)).toEqual([]);
+  });
+
+  it("holds a new book's 読書メーター id for its search, like stage 4's pages", async () => {
+    const { e, link } = await env();
+    link('Beta', 'bookmeter', '6826860');
+    const { q } = fetchQueue();
+    saveRatingSettings(e.db, { refresh: true });
+    let now = Date.now();
+    const s = ratingsService(e.db, null, q, () => now);
+    expect(s.dueIds('bookmeter', 10)).toEqual([]);
+    now += 49 * 3_600_000;
+    expect(s.dueIds('bookmeter', 10)).toEqual(['6826860']);
+  });
+
   it("leaves a new book's first rating to stage 4's page (no second request)", async () => {
     const { e, link } = await env();
     link('Alpha', 'amazon_jp', 'B07DXV5BP2');
