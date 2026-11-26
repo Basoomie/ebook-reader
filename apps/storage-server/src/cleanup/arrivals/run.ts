@@ -2993,6 +2993,24 @@ export class BookArrivals {
       this.deps.log?.(
         `New arrivals: run ${run.id}: ${w.held} stage-${stage} changes held${heldWhy ? ` (${heldWhy})` : ''}`,
       );
+    // Books already in Calibre whose series choice this run changed: proposed under stage 4's own
+    // analysis once the run's own changes are written, so stage 4's own On writes the sure ones
+    // (they had waited for the next rules deploy; the user, 2026-11-25).
+    const so = stage === 4 ? p.ai?.series : null;
+    if (so?.existing?.length && (so.existingDone ?? 0) < so.existing.length) {
+      const lib4 = this.deps.analysis4?.progress();
+      if (lib4 && this.ai4) {
+        const all = await this.ai4.proposeExisting(lib4, so, () => false);
+        this.save(run.id, p);
+        if (!all) {
+          p.waiting = `Proposing the series changes of books already in the library (${so.existingDone} of ${so.existing.length})`;
+          return 'more';
+        }
+        this.deps.log?.(
+          `New arrivals: run ${run.id}: ${so.existing.length} books already in the library proposed again for their series (stage 4's own On writes the sure ones)`,
+        );
+      }
+    }
     this.deps.wantIngest(libraryId);
     this.next(run.id, p, nextPhase);
     return 'more';
@@ -3188,7 +3206,21 @@ export class BookArrivals {
     ).n;
     const cm = this.count(p, 'move');
     cm.total = p.move.auto;
-    cm.done = Math.max(0, p.move.auto - left);
+    // A move batch's proposals stay queued until the whole batch ends (1,025 books in one batch
+    // in run 7, ~13 s each): count its books already moved or settled, so the bar moves.
+    const open = p.move.batches;
+    const inFlight = open.length
+      ? (
+          this.db
+            .prepare(
+              `SELECT COUNT(*) AS n FROM batch_items i JOIN batches b ON b.id = i.batch_id
+               WHERE i.batch_id IN (${open.map(() => '?').join(', ')}) AND b.finished_at IS NULL
+                 AND i.state IN ('removed', 'failed', 'skipped')`,
+            )
+            .get(...open) as { n: number }
+        ).n
+      : 0;
+    cm.done = Math.min(p.move.auto, Math.max(0, p.move.auto - left) + inFlight);
     if (left === 0) {
       p.move.moved = (
         this.db

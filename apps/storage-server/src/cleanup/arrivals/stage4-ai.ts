@@ -15,8 +15,12 @@
  *             every book of the library as stage 4 On would leave it, as the library's step does)
  *   series    the order of those series decided whole (orderSeries); the rows of every book of
  *             those series are written (the Best guesses list shows them), but only the new books
- *             are proposed (decided with the user 2026-11-22: a change to a book already in Calibre
- *             waits for stage 4's own On)
+ *             are proposed here (decided with the user 2026-11-22: a change to a book already in
+ *             Calibre waits for stage 4's own On). After an On run's stage-4 write, the books
+ *             already in Calibre whose choice changed are proposed under stage 4's own analysis
+ *             (proposeExisting, as the library's series step proposes them), so stage 4's own On
+ *             writes the sure ones and the others wait in review (the user, 2026-11-25: they had
+ *             waited for the next rules deploy, the only time the library's step ran)
  *
  * The J gate (jGate): the labeled books decided with J in memory (never stored: the library's
  * labeled books keep their E values), scored against the bars. A field below its bar is decided
@@ -87,6 +91,10 @@ export interface ArrivalAiProgress {
     reviews: number;
     /** Books already in Calibre whose number the order would change (listed, not written). */
     existingChanged: number;
+    /** Those books' uuids (proposed under stage 4's own analysis after an On run's write). */
+    existing?: string[];
+    /** How many of them proposeExisting has gone through. */
+    existingDone?: number;
   } | null;
 }
 
@@ -363,7 +371,28 @@ export class ArrivalStage4Ai {
       const b = this.deps.analysis.seriesBook(view, uuid, a);
       if (b) by.set(k, [...(by.get(k) ?? []), b]);
     }
-    const out = { series: by.size, newBooks: 0, guesses: 0, reviews: 0, existingChanged: 0 };
+    const out = {
+      series: by.size,
+      newBooks: 0,
+      guesses: 0,
+      reviews: 0,
+      existingChanged: 0,
+      existing: [] as string[],
+      existingDone: 0,
+    };
+    // The library's open series reviews (as its series step reads them): proposed again when the
+    // choice differs from the number they propose.
+    const open = new Map<string, number | null>();
+    for (const r of this.db
+      .prepare(
+        `SELECT calibre_uuid, new_json FROM proposed_changes INDEXED BY proposed_changes_counts
+         WHERE stage = 4 AND library_id = ? AND state = 'proposed' AND field = 'series'
+           AND class = 'review'`,
+      )
+      .all(view.libraryId) as { calibre_uuid: string; new_json: string }[]) {
+      const v = JSON.parse(r.new_json) as { index?: number | null } | null;
+      open.set(r.calibre_uuid, v?.index ?? null);
+    }
     const rows: SeriesOrderRow[] = [];
     for (const [key, g] of by) {
       const choices = new Map(orderSeries(g).map((c) => [c.uuid, c]));
@@ -387,11 +416,46 @@ export class ArrivalStage4Ai {
           out.newBooks++;
           if (c?.guess) out.guesses++;
           if (c?.review) out.reviews++;
-        } else if (c && (c.index !== b.index || c.review !== undefined)) out.existingChanged++;
+        } else if (c && (c.index !== b.index || c.review !== undefined)) {
+          out.existingChanged++;
+          out.existing.push(b.uuid);
+        } else if (
+          c &&
+          (c.title !== undefined || (open.has(b.uuid) && open.get(b.uuid) !== c.index))
+        )
+          // The library's step proposes these again too (a title, a stale review).
+          out.existing.push(b.uuid);
       }
     }
     if (rows.length) writeSeriesOrder(this.db, view.libraryId, rows);
     return out;
+  }
+
+  /**
+   * The books already in Calibre whose series choice the run changed, proposed under stage 4's own
+   * analysis (the library's series step's own call), a slice at a time. True when all are done.
+   */
+  async proposeExisting(
+    library: Stage4Progress,
+    series: NonNullable<ArrivalAiProgress['series']>,
+    shouldStop: () => boolean,
+  ): Promise<boolean> {
+    const list = series.existing ?? [];
+    let done = series.existingDone ?? 0;
+    let n = 0;
+    while (done < list.length && n < SLICE) {
+      if (shouldStop()) break;
+      const uuid = list[done];
+      await this.deps.analysis.proposeWithAi(
+        library,
+        uuid,
+        storedAiValues(this.db, itemKeyOf(library.libraryId, uuid)),
+      );
+      done++;
+      n++;
+    }
+    series.existingDone = done;
+    return done >= list.length;
   }
 
   /**
