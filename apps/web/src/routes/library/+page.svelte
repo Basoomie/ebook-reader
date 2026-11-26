@@ -116,6 +116,8 @@
   import {
     activeChips,
     chipOnlyQuery,
+    listsOnlyCompleted,
+    listsOnlyNext,
     CHIPS,
     toggleChip,
     type ChipId
@@ -1304,15 +1306,25 @@
     const by = TABS.find((t) => t.id === tab)?.by ?? null;
     if (by && group === null) return 'groups';
     if (group?.by === 'series' && group.name !== null) return 'series';
-    if (group) return 'books';
+    // Every list of Completed books (the collection, the chip, a typed search, a saved search)
+    // opens newest completed first; a series keeps its own order.
+    const completed = () =>
+      listsOnlyCompleted(appliedQuery) ||
+      (collectionId !== null &&
+        listsOnlyCompleted(builtinCollection(collectionId)?.query ?? smartQuery()));
+    // Every list of next volumes (Next in your series' See all, status:next with other terms, a
+    // saved search) opens in the Home row's order, Series last finished.
+    const next = () =>
+      listsOnlyNext(appliedQuery) ||
+      (collectionId !== null &&
+        listsOnlyNext(builtinCollection(collectionId)?.query ?? smartQuery()));
+    const listed = (): SortContext => (completed() ? 'completed' : next() ? 'next' : 'books');
+    if (group) return listed();
     if (collectionId !== null) {
       const c = collectionList.find((x) => x.id === collectionId);
       if (c?.type === 'manual') return 'list';
-      return collectionId === 'completed' ? 'completed' : 'books';
     }
-    // Next in your series' See all: the search status:next alone, in the Home row's order.
-    if (appliedQuery.trim().toLowerCase() === 'status:next') return 'next';
-    return 'books';
+    return listed();
   }
 
   /** WP19a: a new sort from the Sort menu (remembered per device outside a series or list). */

@@ -5,7 +5,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { activeChips, chipOnlyQuery, toggleChip } from './chips';
+import { activeChips, chipOnlyQuery, listsOnlyCompleted, listsOnlyNext, toggleChip } from './chips';
 
 describe('filter chips', () => {
   it('adds a status term, then extends it', () => {
@@ -86,5 +86,27 @@ describe('the query a chip counts (chipOnlyQuery)', () => {
 
   it('gives null while the query has an error', () => {
     expect(chipOnlyQuery('status:foo', 'reading')).toBeNull();
+  });
+});
+
+describe('listsOnlyNext', () => {
+  it('is true only for a status term of next alone, not negated', () => {
+    expect(listsOnlyNext('status:next')).toBe(true);
+    expect(listsOnlyNext('tag:SF status:next')).toBe(true);
+    expect(listsOnlyNext('status:next,reading')).toBe(false);
+    expect(listsOnlyNext('-status:next')).toBe(false);
+    expect(listsOnlyNext('status:completed')).toBe(false);
+    expect(listsOnlyNext('')).toBe(false);
+  });
+});
+
+describe('listsOnlyCompleted', () => {
+  it('is true only for a positive status term of Completed', () => {
+    expect(listsOnlyCompleted('status:completed')).toBe(true);
+    expect(listsOnlyCompleted('tag:SF status:completed')).toBe(true);
+    expect(listsOnlyCompleted('status:completed,reading')).toBe(false);
+    expect(listsOnlyCompleted('-status:completed')).toBe(false);
+    expect(listsOnlyCompleted('status:reading')).toBe(false);
+    expect(listsOnlyCompleted('')).toBe(false);
   });
 });
