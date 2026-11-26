@@ -4,7 +4,9 @@
  * so an event added later starts with its defaults.
  */
 import type Database from 'better-sqlite3';
-import { listEvents, SECTIONS, SectionId } from './events';
+import { defaultSwitches, listEvents, SECTIONS, SectionId } from './events';
+// Registers the series-arrival alert (off by default) before any defaults are made.
+import '../series-arrivals/events';
 // Registers N2's stats events before any defaults are made.
 import { REPORT_KINDS, ReportKind } from './stats-events';
 // Registers the AI layer's limit alert before any defaults are made.
@@ -29,6 +31,11 @@ export interface Waits {
   fetchHelperMinutes: number;
   /** A device's refused changes count as over after this long without another (hours). */
   refusalQuietHours: number;
+  /**
+   * A new volume of a series you're reading waits for the cleanup's new-arrivals run to be done
+   * with it, at most this long (hours; docs/design/series-arrivals.md).
+   */
+  seriesArrivalWaitHours: number;
 }
 
 export interface NotificationSettings {
@@ -59,11 +66,12 @@ export const WAIT_LIMITS: Record<keyof Waits, [number, number]> = {
   applyHelperMinutes: [1, 1440],
   fetchHelperMinutes: [1, 1440],
   refusalQuietHours: [1, 168],
+  seriesArrivalWaitHours: [1, 168],
 };
 
 export function defaultSettings(): NotificationSettings {
   const events: Record<string, Record<Channel, boolean>> = {};
-  for (const e of listEvents()) events[e.id] = { discord: true, email: true };
+  for (const e of listEvents()) events[e.id] = defaultSwitches(e.id);
   return {
     email: { from: '', to: '' },
     linkBase: 'http://192.168.1.5:3080',
@@ -75,6 +83,7 @@ export function defaultSettings(): NotificationSettings {
       applyHelperMinutes: 30,
       fetchHelperMinutes: 30,
       refusalQuietHours: 24,
+      seriesArrivalWaitHours: 24,
     },
     // Stats is off by default (approved layout); its three messages start on once it is on.
     sections: { jobs: true, cleanup: true, data: true, stats: false },
@@ -198,7 +207,7 @@ export function mergeSettings(base: NotificationSettings, input: unknown): Notif
       for (const ch of CHANNELS) {
         if (c[ch] === undefined) continue;
         if (typeof c[ch] !== 'boolean') throw new SettingsError('A switch must be on or off');
-        out.events[id] = { ...(out.events[id] ?? { discord: true, email: true }), [ch]: c[ch] };
+        out.events[id] = { ...(out.events[id] ?? defaultSwitches(id)), [ch]: c[ch] };
       }
     }
   }
