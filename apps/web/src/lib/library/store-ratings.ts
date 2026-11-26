@@ -6,8 +6,10 @@
 
 /**
  * Store ratings on the book page and the Library cards (2026-11-25, docs/design/store-ratings.md):
- * what other readers thought, from the stores the book's links point at. Never shown as stars
- * (stars are only your own rating): a number, how many rated it and the store's name.
+ * what other readers thought, from the stores the book's links point at. The book page shows one
+ * summary line, stars and a number (design 2026-11-25, the user's choice of the redesign's
+ * option A: the earlier numbers-only line crowded the page); your own rating sits beside it as
+ * "You ★ 3". Elsewhere a number, how many rated it and the store's name.
  *
  * - The pooled figure (Amazon and BOOK☆WALKER together, weighted by their counts) heads the line;
  *   each store's own figure follows, then 読書メーター's readers (only once the server switches
@@ -77,6 +79,10 @@ export interface RatingPiece {
   text: string;
   /** For the hover: "as of 25 Nov 2026". */
   checkedAt: number | null;
+  /** The figure's stars (null for 読書メーター's readers). */
+  avg: number | null;
+  /** How many rated it, or 読書メーター's readers. */
+  count: number;
 }
 
 function siteText(part: RatingPart, f: RatingFigure): string | null {
@@ -109,7 +115,9 @@ export function ratingPieces(
       part: 'pooled',
       label: '',
       text: `${formatStars(avg)} · ${formatCount(count)} ${count === 1 ? 'rating' : 'ratings'}`,
-      checkedAt: latest > 0 ? latest : null
+      checkedAt: latest > 0 ? latest : null,
+      avg,
+      count
     });
   }
   for (const part of ['amazon_jp', 'bookwalker', 'bookmeter', 'natively'] as const) {
@@ -123,10 +131,44 @@ export function ratingPieces(
       part,
       label: PART_LABELS[part],
       text,
-      checkedAt: f.checkedAt > 0 ? f.checkedAt : null
+      checkedAt: f.checkedAt > 0 ? f.checkedAt : null,
+      avg: part === 'bookmeter' ? null : f.avg,
+      count: f.count ?? 0
     });
   }
   return out;
+}
+
+/**
+ * The book page's summary (design 2026-11-25, "one summary line, breakdown on tap"): stars and
+ * one figure up front, 読書メーター's readers beside it, and every store in the breakdown. The
+ * headline is the pooled figure when the pieces have it, else the first store with stars (named,
+ * since it is one store's); the breakdown lists the stores (the pooled figure is the headline
+ * and its note).
+ */
+export interface RatingSummary {
+  headline: RatingPiece | null;
+  readers: RatingPiece | null;
+  rows: RatingPiece[];
+  /** The newest of the figures' dates (the breakdown's last line). */
+  checkedAt: number | null;
+}
+
+export function ratingSummary(pieces: readonly RatingPiece[]): RatingSummary {
+  const headline =
+    pieces.find((p) => p.part === 'pooled') ??
+    pieces.find((p) => p.avg !== null && p.part !== 'natively') ??
+    pieces.find((p) => p.avg !== null) ??
+    null;
+  const readers = pieces.find((p) => p.part === 'bookmeter') ?? null;
+  const rows = pieces.filter((p) => p.part !== 'pooled');
+  const latest = Math.max(0, ...pieces.map((p) => p.checkedAt ?? 0));
+  return { headline, readers, rows, checkedAt: latest > 0 ? latest : null };
+}
+
+/** "4,731 ratings", "1 rating". */
+export function ratingsCountText(count: number): string {
+  return `${formatCount(count)} ${count === 1 ? 'rating' : 'ratings'}`;
 }
 
 /** "as of 25 Nov 2026" for a piece's hover. */
