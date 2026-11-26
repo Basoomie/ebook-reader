@@ -36,9 +36,10 @@ import { MoveBatches } from './move/move-batches';
 import { pauseMove } from './move/state';
 import { movedFrom } from './move/rekey';
 import { releaseUnwritten } from './edits/yours';
-import { createHash, randomUUID } from 'crypto';
+import { randomUUID } from 'crypto';
 import fs from 'fs/promises';
 import path from 'path';
+import { sha256File } from './file-hash';
 import { snapshotFile } from '../calibre/indexer';
 import { getIndexState, getLibrary } from '../calibre/libraries';
 import { snapshotMetadataDb } from '../calibre/snapshot';
@@ -299,21 +300,15 @@ export function batchSnapshotPath(cacheDir: string, batchId: string): string {
   return path.join(cacheDir, 'cleanup', 'batches', `${batchId}.db`);
 }
 
-async function sha256File(file: string): Promise<string> {
-  const hash = createHash('sha256');
-  const handle = await fs.open(file, 'r');
-  try {
-    for await (const chunk of handle.createReadStream()) hash.update(chunk as Buffer);
-  } finally {
-    await handle.close().catch(() => {});
-  }
-  return hash.digest('hex');
-}
-
 export class BatchService {
   private readonly leaseSeconds: number;
   /** metadata.db copies being made, per batch (never two at once for one batch). */
-  private readonly snapshotting = new Map<string, Promise<void>>();
+  private readonly snapshotting = new Map<string, { promise: Promise<void>; startedAt: number }>();
+  /**
+   * A copy still unsettled after this long is dropped and made again: the copy itself gives up
+   * after 10 minutes, so one past this is stuck (a stalled read, 2026-11-26).
+   */
+  snapshotStuckMs = 15 * 60_000;
   /** How long a claim waits for a copy before answering "being made" (under the sidecar's 60 s). */
   snapshotAnswerMs = 30_000;
   /** Stage 2's batches (WP20b): writing fields instead of removing copies. */
@@ -946,12 +941,25 @@ export class BatchService {
     if (!batch.snapshotSaved) {
       // One copy per batch at a time, and the sidecar gets an answer within its request time:
       // a copy still running answers "being made" and is asked about again on the next claim.
-      let making = this.snapshotting.get(batch.id);
-      if (!making) {
-        making = this.makeSnapshot(batch).finally(() => this.snapshotting.delete(batch.id));
-        this.snapshotting.set(batch.id, making);
-        making.catch(() => {});
+      let entry = this.snapshotting.get(batch.id);
+      if (entry && Date.now() - entry.startedAt > this.snapshotStuckMs) {
+        this.deps.log?.(
+          `Cleanup: batch ${batch.id}: its metadata.db copy has not settled in ${Math.round(this.snapshotStuckMs / 60_000)} min; made again`,
+        );
+        this.snapshotting.delete(batch.id);
+        entry = undefined;
       }
+      if (!entry) {
+        const promise: Promise<void> = this.makeSnapshot(batch).finally(() => {
+          // Only this copy's own entry (a dropped stuck copy never removes its successor).
+          if (this.snapshotting.get(batch.id)?.promise === promise)
+            this.snapshotting.delete(batch.id);
+        });
+        promise.catch(() => {});
+        entry = { promise, startedAt: Date.now() };
+        this.snapshotting.set(batch.id, entry);
+      }
+      const making = entry.promise;
       try {
         const done = await Promise.race([
           making.then(() => true),

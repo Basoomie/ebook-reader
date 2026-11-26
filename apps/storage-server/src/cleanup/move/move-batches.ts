@@ -23,9 +23,8 @@
  * The batch holds the index of both libraries while claimed, and the next batch waits until both
  * indexes took the last one in.
  */
-import { createHash } from 'crypto';
-import fs from 'fs/promises';
 import path from 'path';
+import { sha256File } from '../file-hash';
 import { snapshotFile } from '../../calibre/indexer';
 import { getIndexState, getLibrary } from '../../calibre/libraries';
 import {
@@ -97,17 +96,6 @@ const APPLY_STEPS: Record<string, ItemState[]> = {
   verified: ['exported', 'skipped', 'failed'],
   exported: ['tagged', 'skipped', 'failed'],
   tagged: ['removed', 'skipped', 'failed'],
-};
-
-const sha256File = async (file: string): Promise<string> => {
-  const hash = createHash('sha256');
-  const handle = await fs.open(file, 'r');
-  try {
-    for await (const chunk of handle.createReadStream()) hash.update(chunk as Buffer);
-  } finally {
-    await handle.close().catch(() => {});
-  }
-  return hash.digest('hex');
 };
 
 /** A book as Calibre's live metadata.db holds it now (read-only, one query by UUID). */
