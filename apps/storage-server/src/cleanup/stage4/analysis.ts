@@ -675,6 +675,7 @@ export class Stage4Analysis {
     p: Stage4Progress,
     uuids: string[],
     shouldStop: () => boolean,
+    onBook?: (done: number, total: number) => void,
   ): Promise<number> {
     if (!isArrivalAnalysis(p.analysisId)) throw new Error('Not an arrivals run');
     this.loadSnapshot(p.libraryId);
@@ -706,6 +707,7 @@ export class Stage4Analysis {
           Date.now(),
         );
       n++;
+      onBook?.(n, uuids.length);
     }
     this.save(p);
     return n;

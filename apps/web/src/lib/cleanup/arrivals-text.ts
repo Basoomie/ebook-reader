@@ -144,7 +144,9 @@ export const STEP_PART_LABELS: Record<string, string> = {
   stat: 'reading the new books’ file sizes',
   match: 'hashing the library’s books of the same sizes',
   cheap: 'the first pair of models answering',
-  strong: 'the stronger pair answering'
+  strong: 'the stronger pair answering',
+  read: 'reading the new books’ files',
+  lookups: 'the online lookups'
 };
 
 /** Outcomes of a file in plain words (the lists' names and the summary). */

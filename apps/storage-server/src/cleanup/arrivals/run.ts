@@ -128,6 +128,8 @@ export type RunPhase =
 const STAGE1_PARTS = ['stat', 'match'] as const;
 /** The AI step's parts while the models answer: the first pair, then the stronger pair. */
 const AI_PARTS = ['cheap', 'strong'] as const;
+/** Stage 4's parts on the run's books: reading their files, then the online lookups. */
+const STAGE4_PARTS = ['read', 'lookups'] as const;
 
 /**
  * WP20g run 7 (2026-11-26): a run's books that stage 4 never read (the read was cut by a restart
@@ -2939,9 +2941,15 @@ export class BookArrivals {
         ).map((r) => r.calibre_uuid),
       );
       const unread = uuids.filter((u) => !seen.has(u));
+      // The read's own count (hours for a big run: 9,798 books at ~36 a minute in run 10).
+      const before = uuids.length - unread.length;
+      p.waiting = "Reading the new books' files";
       const n = await this.withDisk(
         p,
-        () => a4.arrivalRead(p.stage4!, unread, shouldStop),
+        () =>
+          a4.arrivalRead(p.stage4!, unread, shouldStop, (done) =>
+            this.passProgress(run.id, p, STAGE4_PARTS, 'read', before + done, uuids.length),
+          ),
         shouldStop,
       );
       if (n === null || shouldStop()) return 'wait';
@@ -2950,6 +2958,7 @@ export class BookArrivals {
     }
     const done = await a4.arrivalStep(p.stage4);
     const counts = a4.arrivalCounts(p.stage4);
+    this.setPart(p, 'lookups', STAGE4_PARTS);
     const c = this.count(p, 'stage4');
     c.total = uuids.length;
     c.done = (counts.proposed ?? 0) + (counts.error ?? 0);
