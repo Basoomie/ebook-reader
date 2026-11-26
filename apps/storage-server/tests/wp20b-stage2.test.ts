@@ -1030,6 +1030,33 @@ describe('stage 2: metadata and covers from the files', () => {
     expect(madeAt).toBeLessThan(Date.now());
   });
 
+  it('a metadata.db copy that never settles is dropped and made again', async () => {
+    await setMode('on');
+    await worker().cycle(); // heartbeat and safety checks
+    await env.service.tick();
+    const planned = env.service.batches.open()!;
+    const svc = env.service.batches as unknown as {
+      makeSnapshot: (b: unknown) => Promise<void>;
+      snapshotAnswerMs: number;
+      snapshotStuckMs: number;
+    };
+    const real = svc.makeSnapshot.bind(env.service.batches);
+    let calls = 0;
+    // The first copy hangs for ever (the stalled read seen on the NAS); the second is real.
+    svc.makeSnapshot = (b) => (++calls === 1 ? new Promise<void>(() => {}) : real(b));
+    svc.snapshotAnswerMs = 50;
+    svc.snapshotStuckMs = 100;
+    expect(await env.service.batches.claim()).toEqual({
+      batch: null,
+      wait: 'metadata.db snapshot is being made',
+    });
+    await new Promise((r) => setTimeout(r, 150));
+    const next = await env.service.batches.claim();
+    expect(calls).toBe(2);
+    expect(next.batch?.id).toBe(planned.id);
+    expect(next.batch?.snapshotSha256).toMatch(/^[0-9a-f]{64}$/);
+  });
+
   it('a sidecar stopped after a write resumes without writing again', async () => {
     await setMode('on');
     let stoppedOnce = false;
