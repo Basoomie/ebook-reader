@@ -519,6 +519,24 @@ export class NotificationWatcher {
     } catch {
       // cleanup.db before manga part A
     }
+    // Books without an EPUB (a row per library), one alert per pause.
+    try {
+      for (const f of db
+        .prepare(
+          'SELECT library_id, paused_reason, paused_detail FROM calibre_formats_state WHERE paused_reason IS NOT NULL',
+        )
+        .all() as { library_id: string; paused_reason: string; paused_detail: string | null }[]) {
+        const key = this.libKey(db, 'stage_paused:formats', f.library_id);
+        active.add(key);
+        const summary = `Books without an EPUB${this.libraryLabel(db, f.library_id)} paused: ${f.paused_detail ?? stagePauseText(f.paused_reason)}`;
+        if (
+          this.service.observe(key, 'stage_paused', { waitMs: 0, summary, detail: f.paused_detail })
+        )
+          this.messages.push({ event: 'stage_paused', lines: [summary], link: LINKS.cleanup });
+      }
+    } catch {
+      // cleanup.db before the books-without-an-EPUB pass
+    }
     this.service.clearOthers('stage_paused', active);
 
     const byReason = new Map<string, typeof rows>();

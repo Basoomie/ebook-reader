@@ -16,6 +16,7 @@ import type { BookmeterMore } from './stage4/bookmeter-more';
 import type { SeriesPairs } from './series-pairs/pass';
 import type { LinkDiscovery } from './stage4/link-discovery';
 import type { BookmeterListings } from './stage4/bookmeter-listing';
+import type { FormatsPass } from './formats/pass';
 
 type Cache = { at: number; value: unknown } | null;
 
@@ -35,6 +36,9 @@ export class LibraryParts {
   seriesPairsRunning: Promise<void> | null = null;
   linksRunning: Promise<void> | null = null;
   listingsRunning: Promise<void> | null = null;
+  /** Books without an EPUB: this library's pass (set once made) and its running loop. */
+  formats: FormatsPass | null = null;
+  formatsRunning: Promise<void> | null = null;
   status4Cache: Cache = null;
   status5Cache: Cache = null;
   bookmeterCache: Cache = null;

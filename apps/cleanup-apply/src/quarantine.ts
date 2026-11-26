@@ -87,6 +87,25 @@ export class Quarantine {
     }
   }
 
+  /**
+   * 1.8.0: the file of this format in an export folder (`book.azw3`…), or for no format the first
+   * book file there (any format but the OPF and the cover), or null.
+   */
+  async bookFileIn(dir: string, format?: string): Promise<string | null> {
+    try {
+      const names = await fsp.readdir(dir);
+      const want = format ? `.${format.toLowerCase()}` : null;
+      const hit = names.find((n) =>
+        want
+          ? n.toLowerCase().endsWith(want)
+          : !/\.(opf|jpe?g|png|json)$/i.test(n) && /\.[a-z0-9]+$/i.test(n)
+      );
+      return hit ? path.join(dir, hit) : null;
+    } catch {
+      return null;
+    }
+  }
+
   /** Writable, with at least `minFreeMb` free. */
   async check(minFreeMb: number): Promise<{ ok: boolean; detail: string }> {
     try {

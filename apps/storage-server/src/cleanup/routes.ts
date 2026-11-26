@@ -27,6 +27,9 @@ import {
 import { isSecretName } from './secrets';
 import { ArrivalBatchError } from './arrivals/add-batches';
 import { streamSource } from './arrivals/sources-fs';
+import { FormatsError } from './formats/pass';
+import { FORMATS_STAGE } from './field-stages';
+import type { JobFacts } from './formats/check';
 import { arrivalsList, arrivalsStatus, notImportedCsv } from './arrivals/views';
 import { ImportError, importQuarantineCover, quarantineCovers } from './edits/cover-import';
 import { MAX_COVER_BYTES } from './edits/edits';
@@ -49,6 +52,7 @@ export interface CleanupOptions {
 
 function rethrow(err: unknown): never {
   if (err instanceof BatchError) throw new ApiError(err.status, err.code, err.message);
+  if (err instanceof FormatsError) throw new ApiError(err.status, err.code, err.message);
   if (err instanceof ArrivalBatchError) throw new ApiError(err.status, err.code, err.message);
   if (err instanceof SettingsError) throw new ApiError(400, 'invalid_setting', err.message);
   throw err;
@@ -105,6 +109,8 @@ const STEPS: ItemState[] = [
   'exported',
   'tagged',
   'removed',
+  // Books without an EPUB (stage 12): an EPUB added to its book (each stage checks its own steps).
+  'written',
   'restored',
   'skipped',
   'failed',
@@ -476,6 +482,88 @@ export function createCleanupApplyRouter(options: CleanupOptions): Router {
       );
       void service.tick();
       res.json({ ok: true });
+    } catch (err) {
+      rethrow(err);
+    }
+  });
+
+  // Books without an EPUB (sidecar 1.8.0): the conversion jobs and the checked EPUBs.
+  router.post('/cleanup-apply/formats/claim', (_req, res) => {
+    const service = serviceOr503(options);
+    const login = service.sidecarConfig();
+    // A cleanup batch goes first; a conversion never runs beside one.
+    if (!login?.libraryId || service.batches.open()) {
+      res.json({ job: null });
+      return;
+    }
+    res.json({ job: service.claimFormatJob() });
+  });
+
+  router.post('/cleanup-apply/formats/jobs/:id/alive', (req, res) => {
+    const service = serviceOr503(options);
+    try {
+      service.formatsForJob(Number(req.params.id)).jobAlive(Number(req.params.id));
+      res.json({ ok: true });
+    } catch (err) {
+      rethrow(err);
+    }
+  });
+
+  router.put(
+    '/cleanup-apply/formats/jobs/:id/epub',
+    asyncHandler(async (req, res) => {
+      const service = serviceOr503(options);
+      const sha = String(req.header('x-sha256') ?? '');
+      const size = Number(req.header('content-length') ?? 0) || 0;
+      try {
+        const id = Number(req.params.id);
+        await service.formatsForJob(id).receiveEpub(id, req, sha, size);
+      } catch (err) {
+        rethrow(err);
+      }
+      res.json({ ok: true });
+    }),
+  );
+
+  router.post('/cleanup-apply/formats/jobs/:id/done', (req, res) => {
+    const service = serviceOr503(options);
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    const str = (v: unknown, max = 2000) => (typeof v === 'string' ? v.slice(0, max) : null);
+    const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+    const facts: JobFacts = {
+      outcome: str(b.outcome, 40) ?? 'failed',
+      kind: str(b.kind, 40),
+      method: str(b.method, 40),
+      detail: str(b.detail),
+      sourceSize: num(b.sourceSize),
+      sourceSha256: str(b.sourceSha256, 64),
+      sourceChars: num(b.sourceChars),
+      epubChars: num(b.epubChars),
+      sourceImages: num(b.sourceImages),
+      epubSha256: str(b.epubSha256, 64),
+      epubSize: num(b.epubSize),
+      ms: num(b.ms) ?? 0,
+      entries: num(b.entries),
+    };
+    try {
+      service.formatsForJob(Number(req.params.id)).finishJob(Number(req.params.id), facts);
+    } catch (err) {
+      rethrow(err);
+    }
+    service.formatsChanged();
+    res.json({ ok: true });
+  });
+
+  router.get('/cleanup-apply/formats/items/:id/epub', (req, res) => {
+    const service = serviceOr503(options);
+    try {
+      const f = service.batches.formats.epubForItem(Number(req.params.id));
+      res.setHeader('Content-Type', 'application/epub+zip');
+      res.setHeader('Content-Length', String(f.size));
+      res.setHeader('X-Sha256', f.sha256);
+      const stream = createReadStream(f.file);
+      stream.on('error', (err) => res.destroy(err));
+      stream.pipe(res);
     } catch (err) {
       rethrow(err);
     }
@@ -1591,6 +1679,120 @@ export function createCleanupRouter(options: CleanupOptions): Router {
     res.json(service.moveStatus());
   });
 
+  // ---- Books without an EPUB (non-epub-books.md) ----
+
+  /** The library's pass (`?library=`, default the primary library). */
+  const formatsOr404 = (req: Request) => {
+    const service = serviceOr503(options);
+    const lib = libOf(service, req);
+    const pass = service.formatsOf(lib);
+    if (!pass || !lib) throw new ApiError(404, 'no_library', 'No such cleanup library');
+    return { service, pass, lib };
+  };
+
+  router.get('/cleanup/formats', (req, res) => {
+    const { service, lib } = formatsOr404(req);
+    res.json(service.formatsStatus(lib));
+  });
+
+  router.put('/cleanup/formats/mode', (req, res) => {
+    const { service, pass, lib } = formatsOr404(req);
+    const mode = (req.body as { mode?: unknown } | undefined)?.mode;
+    if (mode !== 'off' && mode !== 'analyse' && mode !== 'on')
+      throw new ApiError(400, 'bad_mode', 'mode must be off, analyse or on');
+    try {
+      pass.setMode(mode);
+    } catch (err) {
+      throw new ApiError(409, 'not_now', (err as Error).message);
+    }
+    service.formatsChanged(lib);
+    res.json(service.formatsStatus(lib));
+  });
+
+  router.post('/cleanup/formats/again', (req, res) => {
+    const { service, pass, lib } = formatsOr404(req);
+    if (service.batches.open() && service.batches.open()!.stage === FORMATS_STAGE)
+      throw new ApiError(
+        409,
+        'not_now',
+        'A batch of the pass is being applied; try again after it',
+      );
+    pass.again();
+    service.formatsChanged(lib);
+    res.json(service.formatsStatus(lib));
+  });
+
+  router.post('/cleanup/formats/resume', (req, res) => {
+    const { service, pass, lib } = formatsOr404(req);
+    pass.resume();
+    service.formatsChanged(lib);
+    res.json(service.formatsStatus(lib));
+  });
+
+  router.get('/cleanup/formats/books', (req, res) => {
+    const { pass, lib } = formatsOr404(req);
+    const q = req.query as Record<string, string | undefined>;
+    const which = (['listed', 'review', 'fold', 'convert', 'all'] as const).find(
+      (w) => w === q.which,
+    );
+    if (!which)
+      throw new ApiError(400, 'bad_list', 'which must be listed, review, fold, convert or all');
+    const offset = Math.max(0, Number(q.offset ?? 0) || 0);
+    const limit = Math.min(100, Math.max(1, Number(q.limit ?? 20) || 20));
+    const reason = /^[a-z_]{1,30}$/.test(q.reason ?? '') ? q.reason : undefined;
+    res.json(pass.list(lib, which, offset, limit, reason));
+  });
+
+  router.post('/cleanup/formats/review/:id', (req, res) => {
+    const { service, pass, lib } = formatsOr404(req);
+    const choice = (req.body as { choice?: unknown } | undefined)?.choice;
+    if (choice !== 'fold' && choice !== 'convert' && choice !== 'leave')
+      throw new ApiError(400, 'bad_choice', 'choice must be fold, convert or leave');
+    try {
+      pass.choose(Number(req.params.id), choice);
+    } catch (err) {
+      throw new ApiError(409, 'not_now', (err as Error).message);
+    }
+    service.formatsChanged(lib);
+    res.json(service.formatsStatus(lib));
+  });
+
+  router.get('/cleanup/formats/spot', (req, res) => {
+    res.json({ books: formatsOr404(req).pass.spotList() });
+  });
+
+  router.put('/cleanup/formats/spot/:uuid', (req, res) => {
+    const { service, pass, lib } = formatsOr404(req);
+    const verdict = (req.body as { verdict?: unknown } | undefined)?.verdict;
+    if (verdict !== 'right' && verdict !== 'wrong' && verdict !== null)
+      throw new ApiError(400, 'bad_verdict', 'verdict must be right, wrong or null');
+    try {
+      pass.setVerdict(req.params.uuid, verdict);
+    } catch (err) {
+      throw new ApiError(409, 'not_now', (err as Error).message);
+    }
+    res.json(service.formatsStatus(lib));
+  });
+
+  // The checked EPUB of a book (spot check, review), to open in a reader before marking it.
+  router.get('/cleanup/formats/epub/:uuid', (req, res) => {
+    const { pass } = formatsOr404(req);
+    try {
+      const f = pass.epubFileOf(req.params.uuid);
+      const name = `${safeFileName(f.title) || 'book'}.epub`;
+      res.setHeader('Content-Type', 'application/epub+zip');
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="book.epub"; filename*=UTF-8''${encodeURIComponent(name)}`,
+      );
+      const stream = createReadStream(f.file);
+      stream.on('error', (err) => res.destroy(err));
+      stream.pipe(res);
+    } catch (err) {
+      rethrow(err);
+    }
+  });
+
   // ---- WP20g: the Calibre library's new arrivals ----
 
   router.get('/cleanup/arrivals', (req, res) => {
@@ -1820,4 +2022,13 @@ export function createCleanupRouter(options: CleanupOptions): Router {
 
   router.use('/cleanup', (_req, res) => sendError(res, 404, 'not_found', 'No such route'));
   return router;
+}
+
+/** A book title as a file name: no path or control characters, at most 120 characters. */
+function safeFileName(title: string): string {
+  return [...title]
+    .map((c) => (/[\\/:*?"<>|]/.test(c) || c.charCodeAt(0) < 0x20 ? '_' : c))
+    .join('')
+    .slice(0, 120)
+    .trim();
 }

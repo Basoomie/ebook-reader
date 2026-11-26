@@ -11,7 +11,11 @@
  *   2026-11-13, and taken off again by Undo), trash restore and add (Undo only), and
  *   set_fields (stage 2, WP20b: set_metadata of exactly the fields stage 2 writes: title and
  *   its sort, authors and author_sort, identifiers, publisher, languages, #illustrator and
- *   the cover; never tags, never an OPF).
+ *   the cover; never tags, never an OPF);
+ * - 1.8.0 (books without an EPUB): add_format (one file to one book, never replacing a format
+ *   the book has: the EPUB the server checked, from this sidecar's own folder, or a copy's file
+ *   from the quarantine onto its twin) and remove_format (one format of one book: only a format
+ *   the pass added, as its Undo; the server names it).
  * The password goes in through stdin (`--password <stdin>`), never on the command line.
  *
  * list, set_tags, set_fields, remove, export and add go through the long-lived calibredb helper when there is one
@@ -32,7 +36,9 @@ export type CalibredbCommand =
   | 'trash_restore'
   | 'add'
   | 'set_tags'
-  | 'set_fields';
+  | 'set_fields'
+  | 'add_format'
+  | 'remove_format';
 
 export const ALLOWED: readonly CalibredbCommand[] = [
   'version',
@@ -45,8 +51,44 @@ export const ALLOWED: readonly CalibredbCommand[] = [
   'trash_restore',
   'add',
   'set_tags',
-  'set_fields'
+  'set_fields',
+  'add_format',
+  'remove_format'
 ];
+
+/**
+ * 1.8.0: the formats add_format and remove_format may name (the files of the library's books
+ * without an EPUB, and the EPUB made for them). Never PDF or KFX: the pass leaves those alone.
+ */
+export const BOOK_FORMATS = [
+  'EPUB',
+  'AZW3',
+  'AZW',
+  'MOBI',
+  'PRC',
+  'TXT',
+  'HTML',
+  'HTMLZ',
+  'ZIP',
+  'CBZ',
+  'CBR',
+  'RAR'
+] as const;
+
+const ABSOLUTE = /^(\/|[A-Za-z]:[\\/])/;
+/** The EPUB the server checked, downloaded into this sidecar's own folder for one item. */
+export const FORMAT_ITEM_FILE =
+  /^(\/|[A-Za-z]:[\\/]).*[\\/]ttsu-format-item-\d+[\\/][^\\/]+\.epub$/i;
+/** A copy's file in its quarantine export (<quarantine>/<batch>/<calibre id>[-n]/<name>.<fmt>). */
+export const QUARANTINED_FILE =
+  /^(\/|[A-Za-z]:[\\/]).*[\\/][0-9a-f-]{36}[\\/]\d+(-\d+)?[\\/][^\\/]+\.[A-Za-z0-9]+$/;
+
+/** The format a file is, by its extension, when it is one add_format may add. */
+export function formatOfFile(file: string): string | null {
+  const m = /\.([A-Za-z0-9]+)$/.exec(file);
+  const f = m ? m[1].toUpperCase() : '';
+  return (BOOK_FORMATS as readonly string[]).includes(f) ? f : null;
+}
 
 /**
  * The only fields set_fields may set (stage 2; series, series_index and comments: stage 4;
@@ -245,6 +287,32 @@ export function buildArgs(
         out.push('--field', f);
       }
       return out;
+    }
+    case 'add_format': {
+      // Exactly: --dont-replace <book id> <file>: an EPUB from this sidecar's own item folder, or
+      // a copy's file from its quarantine export. Never replaces a format the book has.
+      const [flag, id, file, ...rest] = args;
+      if (flag !== '--dont-replace' || !/^\d+$/.test(id ?? '') || rest.length > 0 || !file) {
+        throw new Error('add_format takes --dont-replace, a book id and one file');
+      }
+      if (!ABSOLUTE.test(file) || !formatOfFile(file)) {
+        throw new Error('add_format: the file must be an absolute path of a book format');
+      }
+      if (!FORMAT_ITEM_FILE.test(file) && !QUARANTINED_FILE.test(file)) {
+        throw new Error("add_format: the file must be an item's EPUB or a quarantined copy's file");
+      }
+      return ['add_format', ...remote, '--dont-replace', id, file];
+    }
+    case 'remove_format': {
+      // Exactly: <book id> <format>, one format of the allowed ones.
+      const [id, fmt, ...rest] = args;
+      if (!/^\d+$/.test(id ?? '') || rest.length > 0) {
+        throw new Error('remove_format takes a book id and one format');
+      }
+      if (!(BOOK_FORMATS as readonly string[]).includes(fmt ?? '')) {
+        throw new Error(`remove_format can't remove ${String(fmt).slice(0, 10)}`);
+      }
+      return ['remove_format', ...remote, id, fmt];
     }
   }
 }
@@ -456,6 +524,23 @@ export class Calibredb {
       }
     }
     await this.ok('set_fields', login, [String(calibreId), ...fields]);
+  }
+
+  /**
+   * 1.8.0: adds one file as a format of a book (never replacing one it has). The file must be in
+   * one of `dirs` (this sidecar's own format folder, or the quarantine).
+   */
+  async addFormat(login: Login, calibreId: number, file: string, dirs: string[]): Promise<void> {
+    const resolved = path.resolve(file);
+    if (!dirs.some((d) => resolved.startsWith(path.resolve(d) + path.sep))) {
+      throw new Error('The file to add is not in the format or quarantine folder');
+    }
+    await this.ok('add_format', login, ['--dont-replace', String(calibreId), file]);
+  }
+
+  /** 1.8.0: removes one format of a book (Undo of a format the pass added). */
+  async removeFormat(login: Login, calibreId: number, format: string): Promise<void> {
+    await this.ok('remove_format', login, [String(calibreId), format.toUpperCase()]);
   }
 
   /** Stage 2: what Calibre shows for these books (one `list` call), by id. */

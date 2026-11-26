@@ -1277,6 +1277,33 @@ export function moveOnCopy(books: number, withData: number, target: string): Con
   };
 }
 
+/** Books without an EPUB: switching the pass On (it writes to Calibre). */
+export function formatsOnCopy(convert: number, fold: number): ConfirmCopy {
+  return {
+    title: `Write ${(convert + fold).toLocaleString()} ${convert + fold === 1 ? 'book' : 'books'} to Calibre?`,
+    message: [
+      `${convert.toLocaleString()} checked ${convert === 1 ? 'EPUB is' : 'EPUBs are'} added to their own Calibre books; each book's original file stays.`,
+      `${fold.toLocaleString()} ${fold === 1 ? 'copy' : 'copies'} proven to be the same book as an EPUB book ${fold === 1 ? 'is' : 'are'} folded into it: the copy's file is added to that book when it has none of that format, the copy's own tags go with it, and the copy is removed the usual way (kept in the quarantine and in Calibre's trash).`,
+      'The next new-arrivals run takes the converted books in (duplicates, metadata, store look-ups, genres and tags; picture books move to the manga library). Each batch can be undone from the batches list.'
+    ],
+    confirmLabel: 'Switch it On',
+    irreversible: false
+  };
+}
+
+/** Undo of a books-without-an-EPUB batch. */
+export function undoFormatsBatchCopy(count: number): ConfirmCopy {
+  return {
+    title: `Take back ${books(count)}?`,
+    message: [
+      'Each EPUB this batch added comes off its book again (only while it is still the one the batch added); the book keeps its original file.',
+      'Each folded copy comes back from Calibre’s trash (or the quarantine), and the file it gave its EPUB book comes off that book again.'
+    ],
+    confirmLabel: 'Undo this batch',
+    danger: false
+  };
+}
+
 /** Undo of a move batch: the books come back to the cleanup's library. */
 export function undoMoveBatchCopy(count: number): ConfirmCopy {
   return {

@@ -268,6 +268,7 @@ export function batchKindText(batch: CleanupBatch): string {
   if (batch.stage === 4) return 'Metadata from the online sources';
   if (batch.stage === 5) return 'Genres and tags';
   if (batch.stage === 11) return 'Move to the manga library';
+  if (batch.stage === 12) return 'Books without an EPUB';
   return batch.stage === 3 ? 'Remove copies with the same text' : 'Remove identical copies';
 }
 
@@ -276,7 +277,14 @@ export function batchCountsText(batch: CleanupBatch): string {
   const c = batch.counts ?? {};
   const parts: string[] = [];
   const stage2 = writesFields(batch);
-  const done = batch.kind === 'undo' ? c.restored : stage2 ? c.written : c.removed;
+  const done =
+    batch.kind === 'undo'
+      ? c.restored
+      : stage2
+        ? c.written
+        : batch.stage === 12
+          ? (c.written ?? 0) + (c.removed ?? 0)
+          : c.removed;
   const doneWord =
     batch.kind === 'undo'
       ? stage2
@@ -284,7 +292,9 @@ export function batchCountsText(batch: CleanupBatch): string {
         : 'brought back'
       : stage2
         ? 'changes written'
-        : 'removed';
+        : batch.stage === 12
+          ? 'written'
+          : 'removed';
   if (done) parts.push(`${n(done)} ${doneWord}`);
   if (c.skipped) parts.push(`${n(c.skipped)} skipped`);
   if (c.failed) parts.push(`${n(c.failed)} failed`);
@@ -297,7 +307,13 @@ export function batchCountsText(batch: CleanupBatch): string {
 export function canUndo(batch: CleanupBatch, all: CleanupBatch[]): boolean {
   if (batch.kind !== 'apply') return false;
   if (!['applied', 'partial', 'failed'].includes(batch.state)) return false;
-  if (!((writesFields(batch) ? batch.counts?.written : batch.counts?.removed) > 0)) return false;
+  const done =
+    batch.stage === 12
+      ? (batch.counts?.written ?? 0) + (batch.counts?.removed ?? 0)
+      : writesFields(batch)
+        ? batch.counts?.written
+        : batch.counts?.removed;
+  if (!(done > 0)) return false;
   // One batch at a time.
   return !all.some((b) => b.state === 'planned' || b.state === 'claimed');
 }

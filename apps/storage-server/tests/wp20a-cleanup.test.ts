@@ -1131,8 +1131,29 @@ describe('static guards', () => {
       if (path.basename(f) === 'batches.ts') continue;
       // Book covers: the cover archive writes its own pictures, only under DB_DIR/covers (below).
       if (path.basename(f) === 'cover-archive.ts') continue;
+      // Books without an EPUB: the checked EPUBs, only under CACHE_DIR/cleanup/formats (below).
+      if (path.basename(f) === 'epub-store.ts') continue;
       expect(WRITE.test(code), f).toBe(false);
     }
+  });
+
+  it('the books-without-an-EPUB store writes only inside its own folder (CACHE_DIR/cleanup/formats)', () => {
+    const f = files.find((x) => path.basename(x) === 'epub-store.ts')!;
+    const lines = fs.readFileSync(f, 'utf8').split('\n');
+    const writes = lines.filter((l) =>
+      /\b(writeFile|appendFile|rename|unlink|rm|rmdir|mkdir|copyFile|truncate|utimes|createWriteStream)\s*\(/.test(
+        l,
+      ),
+    );
+    expect(writes.length).toBeGreaterThan(0);
+    // Every write is to the book's own file, its temporary name, or the library's folder in root.
+    for (const l of writes)
+      expect(/\(\s*(tmp|final|path\.dirname\(final\))\b/.test(l), l).toBe(true);
+    const code = lines.join('\n');
+    expect(/this\.root = path\.join\(cacheDir, 'cleanup', 'formats'\)/.test(code)).toBe(true);
+    expect(/return path\.join\(this\.root, libraryId, `\$\{uuid\}\.epub`\)/.test(code)).toBe(true);
+    expect(/const final = this\.file\(/.test(code)).toBe(true);
+    expect(/const tmp = `\$\{final\}\.part`/.test(code)).toBe(true);
   });
 
   it('the cover archive writes only inside its own folder (DB_DIR/covers), never deletes a picture', () => {
