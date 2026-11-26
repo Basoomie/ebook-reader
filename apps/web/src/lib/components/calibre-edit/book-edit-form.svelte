@@ -656,9 +656,6 @@
                     : earlierCoverLabel(earlier.covers, i)}
                 </p>
                 <p class="text-xs text-c-muted">{pictureSize(c.width, c.height)}</p>
-                {#if c.same}<p class="text-xs text-c-muted" data-testid="edit-earlier-same">
-                    ✓ Looks like the cover now
-                  </p>{/if}
               </div>
             {/each}
           </div>
