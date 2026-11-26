@@ -160,6 +160,17 @@ export const SETTINGS_SECTIONS: CatalogSection[] = [
     title: 'Book page',
     description: 'This device only.'
   },
+  // Bookmeter sync (2026-11-25): after Book page.
+  {
+    id: 'library-bookmeter',
+    tab: 'Library',
+    jp: '読書メーター',
+    title: '読書メーター',
+    description:
+      'Your 読書メーター lists in the reader: books you read there marked Completed, 読みたい本 as a collection. Kept on the library server, the same on every device. Nothing is written to 読書メーター.',
+    keywords:
+      'bookmeter 読書メーター sync read reading want wish 読みたい本 読んだ本 completed account manga'
+  },
   // Book summaries session 4: after Book page.
   {
     id: 'library-summaries',
@@ -1108,6 +1119,14 @@ export const SETTINGS_CATALOG: CatalogSetting[] = [
     keywords: 'size confirm gb warning'
   },
   // Library › Summaries (book summaries session 4; the switch and descriptions: session 4b)
+  {
+    id: 'bookmeter-sync',
+    section: 'library-bookmeter',
+    title: 'Accounts and lists',
+    description:
+      'The 読書メーター users to read, the libraries each covers, how often, and the books that need you: changes waiting, Not matched, and books finished here but not logged there.',
+    keywords: 'bookmeter 読書メーター account user profile check now not matched link log'
+  },
   {
     id: 'summary-auto',
     section: 'library-summaries',

@@ -75,6 +75,8 @@ export interface OfflineData {
   nextHidden?: ReadonlySet<string>;
   nextOn?: boolean;
   nextBonus?: boolean;
+  /** Bookmeter sync: the 読書メーター lists each book is on (bookmeter:). */
+  bookmeterLists?: ReadonlyMap<string, ReadonlySet<string>>;
 }
 
 /** Next in your series of one read of the device's data (computed once per read). */
@@ -105,6 +107,8 @@ export function offlineNext(data: OfflineData): NextEntry[] {
   }
   return entries;
 }
+
+const NO_LISTS: ReadonlySet<string> = new Set();
 
 const DEFAULT_PAGE_SIZE = 50;
 const MAX_PAGE_SIZE = 200;
@@ -277,7 +281,8 @@ export class OfflineCatalog {
       isNext: (id) => {
         next ??= new Set(offlineNext(data).map((e) => e.bookId));
         return next.has(id);
-      }
+      },
+      bookmeterLists: (id) => data.bookmeterLists?.get(id) ?? NO_LISTS
     };
   }
 

@@ -31,7 +31,9 @@ export type QueryTerm =
   | (TermBase & { type: 'status'; values: QueryStatus[] })
   | (TermBase & { type: 'favorite'; value: boolean })
   | (TermBase & { type: 'device' })
-  | (TermBase & { type: 'deviceAudio' });
+  | (TermBase & { type: 'deviceAudio' })
+  /** bookmeter: the books on these 読書メーター lists (Bookmeter sync, 2026-11-25). */
+  | (TermBase & { type: 'bookmeter'; values: ('read' | 'reading' | 'stacked' | 'wish')[] });
 
 export interface ParsedQuery {
   terms: QueryTerm[];

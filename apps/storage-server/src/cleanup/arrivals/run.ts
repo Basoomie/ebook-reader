@@ -641,6 +641,22 @@ export class BookArrivals {
 
   // ---------------------------------------------------------------- runs
 
+  /**
+   * The new arrivals are done with the books the reader's index first saw before this time
+   * (series-arrivals.md 3.2): Off: every book (Infinity); a run open: none (-Infinity); else
+   * the last run's end (the run that added a book, or the one that took in a book added by
+   * hand, ended after it was seen). Read only.
+   */
+  doneBefore(): number {
+    const s = this.state();
+    if (s.mode === 'off') return Infinity;
+    if (s.current_run !== null) return -Infinity;
+    const r = this.db.prepare('SELECT MAX(finished_at) AS at FROM calibre_arrival_runs').get() as {
+      at: number | null;
+    };
+    return r.at ?? -Infinity;
+  }
+
   currentRun(): (RunRow & { p: RunProgress }) | null {
     const s = this.state();
     if (s.current_run === null) return null;
@@ -2977,6 +2993,24 @@ export class BookArrivals {
       this.deps.log?.(
         `New arrivals: run ${run.id}: ${w.held} stage-${stage} changes held${heldWhy ? ` (${heldWhy})` : ''}`,
       );
+    // Books already in Calibre whose series choice this run changed: proposed under stage 4's own
+    // analysis once the run's own changes are written, so stage 4's own On writes the sure ones
+    // (they had waited for the next rules deploy; the user, 2026-11-25).
+    const so = stage === 4 ? p.ai?.series : null;
+    if (so?.existing?.length && (so.existingDone ?? 0) < so.existing.length) {
+      const lib4 = this.deps.analysis4?.progress();
+      if (lib4 && this.ai4) {
+        const all = await this.ai4.proposeExisting(lib4, so, () => false);
+        this.save(run.id, p);
+        if (!all) {
+          p.waiting = `Proposing the series changes of books already in the library (${so.existingDone} of ${so.existing.length})`;
+          return 'more';
+        }
+        this.deps.log?.(
+          `New arrivals: run ${run.id}: ${so.existing.length} books already in the library proposed again for their series (stage 4's own On writes the sure ones)`,
+        );
+      }
+    }
     this.deps.wantIngest(libraryId);
     this.next(run.id, p, nextPhase);
     return 'more';

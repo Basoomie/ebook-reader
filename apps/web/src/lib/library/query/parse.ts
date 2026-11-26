@@ -30,6 +30,8 @@
  *   favorite:= yes|no
  *   on      := device                       the books stored on the device that searches
                                               (WP15e; the server knows it from the token)
+ *   bookmeter:= read|reading|stacked|wish    the books on your 読書メーター lists ("," = any
+ *                                            of; Bookmeter sync)
  *   regex   := /body/ or /body/i             JavaScript syntax, Unicode mode; the body may
  *                                            contain spaces ("/" is a literal slash)
  *
@@ -53,6 +55,10 @@ export const QUERY_LIMITS = {
  */
 export const QUERY_STATUSES = ['unread', 'reading', 'completed', 'dropped', 'next'] as const;
 export type QueryStatus = (typeof QUERY_STATUSES)[number];
+
+/** The 読書メーター lists of the `bookmeter:` term (Bookmeter sync, 2026-11-25). */
+export const QUERY_BOOKMETER_LISTS = ['read', 'reading', 'stacked', 'wish'] as const;
+export type QueryBookmeterList = (typeof QUERY_BOOKMETER_LISTS)[number];
 
 export type TextField = 'author' | 'illustrator' | 'series' | 'tag';
 
@@ -88,7 +94,9 @@ export type QueryTerm =
   /** on:device: the books stored on the device that asks (WP15e). */
   | (TermBase & { type: 'device' })
   /** on:audio: the books whose audio the device that asks has downloaded (Season 2 Phase 9). */
-  | (TermBase & { type: 'deviceAudio' });
+  | (TermBase & { type: 'deviceAudio' })
+  /** bookmeter: the books on these 読書メーター lists (any of them). */
+  | (TermBase & { type: 'bookmeter'; values: QueryBookmeterList[] });
 
 export interface ParsedQuery {
   terms: QueryTerm[];
@@ -125,12 +133,13 @@ const FIELDS = [
   'myrating',
   'status',
   'favorite',
-  'on'
+  'on',
+  'bookmeter'
 ] as const;
 type Field = (typeof FIELDS)[number];
 
 const FIELD_RE =
-  /^(author|illustrator|series|tag|chars|level|ratings|rating|readers|myrating|status|favorite|on)[:：]/i;
+  /^(author|illustrator|series|tag|chars|level|ratings|rating|readers|myrating|status|favorite|on|bookmeter)[:：]/i;
 /** Characters FIELD_RE needs to see: the longest field name and its colon. */
 const FIELD_LOOKAHEAD = Math.max(...FIELDS.map((f) => f.length)) + 1;
 
@@ -401,7 +410,8 @@ function parseField(s: Scanner, field: Field, negated: boolean, start: number): 
     field === 'myrating' ||
     field === 'status' ||
     field === 'favorite' ||
-    field === 'on'
+    field === 'on' ||
+    field === 'bookmeter'
   ) {
     const raw = s.readBare(false);
     const end = s.pos;
@@ -426,6 +436,19 @@ function parseField(s: Scanner, field: Field, negated: boolean, start: number): 
         start,
         end
       );
+    }
+    if (field === 'bookmeter') {
+      const lists = QUERY_BOOKMETER_LISTS.join(', ');
+      if (words.length === 0)
+        throw new QueryError(`bookmeter: needs a list: ${lists}.`, start, end);
+      const values: QueryBookmeterList[] = [];
+      for (const w of words) {
+        if (!(QUERY_BOOKMETER_LISTS as readonly string[]).includes(w)) {
+          throw new QueryError(`"${w}" isn't a 読書メーター list. Use ${lists}.`, start, end);
+        }
+        if (!values.includes(w as QueryBookmeterList)) values.push(w as QueryBookmeterList);
+      }
+      return { type: 'bookmeter', negated, start, end, values };
     }
     if (field === 'status') {
       if (words.length === 0) {
@@ -579,6 +602,11 @@ export function usesBookState(query: ParsedQuery): boolean {
       t.type === 'device' ||
       t.type === 'deviceAudio'
   );
+}
+
+/** True when the query uses bookmeter: (answered from the server's Bookmeter lists). */
+export function usesBookmeter(query: ParsedQuery): boolean {
+  return query.terms.some((t) => t.type === 'bookmeter');
 }
 
 /** True when the query contains a /regex/ (the server runs those in a worker). */

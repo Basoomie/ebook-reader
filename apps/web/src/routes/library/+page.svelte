@@ -41,6 +41,7 @@
   import MessageDialog from '$lib/components/message-dialog.svelte';
   import { browser } from '$app/environment';
   import CataloguePageHeader from '$lib/components/catalogue-page-header.svelte';
+  import BookmeterWantedMissing from '$lib/components/bookmeter/bookmeter-wanted-missing.svelte';
   import { pxScreen } from '$lib/css-classes';
   import { dialogManager, type Dialog } from '$lib/data/dialog-manager';
   import { confirmDestructive } from '$lib/confirm/confirm';
@@ -2295,6 +2296,10 @@
               </div>
             {/if}
           </div>
+          {#if userCollection?.type === 'smart' && /\bbookmeter[:：]\S*wish/i.test(userCollection.query ?? '')}
+            <!-- Bookmeter sync (2026-11-25): wanted books the library doesn't have. -->
+            <BookmeterWantedMissing />
+          {/if}
         {:else if group}
           <div class="flex flex-wrap items-center gap-x-4 gap-y-2 pt-1" data-testid="group-header">
             {#if groupInfo}

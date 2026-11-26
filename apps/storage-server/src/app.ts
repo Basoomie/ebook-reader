@@ -13,6 +13,7 @@ import type { SummaryService } from './summaries/service';
 import type { SummaryTestService } from './summaries/test-service';
 import type { NativelyLevels } from './natively/levels';
 import type { StoreRatings } from './ratings/service';
+import type { BookmeterSync } from './bookmeter/service';
 
 export interface AppOptions {
   config: ServerConfig;
@@ -40,6 +41,8 @@ export interface AppOptions {
   /** The Natively level (2026-11-24). */
   natively?: NativelyLevels | null;
   ratings?: StoreRatings | null;
+  /** Bookmeter sync (2026-11-25). */
+  bookmeter?: BookmeterSync | null;
 }
 
 export function createApp({
@@ -58,6 +61,7 @@ export function createApp({
   summaries,
   natively,
   ratings,
+  bookmeter,
 }: AppOptions): Express {
   const app = express();
 
@@ -112,6 +116,7 @@ export function createApp({
       summaries,
       natively,
       ratings,
+      bookmeter,
     }),
   );
 

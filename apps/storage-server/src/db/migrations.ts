@@ -1528,6 +1528,132 @@ export const MIGRATIONS: { version: number; name: string; sql: string }[] = [
       END;
     `,
   },
+  {
+    version: 34,
+    name: 'Bookmeter sync',
+    // Bookmeter sync (2026-11-25, docs/design/bookmeter-sync.md): the user's 読書メーター lists
+    // read from their public pages through the cleanup's fetch queue. bookmeter_settings: one
+    // JSON value (accounts and how often to check). bookmeter_entries: one row per account and
+    // listing (a listing is on one list at a time); `rank` counts from the list's oldest entry
+    // (stable when new ones are added at the top); `first_seen_at` dates "wanted before it
+    // arrived". bookmeter_links: the reader books each entry matched (how: saved-id, rules,
+    // user). bookmeter_choices: the user's own Link / Not in my library, never decided again.
+    // bookmeter_pages: a check's answered pages until all of its pages are in.
+    // bookmeter_requests: the fetch queue's request each page waits on. bookmeter_state: per
+    // account, the last checks and their result. bookmeter_arrivals: wanted books whose
+    // arrival was told once.
+    sql: `
+      CREATE TABLE bookmeter_settings (
+        id    INTEGER PRIMARY KEY CHECK (id = 1),
+        json  TEXT NOT NULL
+      );
+      CREATE TABLE bookmeter_entries (
+        account_id     TEXT NOT NULL,
+        listing_id     TEXT NOT NULL,
+        list           TEXT NOT NULL CHECK (list IN ('read', 'reading', 'stacked', 'wish')),
+        date           TEXT,
+        title          TEXT NOT NULL,
+        authors        TEXT NOT NULL,
+        cover          TEXT,
+        pages          INTEGER,
+        rank           INTEGER NOT NULL,
+        first_seen_at  INTEGER NOT NULL,
+        seen_at        INTEGER NOT NULL,
+        PRIMARY KEY (account_id, listing_id)
+      );
+      CREATE INDEX bookmeter_entries_list ON bookmeter_entries (account_id, list, rank);
+      CREATE TABLE bookmeter_links (
+        account_id  TEXT NOT NULL,
+        listing_id  TEXT NOT NULL,
+        book_id     TEXT NOT NULL,
+        how         TEXT NOT NULL CHECK (how IN ('saved-id', 'rules', 'user')),
+        PRIMARY KEY (account_id, listing_id, book_id)
+      );
+      CREATE INDEX bookmeter_links_book ON bookmeter_links (book_id);
+      CREATE TABLE bookmeter_choices (
+        account_id  TEXT NOT NULL,
+        listing_id  TEXT NOT NULL,
+        book_id     TEXT,
+        decided_at  INTEGER NOT NULL,
+        PRIMARY KEY (account_id, listing_id)
+      );
+      CREATE TABLE bookmeter_pages (
+        account_id  TEXT NOT NULL,
+        round       TEXT NOT NULL,
+        list        TEXT NOT NULL,
+        page        INTEGER NOT NULL,
+        total       INTEGER,
+        entries     TEXT NOT NULL,
+        PRIMARY KEY (account_id, round, list, page)
+      );
+      CREATE TABLE bookmeter_requests (
+        account_id  TEXT NOT NULL,
+        round       TEXT NOT NULL,
+        list        TEXT NOT NULL,
+        page        INTEGER NOT NULL,
+        request_id  INTEGER NOT NULL,
+        asked_at    INTEGER NOT NULL,
+        PRIMARY KEY (account_id, round, list, page)
+      );
+      CREATE TABLE bookmeter_state (
+        account_id     TEXT PRIMARY KEY,
+        round          TEXT,
+        round_kind     TEXT,
+        round_started  INTEGER,
+        quick_at       INTEGER,
+        full_at        INTEGER,
+        profile_at     INTEGER,
+        name           TEXT,
+        counts         TEXT,
+        result         TEXT,
+        error          TEXT,
+        error_at       INTEGER
+      );
+      CREATE TABLE bookmeter_arrivals (
+        account_id  TEXT NOT NULL,
+        listing_id  TEXT NOT NULL,
+        book_id     TEXT NOT NULL,
+        told_at     INTEGER NOT NULL,
+        PRIMARY KEY (account_id, listing_id, book_id)
+      );
+    `,
+  },
+  {
+    version: 35,
+    name: 'New volumes of series you are reading',
+    // The series-arrival alert (2026-11-25, docs/design/series-arrivals.md).
+    // series_arrival_state: per user, when the alert was switched on (books created before
+    // are never announced; no row = off). series_arrival_series: the series (within one
+    // library) that count as read, and since when (a book created before is not news).
+    // series_arrival_books: every book that arrived while the alert was on, decided once
+    // when it settled (told or why not), so no book is ever told twice. books_created: the
+    // rounds find the books not decided yet by their arrival time.
+    sql: `
+      CREATE TABLE series_arrival_state (
+        user_id   TEXT PRIMARY KEY,
+        on_since  INTEGER NOT NULL
+      );
+      CREATE TABLE series_arrival_series (
+        user_id     TEXT NOT NULL,
+        library_id  TEXT NOT NULL,
+        series_id   INTEGER NOT NULL,
+        since       INTEGER NOT NULL,
+        PRIMARY KEY (user_id, library_id, series_id)
+      );
+      CREATE TABLE series_arrival_books (
+        user_id     TEXT NOT NULL,
+        book_id     TEXT NOT NULL,
+        decided_at  INTEGER NOT NULL,
+        told        INTEGER NOT NULL CHECK (told IN (0, 1)),
+        reason      TEXT NOT NULL,
+        library_id  TEXT,
+        series_id   INTEGER,
+        series_index REAL,
+        PRIMARY KEY (user_id, book_id)
+      );
+      CREATE INDEX books_created ON books (created_at);
+    `,
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

@@ -428,7 +428,7 @@
     {/if}
     {#if states.includes('none')}
       <p class="mt-4 text-c-muted" data-testid="summary-none">
-        {$summaryAutoOnFirstCompletion$
+        {$summaryAutoOnFirstCompletion$ && status !== 'completed'
           ? 'No summary yet. One is made when you first complete the book.'
           : 'No summary yet.'}
       </p>

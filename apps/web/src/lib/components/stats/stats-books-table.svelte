@@ -17,11 +17,19 @@
   import { compareText, pageOf, rangeText, type ListSort } from '$lib/settings/paged-list';
   import { formatDuration, formatNumber } from '$lib/stats/stats-format';
   import type { StatsBookInfo, StatsBookRow } from '$lib/stats/stats-view';
+  import { bookmeterApi } from '$lib/sync/sync-service';
 
   export let rows: StatsBookRow[];
   export let books: Map<string, StatsBookInfo>;
 
   const PAGE_SIZE = 10;
+  // Bookmeter sync (2026-11-25): books completed from a 読書メーター 読んだ本 entry.
+  const bookmeterView = bookmeterApi().view;
+  $: fromBookmeter = new Set(
+    [...$bookmeterView.applied.values()]
+      .filter((a) => a.outcome === 'applied' && a.list === 'read')
+      .map((a) => a.bookId)
+  );
   const dispatch = createEventDispatcher<{ pick: string }>();
 
   type Key = 'title' | 'seconds' | 'chars' | 'speed' | 'lookups';
@@ -146,6 +154,11 @@
                         <span class="c-tag" data-testid="stats-book-completed">
                           {row.manual ? 'Marked completed' : 'Completed'}
                         </span>
+                        {#if fromBookmeter.has(row.bookId)}
+                          <span class="c-tag" data-testid="stats-book-bookmeter"
+                            >from 読書メーター</span
+                          >
+                        {/if}
                       {/if}
                       {#if row.missing}
                         <span class="c-tag">No longer in the library</span>
