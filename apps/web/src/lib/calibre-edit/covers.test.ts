@@ -22,7 +22,8 @@ const earlier = (current: boolean, firstAt = Date.UTC(2026, 10, 12, 12)): Earlie
   bytes: 1000,
   firstAt,
   lastAt: firstAt,
-  current
+  current,
+  same: false
 });
 
 const store = (s: Partial<StoreCover>): StoreCover => ({

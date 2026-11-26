@@ -199,7 +199,15 @@
         ? 'The library server can’t be reached right now.'
         : (err as Error).message;
     }
-    if (!destroyed && storesWaiting(stores)) storeTimer = setTimeout(() => loadStores(), 3000);
+    if (!destroyed && storesOpen && storesWaiting(stores))
+      storeTimer = setTimeout(() => loadStores(), 3000);
+  }
+
+  /** The button again closes the row (and stops asking the server). */
+  function closeStores() {
+    storesOpen = false;
+    if (storeTimer) clearTimeout(storeTimer);
+    storeTimer = null;
   }
 
   async function pickStore(s: StoreCover) {
@@ -495,8 +503,10 @@
                 class="c-btn c-btn-secondary c-btn-sm"
                 disabled={coverBusy}
                 aria-expanded={pickingIllustration}
+                aria-pressed={pickingIllustration}
                 data-testid="edit-cover-illustrations"
-                on:click={openIllustrations}
+                on:click={() =>
+                  pickingIllustration ? (pickingIllustration = false) : openIllustrations()}
                 ><Fa icon={faImage} />Pick from the book’s illustrations</button
               >
             {/if}
@@ -506,8 +516,10 @@
                 class="c-btn c-btn-secondary c-btn-sm"
                 disabled={coverBusy}
                 aria-expanded={storesOpen}
+                aria-pressed={storesOpen}
                 data-testid="edit-cover-stores"
-                on:click={() => loadStores()}><Fa icon={faStore} />From the stores</button
+                on:click={() => (storesOpen ? closeStores() : loadStores())}
+                ><Fa icon={faStore} />From the stores</button
               >
             {/if}
             {#if cover}
@@ -644,6 +656,9 @@
                     : earlierCoverLabel(earlier.covers, i)}
                 </p>
                 <p class="text-xs text-c-muted">{pictureSize(c.width, c.height)}</p>
+                {#if c.same}<p class="text-xs text-c-muted" data-testid="edit-earlier-same">
+                    ✓ Looks like the cover now
+                  </p>{/if}
               </div>
             {/each}
           </div>

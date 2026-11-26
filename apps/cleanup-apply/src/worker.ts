@@ -62,8 +62,10 @@ import { columnShape, MOVE_STAGE, MoveWorker } from './move';
  * 1.6.4 (book covers): the one-shot `import-covers.js` sends the quarantine's earlier covers to
  * the server's cover archive; the worker itself is unchanged (the server keeps Calibre's picture
  * before an edit's cover write and answers saveOldCover false).
+ * 1.6.5: a metadata.db snapshot download cut off part way no longer holds the batch (each
+ * retry takes the next free name; it retried into the same name with EEXIST for ever).
  */
-export const SIDECAR_VERSION = '1.6.4';
+export const SIDECAR_VERSION = '1.6.5';
 
 /** The wait after a batch before asking for the next one (WP20g: the full poll after every batch cost ~1 h of run 7). */
 export const AFTER_BATCH_MS = 1000;
@@ -917,12 +919,23 @@ export class Worker {
   /** The metadata.db snapshot, saved into the batch folder before the first item. */
   private async saveSnapshot(batch: Batch): Promise<void> {
     const dir = this.quarantine.batchDir(batch.id);
+    const nameOf = (n: number) => path.join(dir, n === 1 ? 'metadata.db' : `metadata-${n}.db`);
     // An earlier attempt may have saved it already.
     for (let n = 1; n < 100; n++) {
-      const file = path.join(dir, n === 1 ? 'metadata.db' : `metadata-${n}.db`);
+      const file = nameOf(n);
       if (!(await exists(file))) {
-        await this.retry(() => this.api.downloadSnapshot(batch.id, file));
-        const sha = await sha256File(file);
+        // Each try takes the next free name: a download cut off part way leaves its file (the
+        // quarantine is never deleted from), and a try into that name again failed with EEXIST
+        // on every retry, holding every batch behind it (found live 2026-11-26: a stage-5 batch
+        // stuck 30 minutes with the user's edits queued behind it).
+        const saved = await this.retry(async () => {
+          let m = n;
+          while (m < 100 && (await exists(nameOf(m)))) m++;
+          if (m >= 100) throw new Error('Too many snapshot files in the batch folder');
+          await this.api.downloadSnapshot(batch.id, nameOf(m));
+          return nameOf(m);
+        });
+        const sha = await sha256File(saved);
         if (batch.snapshotSha256 && sha !== batch.snapshotSha256) {
           throw new Error('The downloaded metadata.db snapshot is incomplete; trying again later');
         }
