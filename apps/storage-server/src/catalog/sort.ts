@@ -25,7 +25,8 @@ export type BookSortKey =
   | 'level'
   | 'rating'
   | 'ratings'
-  | 'readers';
+  | 'readers'
+  | 'completed';
 export type SortDir = 'asc' | 'desc';
 
 export interface BookSort {
@@ -43,6 +44,7 @@ export const BOOK_SORT_KEYS: BookSortKey[] = [
   'rating',
   'ratings',
   'readers',
+  'completed',
 ];
 export const SORT_DIRS: SortDir[] = ['asc', 'desc'];
 
@@ -73,6 +75,8 @@ export interface SortRow {
   rating_score: number | null;
   rating_count: number | null;
   readers: number | null;
+  /** The Date completed sort's value (planBooks selects it as `sort_completed`). */
+  sort_completed?: number | null;
 }
 
 const COLUMNS: Record<BookSortKey, SortColumn> = {
@@ -141,7 +145,29 @@ const COLUMNS: Record<BookSortKey, SortColumn> = {
     },
     value: (r, dir) => r.readers ?? (dir === 'asc' ? HIGH_NUMBER : -1),
   },
+  // Date completed (Completed collection only): the day of the book's latest finished
+  // read-through, as seconds (UTC midnight). Worked out per row from the user's records, so
+  // planBooks selects it as `sort_completed` (sortSelectSql). Books without a date last.
+  completed: {
+    type: 'number',
+    sql: { asc: 'sort_completed', desc: 'sort_completed' },
+    value: (r) => r.sort_completed ?? -1,
+  },
 };
+
+/**
+ * The select-list part a sort needs (Date completed), with the user id it binds: `null` for
+ * the sorts that read a column of `b`. Ends with a comma.
+ */
+export function sortSelectSql(sort: BookSort): string | null {
+  if (sort.key !== 'completed') return null;
+  const none = sort.dir === 'asc' ? HIGH_NUMBER : -1;
+  return `IFNULL((SELECT MAX(CAST(strftime('%s', json_extract(r.data, '$.finishedOn')) AS INTEGER))
+                   FROM sync_records r
+                  WHERE r.book_id = b.id AND r.user_id = ? AND r.kind = 'read-through'
+                    AND r.deleted_at IS NULL AND json_extract(r.data, '$.finished') = 1),
+                 ${none}) AS sort_completed,`;
+}
 
 export function isDefaultSort(sort: BookSort): boolean {
   return sort.key === DEFAULT_BOOK_SORT.key && sort.dir === DEFAULT_BOOK_SORT.dir;
