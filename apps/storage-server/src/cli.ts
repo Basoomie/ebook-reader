@@ -40,7 +40,7 @@
  * For the same reason the WP5 scan and import run in the server (from the
  * migration page); the CLI only reports on them and can undo the import.
  */
-import type Database from 'better-sqlite3';
+import Database from 'better-sqlite3';
 import { existsSync, readFileSync, readdirSync } from 'fs';
 import path from 'path';
 import { UPLOADS_DIRNAME, UploadStore } from './uploads/upload-store';
@@ -95,6 +95,8 @@ import { createApplyToken, listApplyTokens, revokeApplyToken } from './cleanup/a
 import { initCleanupDatabase } from './cleanup/cleanup-db';
 import { listStages, stageLibraries } from './cleanup/stages';
 import { recordReviewDecisions, resumeFailedStage3 } from './cleanup/stage3';
+import { continueArrivalsStage4 } from './cleanup/arrivals/run';
+import { snapshotFile } from './calibre/indexer';
 import { importDryRun, runAudioDryRun } from './cleanup/audio/dry-run';
 
 /**
@@ -360,6 +362,8 @@ const USAGE = `Usage:
   cli cleanup revoke <token-id>              Revoke a cleanup sidecar token
   cli cleanup decide 3 <file>                Record the review's decisions on stage 3 pairs (marked as
                                              Claude's; your own decisions stay)
+  cli cleanup arrivals-continue <run>        New arrivals: stages 4-5 and the move for a finished On
+                                             run's books that stage 4 never read (a new run)
   cli cleanup resume 3                       Resume stage 3's failed analysis at the step that failed
                                              (keeps the books read and the pairs measured)
   cli cleanup audio-dryrun --stage 0|1|2 --out <folder>
@@ -1049,6 +1053,31 @@ function cleanupCommand(command: string, rest: string[], env: Record<string, str
           "Copy it now into the fetch container's FETCH_TOKEN; it cannot be shown again:",
         );
         console.log(token);
+        break;
+      }
+      case 'arrivals-continue': {
+        const from = Number(rest[0]);
+        if (!Number.isInteger(from) || from <= 0)
+          fail('cleanup arrivals-continue needs the run: cleanup arrivals-continue 7');
+        const cacheDir = path.resolve(env.CACHE_DIR ?? '/cache');
+        const out = continueArrivalsStage4(db, from, (libraryId) => {
+          const snap = new Database(snapshotFile(cacheDir, libraryId), {
+            readonly: true,
+            fileMustExist: true,
+          });
+          try {
+            const rows = snap.prepare('SELECT id, uuid FROM books').all() as {
+              id: number;
+              uuid: string;
+            }[];
+            return new Map(rows.map((r) => [r.id, r.uuid]));
+          } finally {
+            snap.close();
+          }
+        });
+        console.log(
+          `Run ${out.runId} started: stages 4-5 and the move for ${out.books} books of run ${from} that stage 4 never read.`,
+        );
         break;
       }
       case 'resume': {

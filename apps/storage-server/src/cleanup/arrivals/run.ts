@@ -132,6 +132,69 @@ const STAGE1_PARTS = ['stat', 'match'] as const;
 /** The AI step's parts while the models answer: the first pair, then the stronger pair. */
 const AI_PARTS = ['cheap', 'strong'] as const;
 
+/**
+ * WP20g run 7 (2026-11-26): a run's books that stage 4 never read (the read was cut by a restart
+ * before stage4Read existed) go through stages 4-5 and the move in a new run of their own, which
+ * starts at stage 4 (stages 1-3 and 2's write were done for them in the first run). One time, by
+ * `cli cleanup arrivals-continue <run>`; refused while a run goes on.
+ */
+export function continueArrivalsStage4(
+  db: Database.Database,
+  fromRunId: number,
+  present: (libraryId: string) => Map<number, string>,
+): { runId: number; books: number } {
+  const state = db
+    .prepare('SELECT current_run, mode FROM calibre_arrivals_state WHERE id = 1')
+    .get() as { current_run: number | null; mode: string } | undefined;
+  if (!state) throw new Error('No new-arrivals state');
+  if (state.current_run !== null) throw new Error(`Run ${state.current_run} is going on`);
+  if (state.mode !== 'on') throw new Error('New arrivals must be On');
+  const from = db
+    .prepare('SELECT state, mode, progress_json FROM calibre_arrival_runs WHERE id = ?')
+    .get(fromRunId) as { state: string; mode: string; progress_json: string } | undefined;
+  if (!from || from.state !== 'done' || from.mode !== 'on')
+    throw new Error(`Run ${fromRunId} is not a finished On run`);
+  const fp = JSON.parse(from.progress_json) as RunProgress;
+  if (!fp.libraryId) throw new Error('The run has no library');
+  const books = present(fp.libraryId);
+  const read = new Set(
+    (
+      db
+        .prepare('SELECT calibre_uuid FROM stage4_books WHERE analysis_id = ?')
+        .all(arrivalAnalysisId(fromRunId)) as { calibre_uuid: string }[]
+    ).map((r) => r.calibre_uuid),
+  );
+  const pick = (ids: number[]) =>
+    ids.filter((id) => {
+      const uuid = books.get(id);
+      return uuid !== undefined && !read.has(uuid);
+    });
+  const p = emptyProgress();
+  p.phase = 'stage4';
+  p.libraryId = fp.libraryId;
+  p.pairs = fp.pairs.map((x) => ({ ...x, firstRun: false }));
+  p.scope = { import: pick(fp.scope.import), hand: pick(fp.scope.hand) };
+  p.followUp = `stage4:${fromRunId}`;
+  p.indexSeen = true;
+  const n = p.scope.import.length + p.scope.hand.length;
+  if (!n) throw new Error(`Every book of run ${fromRunId} was read by stage 4`);
+  const runId = db.transaction(() => {
+    const id = Number(
+      db
+        .prepare(
+          `INSERT INTO calibre_arrival_runs (trigger, mode, state, phase, started_at, progress_json)
+           VALUES ('now', 'on', 'running', 'stage4', ?, ?)`,
+        )
+        .run(Date.now(), JSON.stringify(p)).lastInsertRowid,
+    );
+    db.prepare(
+      'UPDATE calibre_arrivals_state SET current_run = ?, updated_at = ? WHERE id = 1 AND current_run IS NULL',
+    ).run(id, Date.now());
+    return id;
+  })();
+  return { runId, books: n };
+}
+
 export const RUN_PHASES: readonly RunPhase[] = [
   'scan',
   'archives',
@@ -302,6 +365,11 @@ export interface RunProgress {
   } | null;
   /** When the move step began waiting for the reader to count the run's tagged books. */
   moveCountWaitSince?: number | null;
+  /**
+   * Stage 4 has read every book of the run (WP20g run 7, 2026-11-26: the read was one pass with
+   * no record of its end, and a restart in it left ~10,000 books unread and never looked up).
+   */
+  stage4Read?: boolean;
   cost: number;
 }
 
@@ -3404,12 +3472,24 @@ export class BookArrivals {
     if (!p.stage4) {
       p.stage4 = a4.arrivalView(lib4, run.id);
       this.save(run.id, p);
+    }
+    if (!p.stage4Read) {
+      // Resumable: only the books without a row of this run's view yet.
+      const seen = new Set(
+        (
+          this.db
+            .prepare('SELECT calibre_uuid FROM stage4_books WHERE analysis_id = ?')
+            .all(p.stage4.analysisId) as { calibre_uuid: string }[]
+        ).map((r) => r.calibre_uuid),
+      );
+      const unread = uuids.filter((u) => !seen.has(u));
       const n = await this.withDisk(
         p,
-        () => a4.arrivalRead(p.stage4!, uuids, shouldStop),
+        () => a4.arrivalRead(p.stage4!, unread, shouldStop),
         shouldStop,
       );
-      if (n === null) return 'wait';
+      if (n === null || shouldStop()) return 'wait';
+      p.stage4Read = true;
       this.save(run.id, p);
     }
     const done = await a4.arrivalStep(p.stage4);
