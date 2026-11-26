@@ -68,7 +68,7 @@ export interface BatchItem {
     fieldsAtMove?: Record<string, unknown> | null;
   };
   /**
-   * 1.7.0, a books-without-an-EPUB item (stage 12). convert: the EPUB the server checked is added
+   * 1.8.0, a books-without-an-EPUB item (stage 12). convert: the EPUB the server checked is added
    * to the book (calibreId/uuid; kept is the same book). fold: the copy (calibreId/uuid) goes
    * into its EPUB twin (kept), its file added there when the twin has no such format.
    */
@@ -267,7 +267,7 @@ export class ServerApi {
     return this.call('POST', `/batches/${batchId}/items/${itemId}`, report);
   }
 
-  /** 1.7.0: the books-without-an-EPUB pass's conversion jobs and its EPUBs (formats.ts). */
+  /** 1.8.0: the books-without-an-EPUB pass's conversion jobs and its EPUBs (formats.ts). */
   readonly formats: FormatApi = {
     claimFormatJob: () => this.call<{ job: FormatJob | null }>('POST', '/formats/claim', {}),
     formatJobAlive: (jobId) => this.call('POST', `/formats/jobs/${jobId}/alive`, {}),

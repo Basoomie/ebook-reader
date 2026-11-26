@@ -43,13 +43,13 @@ export interface SidecarConfig {
   /** WP20g: where a file to add is kept while it is added (this sidecar's own). */
   arrivalTmpDir: string;
   /**
-   * 1.7.0: the conversion jobs' and format items' own folders (each job's ttsu-format-<n>/ is
+   * 1.8.0: the conversion jobs' and format items' own folders (each job's ttsu-format-<n>/ is
    * emptied first and removed after; ebook-convert reads and writes only inside it).
    */
   formatTmpDir: string;
-  /** 1.7.0: calibre's ebook-convert. */
+  /** 1.8.0: calibre's ebook-convert. */
   ebookConvert: string;
-  /** 1.7.0: calibre's Python (calibre-debug) and the helper that reads a book's file. */
+  /** 1.8.0: calibre's Python (calibre-debug) and the helper that reads a book's file. */
   calibreDebug: string;
   formatsHelper: string;
   /**

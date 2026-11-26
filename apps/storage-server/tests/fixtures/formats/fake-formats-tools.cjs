@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Books without an EPUB (sidecar 1.7.0) tests: stands in for calibre's ebook-convert and for
+ * Books without an EPUB (sidecar 1.8.0) tests: stands in for calibre's ebook-convert and for
  * `calibre-debug -e formats-helper.py` (the sidecar's two programs), with the same arguments and
  * answers, on test files where a "Kindle book" is simply an EPUB's bytes under another name:
  *

@@ -64,7 +64,7 @@ import {
   MOVE_SIDECAR_VERSION,
   MOVE_STAGE,
 } from './field-stages';
-import { FormatsPass } from './formats/pass';
+import { FormatsError, FormatsPass, type FormatJobView } from './formats/pass';
 import { formatsAnalysisId } from './formats/state';
 import { LISTED_TEXT } from './formats/select';
 import { booksWithReaderData } from './handoff';
@@ -631,7 +631,7 @@ export class CleanupService {
           log: this.log,
         })
       : null;
-    return new LibraryParts(
+    const parts = new LibraryParts(
       libraryId,
       analysis,
       analysis2,
@@ -644,6 +644,26 @@ export class CleanupService {
       links,
       listings,
     );
+    // Books without an EPUB: this library's pass (non-epub-books.md).
+    parts.formats = new FormatsPass({
+      db: opts.cleanup,
+      main: opts.main,
+      cacheDir: opts.cacheDir,
+      calibreDir: opts.calibreDir,
+      batches: this.batches,
+      writes: this.batches.formats,
+      store: this.batches.formats.store,
+      reader: () => this.stage3Reader(),
+      libraryId,
+      writeWait: (lib) => this.formatsWriteWait(lib),
+      calibreLibraryOf: (lib) => this.calibreLibraryOf(lib),
+      disk: {
+        tryAcquire: (owner, side) => this.diskLock.tryAcquire(owner, side),
+        release: (owner) => this.diskLock.release(owner),
+      },
+      log: this.log,
+    });
+    return parts;
   }
 
   /**
@@ -1339,14 +1359,19 @@ export class CleanupService {
   }
 
   /**
-   * Books without an EPUB: the pass in its own loop (each step short: a select reads the
-   * snapshot once; a check or a comparison is one book). Woken by the 5 s round, the card and
+   * Books without an EPUB: each library's pass in its own loop (each step short: a select reads
+   * the snapshot once; a check or a comparison is one book). Woken by the 5 s round, the card and
    * each answer from the sidecar.
    */
   runFormats(): void {
-    if (this.formatsRunning || this.stopped) return;
-    const pass = this.formats;
-    this.formatsRunning = (async () => {
+    for (const lib of this.cleanupLibraries()) this.runFormatsOf(lib);
+  }
+
+  private runFormatsOf(target: string): void {
+    const P = this.lp(target);
+    const pass = P.formats;
+    if (P.formatsRunning || this.stopped || !pass) return;
+    P.formatsRunning = (async () => {
       try {
         for (let i = 0; i < 1000; i++) {
           if (this.stopped) break;
@@ -1357,18 +1382,45 @@ export class CleanupService {
       } catch (err) {
         this.logError('Cleanup: books without an EPUB failed:', err);
       } finally {
-        this.formatsRunning = null;
+        P.formatsRunning = null;
       }
     })();
   }
 
-  formatsChanged(): void {
-    this.runFormats();
+  /** A library's pass (null: no such cleanup library, or none set up). */
+  formatsOf(target: string | null): FormatsPass | null {
+    if (!target) return null;
+    return this.lp(target).formats;
+  }
+
+  /** After the user's change on the card, or an answer from the sidecar: work at once. */
+  formatsChanged(target: string | null = null): void {
+    if (target) this.runFormatsOf(target);
+    else this.runFormats();
+  }
+
+  /** The next conversion job of any library (one at a time across them; the primary first). */
+  claimFormatJob(): FormatJobView | null {
+    for (const lib of this.cleanupLibraries()) {
+      const job = this.lp(lib).formats?.claimJob() ?? null;
+      if (job) return job;
+    }
+    return null;
+  }
+
+  /** The pass a conversion job belongs to (its book's library). */
+  formatsForJob(jobId: number): FormatsPass {
+    const r = this.db
+      .prepare('SELECT library_id FROM calibre_format_books WHERE id = ?')
+      .get(jobId) as { library_id: string } | undefined;
+    const pass = r ? this.formatsOf(r.library_id) : null;
+    if (!pass) throw new FormatsError(404, 'not_found', 'No such job');
+    return pass;
   }
 
   /**
-   * Why the pass's write must wait now: a batch open, an earlier stage still writing, the safety
-   * checks, and a sidecar that converts and adds formats (1.7.0).
+   * Why the pass's write must wait now: a batch open, an earlier stage of this library still
+   * writing, the safety checks, and a sidecar that converts and adds formats (1.8.0).
    */
   private formatsWriteWait(lib: string): string | null {
     if (this.batches.open()) return 'A batch is being applied';
@@ -1379,36 +1431,36 @@ export class CleanupService {
       [4, () => this.remaining4(lib)],
       [5, () => this.remaining5(lib)],
     ] as [number, () => number][]) {
-      if (getStage(this.db, s).mode === 'on' && left() > 0)
+      if (getStage(this.db, lib, s).mode === 'on' && left() > 0)
         return `Waiting for stage ${s} to finish writing`;
     }
-    const checks = this.checksPass();
+    const checks = this.checksPass(lib);
     if (!checks.ok) return `Waiting for the safety checks: ${checks.failing.join('; ')}`;
     if (!this.batches.sidecarAtLeast(FORMATS_SIDECAR_VERSION))
       return `The cleanup sidecar is older than ${FORMATS_SIDECAR_VERSION}: rebuild ttsu-cleanup-apply`;
     return null;
   }
 
-  /** The books-without-an-EPUB card: mode, phase, counts, bars with the time left, the spot check. */
-  formatsStatus(): unknown {
-    const pass = this.formats;
+  /** A library's books-without-an-EPUB card: mode, phase, counts, bars with the time left, the spot check. */
+  formatsStatus(target: string | null): unknown {
+    const pass = this.formatsOf(target);
+    if (!target || !pass) return null;
     const st = pass.state();
     const p = st.progress;
-    const lib = p.libraryId ?? this.targetLibrary();
-    const sidecarReady = this.batches.sidecarAtLeast(FORMATS_SIDECAR_VERSION);
+    const lib = target;
     return {
       mode: st.mode,
       pausedReason: st.pausedReason,
       pausedDetail: st.pausedDetail,
       analysisId: formatsAnalysisId(p.run),
       progress: p,
-      bars: lib ? pass.bars(lib) : [],
-      counts: lib ? pass.counts(lib) : null,
+      bars: pass.bars(lib),
+      counts: pass.counts(lib),
       listedText: LISTED_TEXT,
       spot: pass.spotCounts(),
       spotPassed: pass.spotPassed(),
       sidecar: {
-        ready: sidecarReady,
+        ready: this.batches.sidecarAtLeast(FORMATS_SIDECAR_VERSION),
         need: FORMATS_SIDECAR_VERSION,
       },
       batches: pass.batchesOf(20).map((b) => ({
@@ -1423,7 +1475,7 @@ export class CleanupService {
         counts: this.batches.itemCounts(b.id),
       })),
       stage: FORMATS_STAGE,
-      library: lib ? { id: lib, folder: getLibrary(this.opts.main, lib)?.folder ?? null } : null,
+      library: { id: lib, folder: getLibrary(this.opts.main, lib)?.folder ?? null },
     };
   }
 

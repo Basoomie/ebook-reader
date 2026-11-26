@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-# 1.7.0 (books without an EPUB): what a book's file is, read in the sidecar's own work folder.
+# 1.8.0 (books without an EPUB): what a book's file is, read in the sidecar's own work folder.
 #
 # Run with calibre's own Python (it reads RAR with calibre's unrar):
 #   calibre-debug -e formats-helper.py inspect <file>

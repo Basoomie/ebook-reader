@@ -73,7 +73,7 @@ import { FORMATS_STAGE, FormatWorker, type FormatPrograms } from './formats';
  * EPUB to its own book, or a proven copy folded into its EPUB twin (its file added there, the
  * copy removed the stage-1 way); Undo by remove_format (only a format the pass added).
  */
-export const SIDECAR_VERSION = '1.7.0';
+export const SIDECAR_VERSION = '1.8.0';
 
 /** The wait after a batch before asking for the next one (WP20g: the full poll after every batch cost ~1 h of run 7). */
 export const AFTER_BATCH_MS = 1000;
@@ -182,7 +182,7 @@ export interface WorkerOptions {
   retryMinMs?: number;
   retryMaxMs?: number;
   fetchImpl?: typeof fetch;
-  /** For tests: stand-ins for ebook-convert and calibre-debug (1.7.0). */
+  /** For tests: stand-ins for ebook-convert and calibre-debug (1.8.0). */
   formatPrograms?: FormatPrograms;
 }
 
@@ -194,7 +194,7 @@ export class Worker {
   readonly arrivals: ArrivalWorker;
   /** 1.6.0: moving books to another library (manga part A). */
   readonly moves: MoveWorker;
-  /** 1.7.0: books without an EPUB (conversion jobs and stage-12 items). */
+  /** 1.8.0: books without an EPUB (conversion jobs and stage-12 items). */
   readonly formats: FormatWorker;
   /** 1.6.0: the running batch's own library (null: the login's). */
   private batchLibrary: string | null = null;
@@ -244,7 +244,7 @@ export class Worker {
               program: c.helper.program,
               args: ['-e', c.helper.script],
               // The only folder the helper may export into (checked again in Python).
-              // 1.7.0: and the conversion jobs' own folder (a book's file exported to convert it).
+              // 1.8.0: and the conversion jobs' own folder (a book's file exported to convert it).
               env: { TTSU_EXPORT_DIRS: `${c.quarantineDir}:${c.formatTmpDir}` },
               log: (m) => this.log.info(m)
             })
@@ -364,7 +364,7 @@ export class Worker {
       // WP20g: the import's add batches when no cleanup batch is waiting.
       const lib: Login = { ...this.login, libraryId: this.login.libraryId };
       if (await this.retry(() => this.arrivals.cycle(lib))) return 'batch';
-      // 1.7.0: a conversion job of the books without an EPUB (reads Calibre, writes nothing).
+      // 1.8.0: a conversion job of the books without an EPUB (reads Calibre, writes nothing).
       if (await this.formats.cycle(lib)) return 'batch';
       if (wait) this.log.info(`No batch yet: ${wait}`);
       return 'idle';
@@ -1187,7 +1187,7 @@ export class Worker {
         if (left.length !== kept.tags.length) await this.calibredb.setTags(login, kept.id, left);
       }
     }
-    // 1.7.0: a fold's Undo takes the format it gave the twin off again, once the copy is back.
+    // 1.8.0: a fold's Undo takes the format it gave the twin off again, once the copy is back.
     if (after) await after();
     await this.report(batch, item, report);
   }
@@ -1380,7 +1380,7 @@ export class Worker {
     // Not in Calibre's trash any more (expired or emptied): the quarantine copy below.
     // Re-add the quarantined export (new Calibre id and UUID).
     const dir = item.quarantineDir;
-    // 1.7.0: a folded copy has no EPUB; its export holds its own file (AZW3, ZIP…).
+    // 1.8.0: a folded copy has no EPUB; its export holds its own file (AZW3, ZIP…).
     const bookFile = !dir
       ? null
       : batch.stage === FORMATS_STAGE

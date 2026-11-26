@@ -88,7 +88,7 @@ export class Quarantine {
   }
 
   /**
-   * 1.7.0: the file of this format in an export folder (`book.azw3`…), or for no format the first
+   * 1.8.0: the file of this format in an export folder (`book.azw3`…), or for no format the first
    * book file there (any format but the OPF and the cover), or null.
    */
   async bookFileIn(dir: string, format?: string): Promise<string | null> {

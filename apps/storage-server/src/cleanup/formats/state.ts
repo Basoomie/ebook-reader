@@ -1,6 +1,7 @@
 /**
- * Books without an EPUB: the pass's own Off/Preview/On, progress and pause (cleanup.db v38,
- * calibre_formats_state; the stages table holds stages 0-5 only, as for the other passes).
+ * Books without an EPUB: the pass's own Off/Preview/On, progress and pause, one row per Calibre
+ * library (cleanup.db v41, calibre_formats_state; manga part B: every pass belongs to one library;
+ * a library's row is made when first read).
  */
 import type Database from 'better-sqlite3';
 
@@ -70,15 +71,24 @@ export interface FormatsState {
   pausedDetail: string | null;
 }
 
-export function getFormatsState(db: Database.Database): FormatsState {
-  const r = db.prepare('SELECT * FROM calibre_formats_state WHERE id = 1').get() as {
+function ensureRow(db: Database.Database, libraryId: string): void {
+  db.prepare(
+    'INSERT OR IGNORE INTO calibre_formats_state (library_id, updated_at) VALUES (?, 0)',
+  ).run(libraryId);
+}
+
+export function getFormatsState(db: Database.Database, libraryId: string): FormatsState {
+  ensureRow(db, libraryId);
+  const r = db
+    .prepare('SELECT * FROM calibre_formats_state WHERE library_id = ?')
+    .get(libraryId) as {
     mode: FormatsMode;
     progress_json: string;
     paused_reason: string | null;
     paused_detail: string | null;
   };
   const stored = JSON.parse(r.progress_json) as Partial<FormatsProgress>;
-  const base = emptyFormatsProgress();
+  const base = emptyFormatsProgress(1, libraryId);
   return {
     mode: r.mode,
     progress: stored.phase
@@ -89,31 +99,47 @@ export function getFormatsState(db: Database.Database): FormatsState {
   };
 }
 
-export function saveFormatsProgress(db: Database.Database, p: FormatsProgress): void {
+export function saveFormatsProgress(
+  db: Database.Database,
+  libraryId: string,
+  p: FormatsProgress,
+): void {
+  ensureRow(db, libraryId);
   db.prepare(
-    `UPDATE calibre_formats_state SET progress_json = ?, library_id = ?, updated_at = ? WHERE id = 1`,
-  ).run(JSON.stringify(p), p.libraryId, Date.now());
+    'UPDATE calibre_formats_state SET progress_json = ?, updated_at = ? WHERE library_id = ?',
+  ).run(JSON.stringify(p), Date.now(), libraryId);
 }
 
-export function setFormatsMode(db: Database.Database, mode: FormatsMode): void {
-  db.prepare('UPDATE calibre_formats_state SET mode = ?, updated_at = ? WHERE id = 1').run(
+export function setFormatsMode(db: Database.Database, libraryId: string, mode: FormatsMode): void {
+  ensureRow(db, libraryId);
+  db.prepare('UPDATE calibre_formats_state SET mode = ?, updated_at = ? WHERE library_id = ?').run(
     mode,
     Date.now(),
+    libraryId,
   );
 }
 
-/** Pauses the pass with a reason the card shows (Resume on the card lifts it). */
-export function pauseFormats(db: Database.Database, reason: string, detail: string): void {
+/** Pauses the library's pass with a reason the card shows (Resume on the card lifts it). */
+export function pauseFormats(
+  db: Database.Database,
+  libraryId: string,
+  reason: string,
+  detail: string,
+): void {
+  ensureRow(db, libraryId);
   db.prepare(
-    'UPDATE calibre_formats_state SET paused_reason = ?, paused_detail = ?, updated_at = ? WHERE id = 1',
-  ).run(reason, detail.slice(0, 2000), Date.now());
+    `UPDATE calibre_formats_state SET paused_reason = ?, paused_detail = ?, updated_at = ?
+     WHERE library_id = ?`,
+  ).run(reason, detail.slice(0, 2000), Date.now(), libraryId);
   onFormatsPaused?.(reason, detail);
 }
 
-export function resumeFormats(db: Database.Database): void {
+export function resumeFormats(db: Database.Database, libraryId: string): void {
+  ensureRow(db, libraryId);
   db.prepare(
-    'UPDATE calibre_formats_state SET paused_reason = NULL, paused_detail = NULL, updated_at = ? WHERE id = 1',
-  ).run(Date.now());
+    `UPDATE calibre_formats_state SET paused_reason = NULL, paused_detail = NULL, updated_at = ?
+     WHERE library_id = ?`,
+  ).run(Date.now(), libraryId);
 }
 
 /** Set by the server: a pause pokes the notifications (one alert per pause). */

@@ -519,15 +519,16 @@ export class NotificationWatcher {
     } catch {
       // cleanup.db before manga part A
     }
-    // Books without an EPUB (its own row), one alert per pause.
+    // Books without an EPUB (a row per library), one alert per pause.
     try {
-      const f = db
-        .prepare('SELECT paused_reason, paused_detail FROM calibre_formats_state WHERE id = 1')
-        .get() as { paused_reason: string | null; paused_detail: string | null } | undefined;
-      if (f?.paused_reason) {
-        const key = 'stage_paused:formats';
+      for (const f of db
+        .prepare(
+          'SELECT library_id, paused_reason, paused_detail FROM calibre_formats_state WHERE paused_reason IS NOT NULL',
+        )
+        .all() as { library_id: string; paused_reason: string; paused_detail: string | null }[]) {
+        const key = this.libKey(db, 'stage_paused:formats', f.library_id);
         active.add(key);
-        const summary = `Books without an EPUB paused: ${f.paused_detail ?? stagePauseText(f.paused_reason)}`;
+        const summary = `Books without an EPUB${this.libraryLabel(db, f.library_id)} paused: ${f.paused_detail ?? stagePauseText(f.paused_reason)}`;
         if (
           this.service.observe(key, 'stage_paused', { waitMs: 0, summary, detail: f.paused_detail })
         )

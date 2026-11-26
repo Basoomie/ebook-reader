@@ -12,7 +12,7 @@
  *   set_fields (stage 2, WP20b: set_metadata of exactly the fields stage 2 writes: title and
  *   its sort, authors and author_sort, identifiers, publisher, languages, #illustrator and
  *   the cover; never tags, never an OPF);
- * - 1.7.0 (books without an EPUB): add_format (one file to one book, never replacing a format
+ * - 1.8.0 (books without an EPUB): add_format (one file to one book, never replacing a format
  *   the book has: the EPUB the server checked, from this sidecar's own folder, or a copy's file
  *   from the quarantine onto its twin) and remove_format (one format of one book: only a format
  *   the pass added, as its Undo; the server names it).
@@ -57,7 +57,7 @@ export const ALLOWED: readonly CalibredbCommand[] = [
 ];
 
 /**
- * 1.7.0: the formats add_format and remove_format may name (the files of the library's books
+ * 1.8.0: the formats add_format and remove_format may name (the files of the library's books
  * without an EPUB, and the EPUB made for them). Never PDF or KFX: the pass leaves those alone.
  */
 export const BOOK_FORMATS = [
@@ -527,7 +527,7 @@ export class Calibredb {
   }
 
   /**
-   * 1.7.0: adds one file as a format of a book (never replacing one it has). The file must be in
+   * 1.8.0: adds one file as a format of a book (never replacing one it has). The file must be in
    * one of `dirs` (this sidecar's own format folder, or the quarantine).
    */
   async addFormat(login: Login, calibreId: number, file: string, dirs: string[]): Promise<void> {
@@ -538,7 +538,7 @@ export class Calibredb {
     await this.ok('add_format', login, ['--dont-replace', String(calibreId), file]);
   }
 
-  /** 1.7.0: removes one format of a book (Undo of a format the pass added). */
+  /** 1.8.0: removes one format of a book (Undo of a format the pass added). */
   async removeFormat(login: Login, calibreId: number, format: string): Promise<void> {
     await this.ok('remove_format', login, [String(calibreId), format.toUpperCase()]);
   }

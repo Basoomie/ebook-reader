@@ -30,5 +30,5 @@ export const MOVE_SIDECAR_VERSION = '1.6.0';
  */
 export const FORMATS_STAGE = 12;
 
-/** The sidecar version that converts books and runs add_format / remove_format (1.7.0). */
-export const FORMATS_SIDECAR_VERSION = '1.7.0';
+/** The sidecar version that converts books and runs add_format / remove_format (1.8.0). */
+export const FORMATS_SIDECAR_VERSION = '1.8.0';

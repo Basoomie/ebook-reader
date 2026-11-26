@@ -95,7 +95,7 @@ async function main() {
     reader: () => {
       throw new Error('no reader in the rehearsal');
     },
-    library: () => lib,
+    libraryId: lib,
     writeWait: () => null,
     calibreLibraryOf: () => null,
   });

@@ -31,6 +31,7 @@
   import ListingsCard from '$lib/components/cleanup/cleanup-listings.svelte';
   import SeriesPairsCard from '$lib/components/cleanup/cleanup-series-pairs.svelte';
   import MoveCard from '$lib/components/cleanup/cleanup-move.svelte';
+  import FormatsCard from '$lib/components/cleanup/cleanup-formats.svelte';
   import TitleFits from '$lib/components/cleanup/cleanup-title-fits.svelte';
   import CleanupDetails from '$lib/components/cleanup/cleanup-details.svelte';
   import {
@@ -718,6 +719,10 @@
          is the primary library's. -->
     {#if api && primary}
       <MoveCard {api} />
+    {/if}
+    <!-- Books without an EPUB: each library's own pass. -->
+    {#if api}
+      <FormatsCard {api} />
     {/if}
     {#if api}
       <ArrivalsCard {api} />

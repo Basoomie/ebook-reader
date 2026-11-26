@@ -644,6 +644,7 @@ export class FormatBatches {
         record('different', st.size, st.mtimeMs, problem);
         pauseFormats(
           this.db,
+          w.library_id,
           'stored_differs',
           `The EPUB Calibre stored for book ${w.calibre_id} is not the checked one (${problem}). Check the book in Calibre, then resume.`,
         );

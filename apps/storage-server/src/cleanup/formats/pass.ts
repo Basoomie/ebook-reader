@@ -98,8 +98,8 @@ export interface FormatsPassDeps {
   /** The checked EPUBs waiting to be written (CACHE_DIR/cleanup/formats). */
   store: EpubStore;
   reader: () => Stage3Reader;
-  /** The cleanup's library. */
-  library: () => string | null;
+  /** The Calibre library this pass works on (manga part B: one pass per library). */
+  libraryId: string;
   /** Why a write must wait now (a batch open, earlier stages writing, the checks, the sidecar). */
   writeWait: (lib: string) => string | null;
   /** The content server's id of a reader library. */
@@ -150,24 +150,28 @@ export class FormatsPass {
   /** The book whose conversion holds the disk lock. */
   private diskJob: number | null = null;
 
+  /** The Calibre library of this pass. */
+  readonly lib: string;
+
   constructor(private readonly deps: FormatsPassDeps) {
     this.db = deps.db;
+    this.lib = deps.libraryId;
   }
 
   state(): FormatsState {
-    return getFormatsState(this.db);
+    return getFormatsState(this.db, this.lib);
   }
 
   setMode(mode: FormatsMode): void {
     if (mode === 'on' && !this.spotPassed())
       throw new Error('Switch On only after the spot check: every book marked, none wrong');
-    setFormatsMode(this.db, mode);
+    setFormatsMode(this.db, this.lib, mode);
     if (mode === 'off') this.releaseDisk();
     this.deps.log?.(`Books without an EPUB: ${mode === 'analyse' ? 'Preview' : mode}`);
   }
 
   resume(): void {
-    resumeFormats(this.db);
+    resumeFormats(this.db, this.lib);
   }
 
   private releaseDisk(): void {
@@ -181,7 +185,7 @@ export class FormatsPass {
    */
   again(): void {
     const p = this.state().progress;
-    const lib = p.libraryId;
+    const lib = this.lib;
     if (lib) {
       const rows = this.db
         .prepare(
@@ -199,7 +203,7 @@ export class FormatsPass {
           .run(lib);
         const del = this.db.prepare('DELETE FROM calibre_format_books WHERE id = ?');
         for (const r of rows) del.run(r.id);
-        this.db.prepare('DELETE FROM calibre_formats_spot').run();
+        this.db.prepare('DELETE FROM calibre_formats_spot WHERE library_id = ?').run(lib);
       })();
       for (const r of rows)
         void this.deps.store.remove(lib, r.calibre_uuid).catch(() => {
@@ -207,8 +211,8 @@ export class FormatsPass {
         });
     }
     this.releaseDisk();
-    resumeFormats(this.db);
-    saveFormatsProgress(this.db, emptyFormatsProgress(p.run + 1, lib));
+    resumeFormats(this.db, this.lib);
+    saveFormatsProgress(this.db, this.lib, emptyFormatsProgress(p.run + 1, this.lib));
   }
 
   private next(p: FormatsProgress, phase: FormatsPhase): void {
@@ -230,16 +234,11 @@ export class FormatsPass {
   async step(shouldStop: () => boolean = () => false): Promise<FormatsStep> {
     const st = this.state();
     if (st.mode === 'off') return 'idle';
-    const lib = this.deps.library();
+    const lib = this.lib;
     let p = st.progress;
-    if (!lib) {
-      p.write.waiting = 'Choose the library to clean';
-      saveFormatsProgress(this.db, p);
-      return 'idle';
-    }
     if (p.libraryId !== lib) {
       p = emptyFormatsProgress(p.run + (p.libraryId ? 1 : 0), lib);
-      saveFormatsProgress(this.db, p);
+      saveFormatsProgress(this.db, this.lib, p);
     }
     if (st.pausedReason) return 'idle';
     if (p.phase === 'done') {
@@ -252,7 +251,7 @@ export class FormatsPass {
       // (books added by hand since); the full select only when there are some.
       if (!this.hasNewBooks(lib)) {
         p.snapshotMtimeMs = mtime;
-        saveFormatsProgress(this.db, p);
+        saveFormatsProgress(this.db, this.lib, p);
         return 'idle';
       }
       this.next(p, 'select');
@@ -281,7 +280,7 @@ export class FormatsPass {
       t.maxMs = Math.max(t.maxMs, Math.round(ms));
       t.totalMs += Math.round(ms);
       // A step may have changed the mode or the pause: only the progress is saved.
-      saveFormatsProgress(this.db, p);
+      saveFormatsProgress(this.db, this.lib, p);
     }
     return r;
   }
@@ -425,7 +424,7 @@ export class FormatsPass {
   /** The next book for the sidecar to convert, or null (Off, paused, not converting, disk busy). */
   claimJob(now = Date.now()): FormatJobView | null {
     const st = this.state();
-    const lib = st.progress.libraryId;
+    const lib = this.lib;
     if (st.mode === 'off' || st.pausedReason || st.progress.phase !== 'convert' || !lib)
       return null;
     this.expireJobs(now);
@@ -470,7 +469,8 @@ export class FormatsPass {
     const row = this.db.prepare('SELECT * FROM calibre_format_books WHERE id = ?').get(jobId) as
       | BookRow
       | undefined;
-    if (!row) throw new FormatsError(404, 'not_found', 'No such job');
+    if (!row || row.library_id !== this.lib)
+      throw new FormatsError(404, 'not_found', 'No such job');
     if (row.state !== 'converting')
       throw new FormatsError(
         409,
@@ -854,7 +854,9 @@ export class FormatsPass {
 
   private spotStep(p: FormatsProgress, lib: string, mode: FormatsMode): FormatsStep {
     const drawn = (
-      this.db.prepare('SELECT COUNT(*) AS n FROM calibre_formats_spot').get() as { n: number }
+      this.db
+        .prepare('SELECT COUNT(*) AS n FROM calibre_formats_spot WHERE library_id = ?')
+        .get(lib) as { n: number }
     ).n;
     if (drawn === 0) {
       const rows = this.db
@@ -889,8 +891,10 @@ export class FormatsPass {
 
   spotCounts(): { total: number; right: number; wrong: number; open: number } {
     const rows = this.db
-      .prepare('SELECT verdict, COUNT(*) AS n FROM calibre_formats_spot GROUP BY verdict')
-      .all() as { verdict: string | null; n: number }[];
+      .prepare(
+        'SELECT verdict, COUNT(*) AS n FROM calibre_formats_spot WHERE library_id = ? GROUP BY verdict',
+      )
+      .all(this.lib) as { verdict: string | null; n: number }[];
     const by = (v: string | null) => rows.find((r) => r.verdict === v)?.n ?? 0;
     return {
       total: rows.reduce((a, r) => a + r.n, 0),
@@ -910,8 +914,10 @@ export class FormatsPass {
     if (p.phase === 'write' || p.phase === 'done')
       throw new Error('The spot check is closed: the pass is writing or done');
     const changed = this.db
-      .prepare('UPDATE calibre_formats_spot SET verdict = ?, decided_at = ? WHERE calibre_uuid = ?')
-      .run(verdict, verdict ? now : null, uuid).changes;
+      .prepare(
+        'UPDATE calibre_formats_spot SET verdict = ?, decided_at = ? WHERE library_id = ? AND calibre_uuid = ?',
+      )
+      .run(verdict, verdict ? now : null, this.lib, uuid).changes;
     if (changed === 0) throw new Error('No such book in the spot check');
   }
 
@@ -920,15 +926,15 @@ export class FormatsPass {
       .prepare(
         `SELECT s.verdict, s.kind AS spot_kind, b.* FROM calibre_formats_spot s
          JOIN calibre_format_books b ON b.library_id = s.library_id AND b.calibre_uuid = s.calibre_uuid
-         ORDER BY s.position`,
+         WHERE s.library_id = ? ORDER BY s.position`,
       )
-      .all() as (BookRow & { verdict: 'right' | 'wrong' | null })[];
+      .all(this.lib) as (BookRow & { verdict: 'right' | 'wrong' | null })[];
     return rows.map((r) => ({ ...this.view(r), mark: r.verdict }));
   }
 
   /** The checked EPUB of a book on the card (spot check and review), for the user to open. */
   epubFileOf(uuid: string): { file: string; title: string } {
-    const lib = this.state().progress.libraryId;
+    const lib = this.lib;
     const r = this.db
       .prepare('SELECT * FROM calibre_format_books WHERE library_id = ? AND calibre_uuid = ?')
       .get(lib, uuid) as BookRow | undefined;
@@ -1028,7 +1034,7 @@ export class FormatsPass {
     const p = this.state().progress;
     if (choice !== 'leave' && p.phase === 'done') {
       this.next(p, 'write');
-      saveFormatsProgress(this.db, p);
+      saveFormatsProgress(this.db, this.lib, p);
     }
   }
 
@@ -1164,8 +1170,11 @@ export class FormatsPass {
       .get(lib) as { c: number | null; f: number | null; u: number | null };
     const stored: Record<string, number> = {};
     for (const r of this.db
-      .prepare('SELECT state, COUNT(*) AS n FROM calibre_format_store GROUP BY state')
-      .all() as { state: string; n: number }[])
+      .prepare(
+        `SELECT s.state, COUNT(*) AS n FROM calibre_format_store s
+         JOIN calibre_format_writes w ON w.change_id = s.change_id WHERE w.library_id = ? GROUP BY s.state`,
+      )
+      .all(lib) as { state: string; n: number }[])
       stored[r.state] = r.n;
     return {
       byState,
@@ -1305,9 +1314,9 @@ export class FormatsPass {
     return (
       this.db
         .prepare(
-          `SELECT id FROM batches WHERE stage = ${FORMATS_STAGE} ORDER BY created_at DESC LIMIT ?`,
+          `SELECT id FROM batches WHERE stage = ${FORMATS_STAGE} AND library_id = ? ORDER BY created_at DESC LIMIT ?`,
         )
-        .all(limit) as { id: string }[]
+        .all(this.lib, limit) as { id: string }[]
     ).map((r) => this.deps.batches.get(r.id)!);
   }
 }

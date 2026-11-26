@@ -1575,6 +1575,7 @@ export class BatchService {
     } else if (failed > 0 && batch.kind === 'apply' && batch.stage === FORMATS_STAGE) {
       pauseFormats(
         this.db,
+        batch.libraryId,
         'batch_failed',
         `${failed} of ${states.length} books failed in the last batch of books without an EPUB${error ? `: ${error}` : ''}. ` +
           'Check the batch, then resume.',

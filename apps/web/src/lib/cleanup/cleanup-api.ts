@@ -2954,7 +2954,9 @@ export class CleanupApi {
   async formatsEpub(uuid: string): Promise<Blob> {
     const response = await send(
       this.fetchImpl,
-      `${this.serverUrl}/api/v1/cleanup/formats/epub/${encodeURIComponent(uuid)}`,
+      `${this.serverUrl}/api/v1/cleanup/formats/epub/${encodeURIComponent(uuid)}${
+        this.library ? `?library=${encodeURIComponent(this.library)}` : ''
+      }`,
       { method: 'GET', headers: { Authorization: `Bearer ${this.token}` } },
       { timeoutSeconds: 0 }
     );

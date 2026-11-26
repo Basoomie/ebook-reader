@@ -902,7 +902,7 @@ switch (sub) {
     break;
   }
   case 'add_format': {
-    // 1.7.0: add_format --dont-replace <id> <file>. FAKE_ADD_FORMAT_TIMEOUT=after: the request
+    // 1.8.0: add_format --dont-replace <id> <file>. FAKE_ADD_FORMAT_TIMEOUT=after: the request
     // times out (408) although the format was added.
     if (!has('--dont-replace')) fail('add_format needs --dont-replace here');
     const file = argv[argv.length - 1];
@@ -931,7 +931,7 @@ switch (sub) {
     break;
   }
   case 'remove_format': {
-    // 1.7.0: remove_format <id> <fmt>.
+    // 1.8.0: remove_format <id> <fmt>.
     const fmt = argv[argv.length - 1].toUpperCase();
     const id = Number(argv[argv.length - 2]);
     const b = bookRow(id);

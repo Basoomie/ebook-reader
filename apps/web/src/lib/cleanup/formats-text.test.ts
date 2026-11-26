@@ -41,7 +41,7 @@ const status = (over: Partial<FormatsStatus> = {}): FormatsStatus => ({
   listedText: { pdf: 'PDF only' },
   spot: { total: 30, right: 10, wrong: 0, open: 20 },
   spotPassed: false,
-  sidecar: { ready: true, need: '1.7.0' },
+  sidecar: { ready: true, need: '1.8.0' },
   library: { id: 'l', folder: 'japanese-library' },
   ...over
 });
@@ -53,8 +53,8 @@ describe('the books-without-an-EPUB card', () => {
       'To write: 600 EPUBs for their own books, 300 copies folded into their EPUB book; 5 near copies for you to look at.',
       'The spot check: 10 of 30 marked. On waits for every book marked and none wrong.'
     ]);
-    expect(formatsLines(status({ sidecar: { ready: false, need: '1.7.0' } }))[0]).toMatch(
-      /sidecar must be 1\.7\.0/
+    expect(formatsLines(status({ sidecar: { ready: false, need: '1.8.0' } }))[0]).toMatch(
+      /sidecar must be 1\.8\.0/
     );
   });
 

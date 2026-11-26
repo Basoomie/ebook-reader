@@ -1,5 +1,5 @@
 /**
- * 1.7.0 (books without an EPUB, docs/design/non-epub-books.md): the sidecar's half of the pass.
+ * 1.8.0 (books without an EPUB, docs/design/non-epub-books.md): the sidecar's half of the pass.
  *
  * Conversion jobs (Preview and On alike; nothing is written to Calibre): the server hands out one
  * book at a time (/cleanup-apply/formats/claim). In this sidecar's own work folder

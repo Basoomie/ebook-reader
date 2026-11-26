@@ -1,7 +1,7 @@
 /**
  * Books without an EPUB (non-epub-books.md): the pure rules (what a file is, which file is
  * converted, the twins, the check, the copy decision, the spot check's draw, the sidecar's
- * allowlist) and the whole pass through the real apply sidecar (1.7.0) against the real server,
+ * allowlist) and the whole pass through the real apply sidecar (1.8.0) against the real server,
  * with the stand-in calibredb of the WP20a tests, stand-ins for ebook-convert and calibre-debug
  * (fixtures/formats/fake-formats-tools.cjs) and the reader's real counter bundle: Preview
  * converts, checks and compares without writing; On adds the EPUBs, folds the proven copy into
@@ -120,7 +120,7 @@ describe('what a book file is (the sidecar, pure)', () => {
   });
 });
 
-describe('the sidecar allowlist (1.7.0)', () => {
+describe('the sidecar allowlist (1.8.0)', () => {
   const login: Login = {
     contentServerUrl: 'http://calibre:8081',
     libraryId: 'japanese-library',
@@ -489,21 +489,24 @@ describe('the pass through the real sidecar', () => {
     });
   }
 
+  /** The japanese-library's pass (manga part B: one per library). */
+  const pass = () => env.service.formatsOf(env.libraryId())!;
+
   /** Steps the pass and the sidecar until the pass reaches `phase` (or gives up). */
   async function runUntil(w: Worker, phase: string, max = 200) {
     for (let i = 0; i < max; i++) {
-      const st = env.service.formats.state();
+      const st = pass().state();
       if (st.progress.phase === phase) return;
-      const r = await env.service.formats.step();
+      const r = await pass().step();
       if (process.env.NEP_DEBUG) console.log('step', i, st.progress.phase, r);
       if (r === 'idle' || r === 'wait') {
         await w.cycle();
         env.service.batches.checkIngested();
       }
     }
-    const b = env.service.formats.batchesOf()[0];
+    const b = pass().batchesOf()[0];
     throw new Error(
-      `The pass never reached ${phase}: ${JSON.stringify(env.service.formats.state().progress)} ` +
+      `The pass never reached ${phase}: ${JSON.stringify(pass().state().progress)} ` +
         `batch ${JSON.stringify(b)} items ${JSON.stringify(b ? env.service.batches.items(b.id) : [])} ` +
         `logs ${env.logs.slice(-15).join(' | ')}`,
     );
@@ -517,7 +520,7 @@ describe('the pass through the real sidecar', () => {
       .send({ mode: 'analyse' })
       .expect(200);
     await runUntil(w, 'spot');
-    await env.service.formats.step();
+    await pass().step();
     const lib = env.libraryId();
     const rows = Object.fromEntries(
       (
@@ -617,7 +620,7 @@ describe('the pass through the real sidecar', () => {
     ).toMatchObject({ missing: false });
 
     // Undo: the EPUBs come off, the copy comes back, its file and tag come off the twin.
-    const batches = env.service.formats.batchesOf();
+    const batches = pass().batchesOf();
     expect(batches).toHaveLength(1);
     await request(env.app)
       .post(`/api/v1/cleanup/batches/${batches[0].id}/undo`)
@@ -637,7 +640,7 @@ describe('the pass through the real sidecar', () => {
     ).toEqual({ n: 0 });
     // Never again: looking again from the start leaves the undone books alone.
     await request(env.app).post('/api/v1/cleanup/formats/again').set(auth(user)).expect(200);
-    await env.service.formats.step();
+    await pass().step();
     const again = env.cleanupDb
       .prepare('SELECT calibre_id FROM calibre_format_books WHERE run = 2')
       .all() as { calibre_id: number }[];
@@ -655,9 +658,9 @@ describe('the pass through the real sidecar', () => {
       .send({ mode: 'analyse' })
       .expect(200);
     await runUntil(w, 'spot');
-    await env.service.formats.step();
-    for (const b of env.service.formats.spotList()) env.service.formats.setVerdict(b.uuid, 'right');
-    env.service.formats.setMode('on');
+    await pass().step();
+    for (const b of pass().spotList()) pass().setVerdict(b.uuid, 'right');
+    pass().setMode('on');
     await runUntil(w, 'done');
     expect(formatsOf(ids.U1)).toEqual(['AZW3', 'EPUB']);
     const adds = fs
