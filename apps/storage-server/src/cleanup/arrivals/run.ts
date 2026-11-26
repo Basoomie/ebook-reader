@@ -3190,11 +3190,6 @@ export class BookArrivals {
       this.next(run.id, p, 'report');
       return 'more';
     }
-    const wait = mv.writeWait(libraryId, target);
-    if (wait) {
-      p.waiting = wait;
-      return 'wait';
-    }
     const left = (
       this.db
         .prepare(
@@ -3221,6 +3216,11 @@ export class BookArrivals {
         ).n
       : 0;
     cm.done = Math.min(p.move.auto, Math.max(0, p.move.auto - left) + inFlight);
+    const wait = mv.writeWait(libraryId, target);
+    if (wait) {
+      p.waiting = wait;
+      return 'wait';
+    }
     if (left === 0) {
       p.move.moved = (
         this.db
