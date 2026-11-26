@@ -133,6 +133,14 @@ Stop condition: each work package is finished on its own branch, with a summary 
 - Work on a branch per work package; never commit directly to the main branch. Commits follow Conventional Commits (commitlint is configured).
 - Before merging anything to `main`, run the full builds, not only the tests: `pnpm build` for the web app and `npm run build` (tsc, as used by the Docker image) for the storage server. Tests run transpile-only and miss type errors (this broke the Docker build once, fixed in `96a16b2`).
 
+## Memory: no always-on dev servers (unbreakable)
+
+On 2026-11-25 a `vite dev` server a session left running grew to 70 GB (it rebuilt every page on each branch update, for no browser) and filled the PC's memory. PC Guard (`C:\Program Files\PC Guard`, source `C:\Data\Projects\local-ttsu\tools\pc-guard`, README there) now enforces:
+
+- **Claude Code rule (both Windows accounts):** `vite dev`, `npm/pnpm/yarn run dev` and launch.json `dev` configs are refused. To look at pages: `pnpm build` in `apps/web`, then `npx vite preview --host 127.0.0.1 --port <port> --strictPort`; rebuild after changes. Stop every server, preview and test stack you started when its check is done; a server is never left running between turns "in case". When a session in a worktree ends, its Node programs are stopped.
+- **Watchdog (SYSTEM, every minute):** a Node program from `C:\Data\Projects` (or a Playwright test browser) over 8 GB is stopped, and at 90% committed memory the biggest one (2 GB or more) is stopped; you get a Windows message and a line in `C:\ProgramData\PC Guard\watchdog.log`. `last-check.txt` there shows it is running. If a program of yours was stopped, read the log, fix the leak, and don't work around the guard.
+- Never disable, edit or bypass PC Guard, and never stop another session's programs: only the session that started a program stops it (ask the user otherwise).
+
 ## Disk space: test data never stays on the PC (unbreakable)
 
 Sessions filled the PC's C: drive twice: 600 GB in five days (2026-11-20 to 11-25), mostly copies of live databases in `.tmp-e2e` (563 files, 271 GB), plus worktrees and `%TEMP%\claude`. Every session follows these rules, with no exceptions:
