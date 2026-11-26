@@ -23,7 +23,6 @@
     bookRatingParts$,
     formatCount,
     refreshLeftText,
-    ratingFeatures$,
     type RatingPart
   } from '$lib/library/store-ratings';
 
@@ -108,7 +107,6 @@
       const r = await api.saveRatingSettings(draft);
       saved = r.settings;
       draft = r.settings;
-      ratingFeatures$.set({ bookmeter: r.settings.bookmeter });
       savedNote = 'Saved.';
       await load();
     } catch (err) {
@@ -143,7 +141,6 @@
   {:else}
     <p class="text-sm" data-testid="ratings-saved">
       {Object.entries(progress.saved)
-        .filter(([site]) => site !== 'bookmeter' || draft?.bookmeter)
         .map(([site, n]) => `${SITE_NAMES[site] ?? site} ${formatCount(n)}`)
         .join(' · ') || 'No figures yet.'}
     </p>
@@ -177,7 +174,7 @@
           {/if}
         </p>
       {:else}
-        <div class="space-y-1.5" data-testid="ratings-refresh">
+        <div class="space-y-1.5" data-testid="ratings-refresh-bar">
           <div class="flex flex-wrap justify-between gap-2 text-sm">
             <span
               >Fetching ratings: {formatCount(readCount)} of {formatCount(
@@ -213,16 +210,6 @@
       />
       <span>Fetch ratings (through the library cleanup's fetch container, behind its own work)</span
       >
-    </label>
-    <label class="flex min-h-[2.75rem] items-center gap-3 text-sm">
-      <input
-        type="checkbox"
-        class="h-5 w-5"
-        checked={draft.bookmeter}
-        on:change={(e) => change({ bookmeter: e.currentTarget.checked })}
-        data-testid="ratings-bookmeter"
-      />
-      <span>Fetch and show 読書メーター readers</span>
     </label>
 
     <div class="fields">

@@ -94,6 +94,84 @@ export interface RequestOptions {
   timeoutSeconds?: number;
 }
 
+// ---- Bookmeter sync (2026-11-25): the server's answers (bookmeter/routes.ts) ----
+
+export type BookmeterListName = 'read' | 'reading' | 'stacked' | 'wish';
+
+export interface BookmeterAccountInfo {
+  id: string;
+  userId: string;
+  libraries: string[];
+  statuses: boolean;
+  wish: boolean;
+  addedAt: number;
+  reviewedAt: number | null;
+  collectionId: string | null;
+}
+
+export interface BookmeterServerSettings {
+  enabled: boolean;
+  accounts: BookmeterAccountInfo[];
+  quickMinutes: number;
+  fullHours: number;
+  askAbove: number;
+  notifyArrived: boolean;
+}
+
+export interface BookmeterAccountStatus {
+  account: BookmeterAccountInfo;
+  name: string | null;
+  counts: Record<BookmeterListName, number | null> | null;
+  entries: Record<BookmeterListName, number>;
+  matched: number;
+  unmatched: number;
+  quickAt: number | null;
+  fullAt: number | null;
+  checking: { kind: 'quick' | 'full'; done: number; total: number; startedAt: number } | null;
+  result: { at: number; kind: 'quick' | 'full'; changed: number; removed: number } | null;
+  error: string | null;
+  errorAt: number | null;
+}
+
+export interface BookmeterStatusAnswer {
+  settings: BookmeterServerSettings;
+  accounts: BookmeterAccountStatus[];
+  /** False when the fetch queue (the cleanup) isn't running on the server. */
+  available: boolean;
+}
+
+export interface BookmeterNearBook {
+  id: string;
+  libraryId: string;
+  title: string;
+  authors: string[];
+  score: number;
+}
+
+export interface BookmeterUnmatchedEntry {
+  listingId: string;
+  list: BookmeterListName;
+  date: string | null;
+  title: string;
+  authors: string[];
+  cover: string | null;
+  url: string;
+  near: BookmeterNearBook[];
+}
+
+export interface BookmeterUnmatchedAnswer {
+  unmatched: BookmeterUnmatchedEntry[];
+  notInLibrary: BookmeterUnmatchedEntry[];
+}
+
+export interface BookmeterFinishedBook {
+  bookId: string;
+  title: string;
+  authors: string[];
+  finishedOn: string | null;
+  listingId: string | null;
+}
+
 /** GET /natively/level/:bookId (the Natively level, 2026-11-24). */
 export interface NativelyLevelAnswer {
   /** Null when the book has no direct Natively link. */
@@ -142,7 +220,6 @@ export interface BookRatingsAnswer {
 
 export interface RatingSettings {
   refresh: boolean;
-  bookmeter: boolean;
   newDays: number;
   recentDays: number;
   oldDays: number;
@@ -710,6 +787,17 @@ export class LibraryApi {
   }
 
   /**
+   * Next in your series (docs/design/next-in-series.md): the next volume of each series you
+   * are reading, the series whose volume you finished last first. Ids only; the cards come
+   * from `lookup`.
+   */
+  async nextInSeries(options?: RequestOptions): Promise<string[]> {
+    return ((await this.get('/next-in-series', options)).json() as Promise<{ ids: string[] }>).then(
+      (r) => r.ids
+    );
+  }
+
+  /**
    * The given books in the given order (at most 200), without hidden ones and the ones
    * that don't match `q` (WP8b: a list collection, in its own order).
    */
@@ -778,6 +866,100 @@ export class LibraryApi {
   /** What the pages show of store ratings (読書メーター only once switched on). */
   async ratingFeatures(options?: RequestOptions): Promise<{ bookmeter: boolean }> {
     return (await this.get('/ratings/features', options)).json();
+  }
+
+  // ---- Bookmeter sync (2026-11-25, docs/design/bookmeter-sync.md) ----
+
+  async bookmeterStatus(options?: RequestOptions): Promise<BookmeterStatusAnswer> {
+    return (await this.get('/bookmeter/status', options)).json();
+  }
+
+  async saveBookmeterSettings(
+    patch: Partial<BookmeterServerSettings>,
+    options?: RequestOptions
+  ): Promise<BookmeterStatusAnswer> {
+    return (await this.sendJson('PUT', '/bookmeter/settings', patch, options)).json();
+  }
+
+  async addBookmeterAccount(
+    input: { user: string; libraries?: string[]; statuses?: boolean; wish?: boolean },
+    options?: RequestOptions
+  ): Promise<BookmeterStatusAnswer & { account: BookmeterAccountInfo }> {
+    return (await this.post('/bookmeter/accounts', input, options)).json();
+  }
+
+  async updateBookmeterAccount(
+    id: string,
+    patch: { libraries?: string[]; statuses?: boolean; wish?: boolean },
+    options?: RequestOptions
+  ): Promise<BookmeterStatusAnswer & { account: BookmeterAccountInfo }> {
+    return (
+      await this.sendJson('PUT', `/bookmeter/accounts/${encodeURIComponent(id)}`, patch, options)
+    ).json();
+  }
+
+  async removeBookmeterAccount(
+    id: string,
+    options?: RequestOptions
+  ): Promise<BookmeterStatusAnswer> {
+    return (
+      await this.sendJson(
+        'DELETE',
+        `/bookmeter/accounts/${encodeURIComponent(id)}`,
+        undefined,
+        options
+      )
+    ).json();
+  }
+
+  async bookmeterReviewed(id: string, options?: RequestOptions): Promise<void> {
+    await this.post(`/bookmeter/accounts/${encodeURIComponent(id)}/reviewed`, {}, options);
+  }
+
+  async bookmeterCheckNow(
+    account?: string,
+    options?: RequestOptions
+  ): Promise<BookmeterStatusAnswer> {
+    const qs = account ? `?account=${encodeURIComponent(account)}` : '';
+    return (await this.post(`/bookmeter/check-now${qs}`, {}, options)).json();
+  }
+
+  async bookmeterUnmatched(
+    id: string,
+    options?: RequestOptions
+  ): Promise<BookmeterUnmatchedAnswer> {
+    return (
+      await this.get(`/bookmeter/accounts/${encodeURIComponent(id)}/unmatched`, options)
+    ).json();
+  }
+
+  async bookmeterSearchBooks(
+    id: string,
+    q: string,
+    options?: RequestOptions
+  ): Promise<{ books: BookmeterNearBook[] }> {
+    const qs = new URLSearchParams({ q });
+    return (
+      await this.get(`/bookmeter/accounts/${encodeURIComponent(id)}/books?${qs}`, options)
+    ).json();
+  }
+
+  /** Link (a book id), Not in my library (null), or Forget my choice (undefined). */
+  async bookmeterChoose(
+    id: string,
+    listing: string,
+    bookId: string | null | undefined,
+    options?: RequestOptions
+  ): Promise<void> {
+    const path = `/bookmeter/accounts/${encodeURIComponent(id)}/choices/${encodeURIComponent(listing)}`;
+    if (bookId === undefined) await this.sendJson('DELETE', path, undefined, options);
+    else await this.sendJson('PUT', path, { bookId }, options);
+  }
+
+  async bookmeterFinishedHere(
+    options?: RequestOptions
+  ): Promise<{ books: BookmeterFinishedBook[] }> {
+    return (await this.get('/bookmeter/finished-here', options)).json();
   }
 
   async ratingsProgress(options?: RequestOptions): Promise<RatingsProgressAnswer> {

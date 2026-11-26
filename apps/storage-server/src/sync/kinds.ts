@@ -1363,6 +1363,108 @@ const recentlyViewedKind: KindSpec = {
   },
 };
 
+// ---------------------------------------------------------------------------
+// Next in your series (2026-11-25, docs/design/next-in-series.md)
+// ---------------------------------------------------------------------------
+
+/** The same name as catalog/next-in-series.ts SERIES_NEXT_HIDE_KIND. */
+export const SERIES_NEXT_HIDE_KIND = 'series-next-hide';
+const SERIES_NEXT_HIDE_ID_RE = /^[0-9a-f]{16}$/;
+const MAX_HIDE_NAME = 1000;
+
+/**
+ * kind "series-next-hide": a series hidden from Next in your series, lww, deletable (Show
+ * again is a deletion marker stored as {}). id = FNV-1a 64 of "<library id>\0<series name>",
+ * made by the device, so the same series is the same record on every device. data
+ * { library, name, hiddenAt }: the series is matched by library and name (series ids are
+ * not stable across devices), and Settings lists it by name. Neither is checked against the
+ * catalog: a hidden series that is renamed or removed simply matches nothing.
+ */
+const seriesNextHideKind: KindSpec = {
+  policy: () => 'lww',
+  deletable: true,
+  validate(id, data, deleted) {
+    if (!SERIES_NEXT_HIDE_ID_RE.test(id)) throw new RecordError('invalid_id', 'ids are 16 hex');
+    if (deleted) return { bookId: null, data: {} };
+    const obj = requireObject(data);
+    if (Object.keys(obj).some((k) => k !== 'library' && k !== 'name' && k !== 'hiddenAt')) {
+      throw new RecordError('invalid_data', 'only library, name and hiddenAt are stored');
+    }
+    const { library, name, hiddenAt } = obj;
+    if (typeof library !== 'string' || library === '' || library.length > MAX_HIDE_NAME) {
+      throw new RecordError('invalid_data', 'library must be a library id');
+    }
+    if (typeof name !== 'string' || name === '' || name.length > MAX_HIDE_NAME) {
+      throw new RecordError('invalid_data', `name must be 1-${MAX_HIDE_NAME} characters`);
+    }
+    if (typeof hiddenAt !== 'number' || !Number.isFinite(hiddenAt) || hiddenAt < 0) {
+      throw new RecordError('invalid_data', 'hiddenAt must be a time');
+    }
+    return { bookId: null, data: { library, name, hiddenAt } };
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Bookmeter sync (2026-11-25, docs/design/bookmeter-sync.md)
+// ---------------------------------------------------------------------------
+
+/**
+ * kind "bookmeter-entry": one entry of a 読書メーター list, id `<account id>:<listing id>`, lww,
+ * deletable (gone from Bookmeter). data { account, listing, list, date, title, authors, cover,
+ * rank, books, target, how, statuses, wish }: `books` the reader books it matched (every copy),
+ * `target` the copy a status goes on. Written only by the server's Bookmeter device
+ * (user_seeds "bookmeter-device"); devices read it to apply statuses and for bookmeter: searches.
+ */
+const bookmeterEntryKind: KindSpec = {
+  policy: () => 'lww',
+  deletable: true,
+  validate(id, data, deleted, ctx) {
+    if (!/^[0-9a-f-]{36}:\d{1,12}$/.test(id))
+      throw new RecordError('invalid_id', 'ids are <account>:<listing>');
+    const own = ctx.db
+      .prepare(
+        `SELECT 1 FROM user_seeds WHERE user_id = ? AND name = 'bookmeter-device' AND device_id = ?`,
+      )
+      .get(ctx.userId, ctx.deviceId);
+    if (!own) throw new RecordError('read_only', 'Bookmeter entries are written by the server');
+    if (deleted) return { bookId: null, data: {} };
+    return { bookId: null, data: requireObject(data) };
+  },
+};
+
+/** held: left unticked in Review: still waiting, never applied without asking. */
+const BOOKMETER_APPLIED_OUTCOMES = ['applied', 'skipped', 'held'] as const;
+
+/**
+ * kind "bookmeter-applied": a Bookmeter change a device applied to a book (or the user
+ * skipped), so it happens once on any device. id = the book id, lww. data { account, listing,
+ * list: read|reading, date (YYYY-MM-DD or null), outcome: applied|skipped|held, at }.
+ */
+const bookmeterAppliedKind: KindSpec = {
+  policy: () => 'lww',
+  deletable: false,
+  validate(id, data, _deleted, ctx) {
+    if (!UUID_RE.test(id)) throw new RecordError('invalid_id', 'ids are the book id');
+    const obj = requireObject(data);
+    const keys = new Set(['account', 'listing', 'list', 'date', 'outcome', 'at']);
+    if (Object.keys(obj).some((k) => !keys.has(k)))
+      throw new RecordError('invalid_data', 'only account, listing, list, date, outcome and at');
+    if (typeof obj.account !== 'string' || !UUID_RE.test(obj.account))
+      throw new RecordError('invalid_data', 'account must be an account id');
+    if (typeof obj.listing !== 'string' || !/^\d{1,12}$/.test(obj.listing))
+      throw new RecordError('invalid_data', 'listing must be a Bookmeter listing id');
+    const list = oneOf(obj.list, ['read', 'reading'] as const, 'list');
+    const date = dateOrNull(obj.date, 'date');
+    const outcome = oneOf(obj.outcome, BOOKMETER_APPLIED_OUTCOMES, 'outcome');
+    if (typeof obj.at !== 'number' || !Number.isFinite(obj.at) || obj.at < 0)
+      throw new RecordError('invalid_data', 'at must be a time');
+    return {
+      bookId: bookExists(ctx, id) ? id : null,
+      data: { account: obj.account, listing: obj.listing, list, date, outcome, at: obj.at },
+    };
+  },
+};
+
 export const DEVICE_BOOKS_KIND = 'device-books';
 
 /**
@@ -1432,4 +1534,7 @@ export const DEFAULT_KINDS: KindRegistry = {
   'series-recap': seriesRecapKind,
   [SEARCH_HISTORY_KIND]: searchHistoryKind,
   [RECENTLY_VIEWED_KIND]: recentlyViewedKind,
+  [SERIES_NEXT_HIDE_KIND]: seriesNextHideKind,
+  'bookmeter-entry': bookmeterEntryKind,
+  'bookmeter-applied': bookmeterAppliedKind,
 };

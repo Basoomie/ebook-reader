@@ -11,7 +11,7 @@
  * illustrators) come from the caller (`rankNames` orders them); everything else is here.
  */
 
-import { QUERY_FIELDS, QUERY_STATUSES } from './parse';
+import { QUERY_BOOKMETER_LISTS, QUERY_FIELDS, QUERY_STATUSES } from './parse';
 
 export type NameField = 'author' | 'illustrator' | 'series' | 'tag';
 export const NAME_FIELDS: readonly NameField[] = ['author', 'illustrator', 'series', 'tag'];
@@ -65,13 +65,14 @@ const FIELD_HELP: Record<(typeof QUERY_FIELDS)[number], string> = {
   ratings: 'How many people rated it: >=100',
   readers: 'People who logged it on 読書メーター: >=1000',
   myrating: 'Your own rating: >=4, 5',
-  status: 'Unread, reading, completed or dropped',
+  status: 'Unread, reading, completed, dropped, or next (the next volume of your series)',
   favorite: 'Your favorites: yes or no',
-  on: 'On this device: device or audio'
+  on: 'On this device: device or audio',
+  bookmeter: 'On your 読書メーター lists: read, reading, stacked or wish'
 };
 
 const FIELD_AT =
-  /^(author|illustrator|series|tag|chars|level|ratings|rating|readers|myrating|status|favorite|on)[:：]/i;
+  /^(author|illustrator|series|tag|chars|level|ratings|rating|readers|myrating|status|favorite|on|bookmeter)[:：]/i;
 
 /** The same folding as the search itself (full/half width, case). */
 export function foldName(text: string): string {
@@ -158,8 +159,19 @@ export function fieldSuggestions(partial: string): Suggestion[] {
   }));
 }
 
+const BOOKMETER_LIST_DETAIL: Record<(typeof QUERY_BOOKMETER_LISTS)[number], string> = {
+  read: '読んだ本: books you read',
+  reading: '読んでる本: books you are reading',
+  stacked: '積読本: books you have to read',
+  wish: '読みたい本: books you want to read'
+};
+
 const STATIC_VALUES: Record<string, { value: string; detail?: string }[]> = {
-  status: QUERY_STATUSES.map((value) => ({ value })),
+  status: QUERY_STATUSES.map((value) =>
+    value === 'next'
+      ? { value, detail: 'The next volume of each series you are reading' }
+      : { value }
+  ),
   favorite: [
     { value: 'yes', detail: 'Your favorites' },
     { value: 'no', detail: 'Books not marked favorite' }
@@ -167,7 +179,8 @@ const STATIC_VALUES: Record<string, { value: string; detail?: string }[]> = {
   on: [
     { value: 'device', detail: 'Books stored on this device' },
     { value: 'audio', detail: 'Their audio is on this device' }
-  ]
+  ],
+  bookmeter: QUERY_BOOKMETER_LISTS.map((value) => ({ value, detail: BOOKMETER_LIST_DETAIL[value] }))
 };
 
 const EXAMPLES: Record<string, { value: string; detail: string }[]> = {
@@ -220,8 +233,8 @@ export function fixedValueSuggestions(
   }
   const values = STATIC_VALUES[field];
   if (!values) return null;
-  // favorite: and on: take one value; status: is a comma list.
-  if (field !== 'status' && context.afterComma) return [];
+  // favorite: and on: take one value; status: and bookmeter: are comma lists.
+  if (field !== 'status' && field !== 'bookmeter' && context.afterComma) return [];
   return values
     .filter((v) => v.value.startsWith(lower) && !taken.includes(v.value))
     .map((v) => ({ label: v.value, insert: v.value, detail: v.detail }));

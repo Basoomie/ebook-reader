@@ -19,6 +19,7 @@
 import type Database from 'better-sqlite3';
 import { foldForSearch } from './fold';
 import type { Matcher, ParsedQuery, QueryStatus, QueryTerm, TextField } from './query-parser';
+import { nextInSeriesSelect } from './next-in-series';
 
 /**
  * Up to this many books, an author:, illustrator: or tag: filter lets SQLite start from those books
@@ -141,6 +142,18 @@ function statusRecords(userId: string, statuses: QueryStatus[]): SqlCondition {
 }
 
 function statusSql(userId: string, values: QueryStatus[]): SqlCondition {
+  // `next` is not a status: the next volume of a series you are reading (next-in-series.ts).
+  if (values.includes('next')) {
+    const next = nextInSeriesSelect(userId);
+    const nextCond = { sql: `b.id IN (SELECT id FROM (${next.sql}))`, params: next.params };
+    const rest = values.filter((v) => v !== 'next');
+    if (rest.length === 0) return nextCond;
+    const other = statusSql(userId, rest);
+    return {
+      sql: `(${other.sql} OR ${nextCond.sql})`,
+      params: [...other.params, ...nextCond.params],
+    };
+  }
   // No record means unread, so "unread or X" is "none of the other statuses".
   if (values.includes('unread')) {
     const others = REAL_STATUSES.filter((s) => !values.includes(s));
@@ -158,6 +171,19 @@ function favoriteSql(userId: string, value: boolean): SqlCondition {
            WHERE user_id = ? AND kind = 'book-favorite' AND deleted_at IS NULL
              AND json_extract(data, '$.favorite') = 1)`,
     params: [userId],
+  };
+}
+
+/**
+ * bookmeter: (Bookmeter sync, 2026-11-25): the books matched to entries of these 読書メーター
+ * lists (bookmeter_links / bookmeter_entries, every account).
+ */
+function bookmeterSql(values: string[]): SqlCondition {
+  return {
+    sql: `b.id IN (SELECT l.book_id FROM bookmeter_links l JOIN bookmeter_entries e
+           ON e.account_id = l.account_id AND e.listing_id = l.listing_id
+           WHERE e.list IN (${values.map(() => '?').join(',')}))`,
+    params: values,
   };
 }
 
@@ -268,6 +294,9 @@ export function termSql(
       break;
     case 'deviceAudio':
       cond = deviceAudioSql(userId, deviceId);
+      break;
+    case 'bookmeter':
+      cond = bookmeterSql(term.values);
       break;
   }
   return term.negated ? { sql: `NOT IFNULL(${cond.sql}, 0)`, params: cond.params } : cond;

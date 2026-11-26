@@ -24,7 +24,7 @@
     Stage4Status,
     StageMode
   } from '$lib/cleanup/cleanup-api';
-  import { n } from '$lib/cleanup/cleanup-text';
+  import { n, pauseTitle } from '$lib/cleanup/cleanup-text';
   import {
     FIELD_NAMES,
     SITE_NAMES,
@@ -81,6 +81,19 @@
 
   let busySite = '';
   let message = '';
+  // Stage 4's own pause (its batches' planner, e.g. Calibre changed under the next books).
+  let resuming = false;
+  async function resumeStage() {
+    resuming = true;
+    try {
+      await api.resumeStage(4);
+      dispatch('changed');
+    } catch (err) {
+      message = (err as Error).message;
+    } finally {
+      resuming = false;
+    }
+  }
   async function resumeSite(site: string) {
     busySite = site;
     try {
@@ -225,6 +238,28 @@
     {/if}
     {#if progress.error}
       <p class="c-notice text-sm" role="alert">The analysis failed: {progress.error}</p>
+    {/if}
+    {#if stage.pauseReason}
+      <div
+        class="c-notice flex flex-wrap items-center justify-between gap-2"
+        role="alert"
+        data-testid="cleanup-paused-4"
+      >
+        <span>
+          <b>Paused: {pauseTitle(stage.pauseReason)}.</b>
+          {stage.pauseDetail ?? ''}
+        </span>
+        <span class="flex flex-wrap gap-2">
+          <button class="c-btn c-btn-secondary" disabled={resuming} on:click={resumeStage}>
+            Resume
+          </button>
+          {#if stage.pauseReason === 'library_changed'}
+            <button class="c-btn c-btn-secondary" on:click={() => analyseAgain(4)}>
+              Run the analysis again
+            </button>
+          {/if}
+        </span>
+      </div>
     {/if}
     {#if status}
       {#if status.waiting}

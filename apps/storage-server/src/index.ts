@@ -58,6 +58,7 @@ import { NotificationService } from './notifications/service';
 import { NotificationWatcher } from './notifications/watcher';
 import { NativelyLevels } from './natively/levels';
 import { StoreRatings } from './ratings/service';
+import { BookmeterSync } from './bookmeter/service';
 
 // Every console line is also kept (secrets removed) for the bug report (WP18).
 captureConsole(serverLogs);
@@ -257,6 +258,18 @@ const ratings = database.ok
     })
   : null;
 if (cleanup && ratings) cleanup.onAnswerArrived(() => ratings.answerArrived());
+
+// Bookmeter sync (2026-11-25): the user's 読書メーター lists, read through the same fetch queue.
+// BOOKMETER_SYNC=0 turns it off.
+const bookmeter =
+  database.ok && process.env.BOOKMETER_SYNC !== '0'
+    ? new BookmeterSync({
+        db: database.db,
+        queue: () => cleanup?.fetchQueue ?? null,
+        notifications,
+      })
+    : null;
+if (cleanup && bookmeter) cleanup.onAnswerArrived(() => bookmeter.answerArrived());
 
 if (database.ok && config.calibre.dir) {
   try {
@@ -625,10 +638,12 @@ const app = createApp({
   summaries,
   natively,
   ratings,
+  bookmeter,
 });
 cleanup?.start();
 natively?.start();
 ratings?.start();
+bookmeter?.start();
 cleanupOptions.audio?.start();
 notifications?.start();
 
@@ -656,6 +671,7 @@ function shutdown(signal: string): void {
   void summaries?.stop();
   void natively?.stop();
   ratings?.stop();
+  bookmeter?.stop();
   aiCore?.stop();
   void notifications?.stop();
   void cleanup?.stop();

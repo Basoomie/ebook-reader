@@ -14,6 +14,7 @@
   import BookStateDialog from '$lib/components/library/book-state-dialog.svelte';
   import AddToCollectionDialog from '$lib/components/collections/add-to-collection-dialog.svelte';
   import CataloguePageHeader from '$lib/components/catalogue-page-header.svelte';
+  import BookmeterNotice from '$lib/components/bookmeter/bookmeter-notice.svelte';
   import {
     faArrowDown,
     faArrowUp,
@@ -100,9 +101,11 @@
     bookStateApi,
     collectionsApi,
     libraryViewApi,
+    nextInSeriesApi,
     recentlyViewedApi,
     statsApi
   } from '$lib/sync/sync-service';
+  import { nextInSeriesBonus$, nextInSeriesOn$ } from '$lib/library/next-in-series-settings';
   import { confirmDestructive } from '$lib/confirm/confirm';
   import { forgetViewedCopy } from '$lib/confirm/confirm-copy';
   import { kept, type ViewedEntry } from '$lib/recently-viewed/recently-viewed';
@@ -116,6 +119,8 @@
   const collections = collectionsApi();
   const recentlyViewed = recentlyViewedApi();
   const viewedEntries = recentlyViewed.entries;
+  const nextInSeries = nextInSeriesApi();
+  const hiddenSeries = nextInSeries.hidden;
 
   let connection: LibraryConnection | null | undefined;
   let api: LibraryApi | undefined;
@@ -238,6 +243,26 @@
     viewedSeen = viewedKey;
     const row = shownRows.find((r) => r.type === 'viewed');
     if (!first && row && ready && api && views.has(rowKey(row))) void loadRow(row, true);
+  }
+
+  // Next in your series: a series hidden or shown again (here or on another device), or a
+  // setting changed, reloads the row in place.
+  let nextSeen: string | null = null;
+  $: nextKey =
+    $hiddenSeries === null
+      ? null
+      : `${$nextInSeriesOn$}:${$nextInSeriesBonus$}:${$hiddenSeries.map((h) => h.id).join(',')}`;
+  $: if (nextKey !== null && nextKey !== nextSeen) {
+    const first = nextSeen === null;
+    nextSeen = nextKey;
+    const row = shownRows.find((r) => r.type === 'next');
+    if (!first && row && ready && api && views.has(rowKey(row))) void reloadNext(row);
+  }
+
+  /** The server reads the hidden series and settings from synced records: send them first. */
+  async function reloadNext(row: HomeRowEntry) {
+    if (!offline) await view.sendPendingChanges(timeoutSeconds);
+    if (!destroyed) await loadRow(row, true);
   }
 
   // Rows load when first shown (also a row pinned, shown or added while here).
@@ -374,6 +399,13 @@
         const books = await lookupInOrder(a, ids.slice(0, rowLength));
         return { books, whole: ids.length <= rowLength };
       }
+      case 'next': {
+        // Off on this device: nothing, even when the server's shared value isn't off yet.
+        if (!$nextInSeriesOn$) return { books: [], whole: true };
+        const ids = await a.nextInSeries();
+        const books = await lookupInOrder(a, ids.slice(0, rowLength));
+        return { books, whole: ids.length <= rowLength };
+      }
       case 'builtin': {
         const b = builtinCollection(row.ref);
         return b ? page({ scope: b.query }) : { books: [], whole: true };
@@ -401,7 +433,7 @@
     const collection =
       row.type === 'collection' ? collectionList.find((c) => c.id === row.ref) : null;
     const query = rowCountQuery(row, collection);
-    if (!query && row.type !== 'continue' && row.type !== 'viewed') return;
+    if (!query && row.type !== 'continue' && row.type !== 'viewed' && row.type !== 'next') return;
     const asked = (countAsked.get(key) ?? 0) + 1;
     countAsked.set(key, asked);
     try {
@@ -409,7 +441,9 @@
         ? await a.count(query)
         : row.type === 'viewed'
           ? (await lookupInOrder(a, viewedIds(await firstViewed()))).length
-          : await continueReadingCount(a);
+          : row.type === 'next'
+            ? (await a.nextInSeries()).length
+            : await continueReadingCount(a);
       if (!destroyed && countAsked.get(key) === asked) setCount(key, n);
     } catch (error) {
       logger.warn(`Home: could not count "${key}": ${(error as Error)?.message ?? error}`);
@@ -453,6 +487,32 @@
       confirmTestid: 'viewed-forget-confirm-button'
     });
     if (confirmed) await recentlyViewed.remove([book.id]);
+  }
+
+  /** Next in your series: the last series hidden from a card's ⋮ menu, for Undo. */
+  let hiddenFromNext: { libraryId: string; name: string } | null = null;
+
+  /** Next in your series: Hide this series (a card's ⋮ menu). Easy to undo, so not asked. */
+  async function hideSeriesFromNext(book: CatalogBook) {
+    if (!book.series) return;
+    const target = { libraryId: book.libraryId, name: book.series.name };
+    try {
+      await nextInSeries.hide(target.libraryId, target.name);
+      hiddenFromNext = target;
+    } catch (error) {
+      showMessage('Not hidden', (error as Error).message);
+    }
+  }
+
+  async function undoHideSeries() {
+    const target = hiddenFromNext;
+    hiddenFromNext = null;
+    if (!target) return;
+    try {
+      await nextInSeries.show(target.libraryId, target.name);
+    } catch (error) {
+      showMessage('Not shown again', (error as Error).message);
+    }
   }
 
   function setCount(key: string, n: number) {
@@ -668,6 +728,11 @@
 
   function emptyTextFor(row: HomeRowEntry): string {
     if (row.type === 'continue') return 'Nothing in progress. Open a book from the Library.';
+    if (row.type === 'next') {
+      return $nextInSeriesOn$
+        ? 'When you finish a volume, the next one in its series shows up here.'
+        : 'Next in your series is off. Turn it on in Settings › Library › Next in your series.';
+    }
     if (row.type === 'viewed') {
       return $recentlyViewedOn$
         ? 'Books whose details you open show up here.'
@@ -720,6 +785,8 @@
       This device isn't connected to the library server yet.
       <a class="c-link" href="{pagePath}/library">Connect on the Library page</a>.
     </p>
+  {:else}
+    <BookmeterNotice />
   {/if}
 
   {#if editing}
@@ -828,6 +895,18 @@
       </p>
     {/if}
     <div class="pt-2">
+      {#if hiddenFromNext}
+        <div class="c-notice mb-3">
+          <UndoNotice
+            message={`Hidden from Next in your series: ${hiddenFromNext.name}`}
+            buttonClass="c-btn c-btn-secondary px-3"
+            testid="next-hide-undo-notice"
+            undoTestid="next-hide-undo"
+            on:undo={undoHideSeries}
+            on:dismiss={() => (hiddenFromNext = null)}
+          />
+        </div>
+      {/if}
       {#each shownRows as row (rowKey(row))}
         <HomeRow
           title={rowTitle(row, collectionName)}
@@ -843,6 +922,7 @@
           {blurredOf}
           hero={row.type === 'continue'}
           forgettable={row.type === 'viewed'}
+          seriesHideable={row.type === 'next'}
           {onDevice}
           {audioOnDevice}
           {infoLine}
@@ -852,6 +932,7 @@
           on:collect={(ev) => openAddToCollection(ev.detail)}
           on:remove={(ev) => removeFromDevice(ev.detail)}
           on:forget={(ev) => forgetViewed(ev.detail)}
+          on:hideSeries={(ev) => hideSeriesFromNext(ev.detail)}
           on:retry={() => loadRow(row)}
         />
       {:else}

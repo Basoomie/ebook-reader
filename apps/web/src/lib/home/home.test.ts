@@ -58,7 +58,7 @@ describe('Home rows', () => {
     expect(normalizeRows([])).toEqual(DEFAULT_HOME_ROWS);
   });
 
-  it('drops unreadable and repeated entries and keeps the three fixed rows', () => {
+  it('drops unreadable and repeated entries and keeps the four fixed rows', () => {
     const rows = normalizeRows([
       { type: 'author', ref: '著者一', hidden: false },
       { type: 'author', ref: '著者一', hidden: true },
@@ -69,10 +69,25 @@ describe('Home rows', () => {
     ]);
     expect(rows).toEqual([
       { type: 'continue', hidden: false },
+      { type: 'next', hidden: false },
       { type: 'author', ref: '著者一', hidden: false },
       { type: 'recent', hidden: false },
       { type: 'viewed', hidden: true }
     ]);
+  });
+
+  it('adds Next in your series after Continue reading to a saved Home', () => {
+    const rows = normalizeRows([
+      { type: 'author', ref: '著者一', hidden: false },
+      { type: 'continue', hidden: false },
+      { type: 'recent', hidden: true },
+      { type: 'viewed', hidden: true }
+    ]);
+    expect(rows.map((r) => r.type)).toEqual(['author', 'continue', 'next', 'recent', 'viewed']);
+    expect(normalizeRows([{ type: 'next', hidden: true }])[1]).toEqual({
+      type: 'next',
+      hidden: true
+    });
   });
 
   it('pins, shows a hidden pin again, unpins, moves and hides', () => {
@@ -81,16 +96,30 @@ describe('Home rows', () => {
     rows = pinRow(rows, fav);
     rows = pinRow(rows, { type: 'series', ref: 'シリーズ' });
     expect(isPinned(rows, fav)).toBe(true);
-    expect(rows.map((r) => r.type)).toEqual(['continue', 'recent', 'viewed', 'builtin', 'series']);
-    rows = setRowHidden(rows, 3, true);
+    expect(rows.map((r) => r.type)).toEqual([
+      'continue',
+      'next',
+      'recent',
+      'viewed',
+      'builtin',
+      'series'
+    ]);
+    rows = setRowHidden(rows, 4, true);
     expect(isPinned(rows, fav)).toBe(false);
     rows = pinRow(rows, fav);
-    expect(rows[3]).toEqual({ type: 'builtin', ref: 'favorites', hidden: false });
-    rows = moveRow(rows, 4, -4);
-    expect(rows.map((r) => r.type)).toEqual(['series', 'continue', 'recent', 'viewed', 'builtin']);
+    expect(rows[4]).toEqual({ type: 'builtin', ref: 'favorites', hidden: false });
+    rows = moveRow(rows, 5, -5);
+    expect(rows.map((r) => r.type)).toEqual([
+      'series',
+      'continue',
+      'next',
+      'recent',
+      'viewed',
+      'builtin'
+    ]);
     expect(moveRow(rows, 0, -1)).toEqual(rows);
     rows = unpinRow(rows, fav);
-    expect(rows.map((r) => r.type)).toEqual(['series', 'continue', 'recent', 'viewed']);
+    expect(rows.map((r) => r.type)).toEqual(['series', 'continue', 'next', 'recent', 'viewed']);
   });
 
   it('puts a removed row back at its place, or last, and only once (Undo)', () => {

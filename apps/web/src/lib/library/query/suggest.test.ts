@@ -74,12 +74,14 @@ describe('suggestions', () => {
       'unread',
       'reading',
       'completed',
-      'dropped'
+      'dropped',
+      'next'
     ]);
     expect(fixedValueSuggestions(valueCtx('status:reading,|'))!.map((s) => s.insert)).toEqual([
       'unread',
       'completed',
-      'dropped'
+      'dropped',
+      'next'
     ]);
     expect(fixedValueSuggestions(valueCtx('favorite:y|'))!.map((s) => s.insert)).toEqual(['yes']);
     expect(fixedValueSuggestions(valueCtx('favorite:yes,|'))).toEqual([]);

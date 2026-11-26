@@ -7,7 +7,8 @@
  */
 import path from 'path';
 
-export type QueryStatus = 'unread' | 'reading' | 'completed' | 'dropped';
+/** `next`: the next volume of a series you are reading (next-in-series.ts), not a book's status. */
+export type QueryStatus = 'unread' | 'reading' | 'completed' | 'dropped' | 'next';
 export type TextField = 'author' | 'illustrator' | 'series' | 'tag';
 
 export type Matcher =
@@ -30,7 +31,9 @@ export type QueryTerm =
   | (TermBase & { type: 'status'; values: QueryStatus[] })
   | (TermBase & { type: 'favorite'; value: boolean })
   | (TermBase & { type: 'device' })
-  | (TermBase & { type: 'deviceAudio' });
+  | (TermBase & { type: 'deviceAudio' })
+  /** bookmeter: the books on these 読書メーター lists (Bookmeter sync, 2026-11-25). */
+  | (TermBase & { type: 'bookmeter'; values: ('read' | 'reading' | 'stacked' | 'wish')[] });
 
 export interface ParsedQuery {
   terms: QueryTerm[];

@@ -14,6 +14,17 @@ import { canUseWebLocks, randomId } from '$lib/functions/secure-context';
 import { getLibraryStore } from '$lib/library/library-db';
 import { libraryRequestTimeoutSeconds$ } from '$lib/library/settings';
 import { MigrationApi } from '$lib/migration/api';
+import {
+  applyChanges as applyBookmeterChanges,
+  bookmeterView,
+  holdChanges as holdBookmeterChanges,
+  loadBookmeter,
+  onBookmeterRecords,
+  skipChanges as skipBookmeterChanges,
+  syncBookmeter,
+  type BookmeterDeps
+} from '$lib/bookmeter/bookmeter-service';
+import type { PlannedChange as BookmeterChange } from '$lib/bookmeter/plan';
 import type { Readable } from 'svelte/store';
 import type { HistoryBook, HistoryEntry, HistoryScope } from '$lib/search-history/search-history';
 import {
@@ -41,6 +52,14 @@ import {
 } from '$lib/recently-viewed/recently-viewed-service';
 import type { ViewedEntry } from '$lib/recently-viewed/recently-viewed';
 import { currentKeep } from '$lib/recently-viewed/settings';
+import {
+  hiddenStore,
+  hideSeries,
+  loadHidden,
+  showSeries,
+  type NextInSeriesDeps
+} from '$lib/library/next-in-series-service';
+import type { HiddenSeries } from '$lib/library/next-in-series';
 import { localBookmarkForTitle, localTitleSummaries } from '$lib/migration/local-summary';
 import { applyReadingGoals, applyStatDays } from '$lib/sync/apply-records';
 import {
@@ -318,12 +337,78 @@ export function startSync(): void {
         void publishDeviceBooks();
         // Book summaries (session 3): the current summaries kept on this device.
         startSummarySync(engine);
+        // Bookmeter sync (2026-11-25): statuses from the 読書メーター lists.
+        startBookmeterSync(engine);
       })
       .catch((error) => warn(`Sync: not started: ${(error as Error)?.message ?? error}`));
   } catch (error) {
     warn(`Sync: not started: ${(error as Error)?.message ?? error}`);
   }
 }
+
+// ---------------------------------------------------------------------------
+// Bookmeter sync (2026-11-25, docs/design/bookmeter-sync.md)
+// ---------------------------------------------------------------------------
+
+/** The library server's API for this device, or null without a connection. */
+async function connectedLibraryApi(): Promise<LibraryApi | null> {
+  const c = await getLibraryStore().getConnection();
+  if (!c) return null;
+  const t = Math.max(0, Number(libraryRequestTimeoutSeconds$.getValue()) || 0);
+  return new LibraryApi(c.serverUrl, c.token, t);
+}
+
+const bookmeterDeps: BookmeterDeps = {
+  getEngine: getSyncEngine,
+  async serverState() {
+    try {
+      const api = await connectedLibraryApi();
+      if (!api) return null;
+      const s = await api.bookmeterStatus();
+      return {
+        reviewed: new Set(
+          s.settings.accounts.filter((a) => a.reviewedAt !== null).map((a) => a.id)
+        ),
+        askAbove: s.settings.askAbove
+      };
+    } catch {
+      return null;
+    }
+  },
+  async markReviewed(accountId: string) {
+    const api = await connectedLibraryApi();
+    await api?.bookmeterReviewed(accountId);
+  },
+  dayOf: (ms: number) => getDateKey(startDayHoursForTracker$.getValue(), new Date(ms)),
+  warn
+};
+
+let bookmeterTimer: ReturnType<typeof setTimeout> | undefined;
+
+/** Plans (and quietly applies, when allowed) after a pull of Bookmeter records. */
+function startBookmeterSync(engine: SyncEngine): void {
+  const soon = () => {
+    clearTimeout(bookmeterTimer);
+    bookmeterTimer = setTimeout(() => void syncBookmeter(bookmeterDeps), 2000);
+  };
+  onBookmeterRecords(engine, soon);
+  soon();
+}
+
+/** Bookmeter sync's changes waiting for Review, and the actions on them. Never rejects. */
+export function bookmeterApi() {
+  return {
+    view: bookmeterView,
+    reload: () => loadBookmeter(bookmeterDeps),
+    apply: (changes: readonly BookmeterChange[]) => applyBookmeterChanges(changes, bookmeterDeps),
+    skip: (changes: readonly BookmeterChange[]) => skipBookmeterChanges(changes, bookmeterDeps),
+    hold: (changes: readonly BookmeterChange[]) => holdBookmeterChanges(changes, bookmeterDeps),
+    syncNow: () => syncBookmeter(bookmeterDeps),
+    server: connectedLibraryApi
+  };
+}
+
+export type BookmeterApi = ReturnType<typeof bookmeterApi>;
 
 /**
  * WP15e: publishes the library books this device stores (record "device-books", id = this
@@ -1002,6 +1087,30 @@ export function recentlyViewedApi() {
 }
 
 export type RecentlyViewedApi = ReturnType<typeof recentlyViewedApi>;
+
+// ---------------------------------------------------------------------------
+// Next in your series (2026-11-25, docs/design/next-in-series.md)
+// ---------------------------------------------------------------------------
+
+const nextInSeriesDeps: NextInSeriesDeps = { getEngine: getSyncEngine, warn };
+
+let nextInSeriesHidden: Readable<HiddenSeries[] | null> | null = null;
+
+/**
+ * The series hidden from Next in your series (synced, one record per series in a library).
+ * `hide` and `show` reject when the change can't be saved.
+ */
+export function nextInSeriesApi() {
+  if (!nextInSeriesHidden) nextInSeriesHidden = hiddenStore(nextInSeriesDeps);
+  return {
+    hidden: nextInSeriesHidden,
+    loadHidden: () => loadHidden(nextInSeriesDeps),
+    hide: (libraryId: string, name: string) => hideSeries(libraryId, name, nextInSeriesDeps),
+    show: (libraryId: string, name: string) => showSeries(libraryId, name, nextInSeriesDeps)
+  };
+}
+
+export type NextInSeriesApi = ReturnType<typeof nextInSeriesApi>;
 
 const notesDeps: NotesDeps = { getEngine: getSyncEngine, warn };
 
