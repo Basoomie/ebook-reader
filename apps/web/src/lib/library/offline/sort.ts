@@ -76,6 +76,7 @@ function sortValue(
       return book.readers ?? (asc ? HIGH_NUMBER : -1);
     case 'completed':
     case 'finished':
+    case 'wish':
       return completedAt?.(book.id) ?? (asc ? HIGH_NUMBER : -1);
   }
 }

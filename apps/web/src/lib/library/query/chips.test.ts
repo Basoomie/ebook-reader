@@ -5,7 +5,14 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { activeChips, chipOnlyQuery, listsOnlyCompleted, listsOnlyNext, toggleChip } from './chips';
+import {
+  activeChips,
+  chipOnlyQuery,
+  listsOnlyCompleted,
+  listsOnlyWish,
+  listsOnlyNext,
+  toggleChip
+} from './chips';
 
 describe('filter chips', () => {
   it('adds a status term, then extends it', () => {
@@ -108,5 +115,16 @@ describe('listsOnlyCompleted', () => {
     expect(listsOnlyCompleted('-status:completed')).toBe(false);
     expect(listsOnlyCompleted('status:reading')).toBe(false);
     expect(listsOnlyCompleted('')).toBe(false);
+  });
+});
+
+describe('listsOnlyWish', () => {
+  it('is true only for a positive bookmeter term of wish', () => {
+    expect(listsOnlyWish('bookmeter:wish')).toBe(true);
+    expect(listsOnlyWish('tag:SF bookmeter:wish')).toBe(true);
+    expect(listsOnlyWish('bookmeter:wish,read')).toBe(false);
+    expect(listsOnlyWish('-bookmeter:wish')).toBe(false);
+    expect(listsOnlyWish('bookmeter:read')).toBe(false);
+    expect(listsOnlyWish('')).toBe(false);
   });
 });

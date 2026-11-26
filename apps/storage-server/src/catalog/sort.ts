@@ -27,7 +27,8 @@ export type BookSortKey =
   | 'ratings'
   | 'readers'
   | 'completed'
-  | 'finished';
+  | 'finished'
+  | 'wish';
 export type SortDir = 'asc' | 'desc';
 
 export interface BookSort {
@@ -47,6 +48,7 @@ export const BOOK_SORT_KEYS: BookSortKey[] = [
   'readers',
   'completed',
   'finished',
+  'wish',
 ];
 export const SORT_DIRS: SortDir[] = ['asc', 'desc'];
 
@@ -81,6 +83,8 @@ export interface SortRow {
   sort_completed?: number | null;
   /** The Series last finished sort's value (planBooks selects it as `sort_finished`). */
   sort_finished?: number | null;
+  /** The 読みたい本 order's value (planBooks selects it as `sort_wish`). */
+  sort_wish?: number | null;
 }
 
 const COLUMNS: Record<BookSortKey, SortColumn> = {
@@ -165,6 +169,14 @@ const COLUMNS: Record<BookSortKey, SortColumn> = {
     sql: { asc: 'sort_finished', desc: 'sort_finished' },
     value: (r) => r.sort_finished ?? -1,
   },
+  // 読みたい本 order (the bookmeter:wish search only): the book's place on 読書メーター's wish
+  // list, newest added first (bookmeter_entries.rank grows with recency; the best rank over
+  // every account and copy). Selected as `sort_wish`; books not on the list last.
+  wish: {
+    type: 'number',
+    sql: { asc: 'sort_wish', desc: 'sort_wish' },
+    value: (r) => r.sort_wish ?? -1,
+  },
 };
 
 /**
@@ -182,6 +194,13 @@ export function sortSelectSql(sort: BookSort): string | null {
                     WHERE fb.series_id = b.series_id AND fb.library_id = b.library_id
                       AND fb.series_index IS NOT NULL),
                    ${none}) AS sort_finished,`;
+  }
+  if (sort.key === 'wish') {
+    return `IFNULL((SELECT MAX(e.rank) FROM bookmeter_links l
+                     JOIN bookmeter_entries e
+                       ON e.account_id = l.account_id AND e.listing_id = l.listing_id
+                    WHERE l.book_id = b.id AND e.list = 'wish'),
+                   ${none}) AS sort_wish,`;
   }
   if (sort.key !== 'completed') return null;
   return `IFNULL((SELECT MAX(CAST(strftime('%s', json_extract(r.data, '$.finishedOn')) AS INTEGER))

@@ -59,6 +59,23 @@ export function listsOnlyNext(text: string | null | undefined): boolean {
   return listsOnlyStatus(text, 'next');
 }
 
+/**
+ * Whether the search lists only the books on your 読みたい本 list (a bookmeter term whose values
+ * are all `wish`, not negated): the Library opens such a list in Bookmeter's own order.
+ */
+export function listsOnlyWish(text: string | null | undefined): boolean {
+  if (!text) return false;
+  const parsed = parseQuery(text);
+  if (!parsed.ok) return false;
+  return parsed.query.terms.some(
+    (t) =>
+      t.type === 'bookmeter' &&
+      !t.negated &&
+      t.values.length > 0 &&
+      t.values.every((v) => v === 'wish')
+  );
+}
+
 function listsOnlyStatus(text: string | null | undefined, status: string): boolean {
   if (!text) return false;
   const parsed = parseQuery(text);

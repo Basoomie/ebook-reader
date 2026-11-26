@@ -66,6 +66,20 @@ describe('library sorts', () => {
     );
   });
 
+  it('offers 読書メーター order only for bookmeter:wish, newest first by default', () => {
+    expect(sortChoices('books').some((c) => c.key === 'wish')).toBe(false);
+    expect(sortChoices('wish').map((c) => c.key)[0]).toBe('wish');
+    expect(defaultSort('wish', { books: 'title-asc', groups: '' })).toEqual({
+      key: 'wish',
+      dir: 'desc'
+    });
+    expect(parseSort('wish-asc', 'wish')).toEqual({ key: 'wish', dir: 'asc' });
+    expect(parseSort('wish-desc', 'books')).toBeNull();
+    expect(sortLabel({ key: 'wish', dir: 'desc' }, 'wish')).toBe(
+      '読書メーター order · Newest first'
+    );
+  });
+
   it('starts series and lists in their own order, others in the remembered sort', () => {
     expect(defaultSort('series', { books: 'title-asc', groups: '' })).toEqual({
       key: 'series',

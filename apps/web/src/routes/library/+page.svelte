@@ -118,6 +118,7 @@
     chipOnlyQuery,
     listsOnlyCompleted,
     listsOnlyNext,
+    listsOnlyWish,
     CHIPS,
     toggleChip,
     type ChipId
@@ -1318,7 +1319,13 @@
       listsOnlyNext(appliedQuery) ||
       (collectionId !== null &&
         listsOnlyNext(builtinCollection(collectionId)?.query ?? smartQuery()));
-    const listed = (): SortContext => (completed() ? 'completed' : next() ? 'next' : 'books');
+    // The 読みたい本 collection (bookmeter:wish) opens in Bookmeter's own order.
+    const wish = () =>
+      listsOnlyWish(appliedQuery) ||
+      (collectionId !== null &&
+        listsOnlyWish(builtinCollection(collectionId)?.query ?? smartQuery()));
+    const listed = (): SortContext =>
+      completed() ? 'completed' : next() ? 'next' : wish() ? 'wish' : 'books';
     if (group) return listed();
     if (collectionId !== null) {
       const c = collectionList.find((x) => x.id === collectionId);

@@ -78,6 +78,8 @@ export interface OfflineData {
   nextBonus?: boolean;
   /** Bookmeter sync: the 読書メーター lists each book is on (bookmeter:). */
   bookmeterLists?: ReadonlyMap<string, ReadonlySet<string>>;
+  /** The best (newest) place of each book on a 読みたい本 list: 読書メーター order. */
+  bookmeterWishRank?: ReadonlyMap<string, number>;
 }
 
 /** Next in your series of one read of the device's data (computed once per read). */
@@ -122,6 +124,7 @@ function completedAtOf(state: BookState | undefined): number | null {
 /** The day a computed sort reads (offline/sort.ts CompletedAt), from this device's data. */
 function dayOfSort(data: OfflineData, key: BookSortKey): CompletedAt | undefined {
   if (key === 'completed') return (id) => completedAtOf(data.states.get(id));
+  if (key === 'wish') return (id) => data.bookmeterWishRank?.get(id) ?? null;
   if (key !== 'finished') return undefined;
   // Series last finished: the Home row's day (only the next volumes have one; status:next).
   const days = new Map<string, number>();
@@ -148,7 +151,8 @@ const BOOK_SORTS: BookSortKey[] = [
   'ratings',
   'readers',
   'completed',
-  'finished'
+  'finished',
+  'wish'
 ];
 const GROUP_SORTS: GroupSortKey[] = ['newest', 'name', 'count'];
 
