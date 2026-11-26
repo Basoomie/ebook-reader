@@ -13,9 +13,13 @@
    * Links section. The saved figures show at once (offline: the pooled one the book carries); old
    * ones are asked for again and the line updates once. Without store figures your rating keeps
    * its own row of stars.
+   *
+   * One line, your rating included (user, 2026-11-25): the line tries its full wording and, only
+   * when that doesn't fit the column, shorter ones in turn (see `fit`). The breakdown always has
+   * every figure in full.
    */
   import { faChevronDown } from '@fortawesome/free-solid-svg-icons';
-  import { onDestroy } from 'svelte';
+  import { onDestroy, tick } from 'svelte';
   import Fa from 'svelte-fa';
   import RatingStars from '$lib/components/calibre-edit/rating-stars.svelte';
   import DropdownMenu from '$lib/components/dropdown-menu.svelte';
@@ -24,6 +28,8 @@
   import {
     asOfText,
     bookRatingParts$,
+    breakdownLabel,
+    formatCompact,
     formatCount,
     formatStars,
     loadRatingFeatures,
@@ -110,25 +116,60 @@
   }
 
   /**
-   * "You ★ 3" beside the line; once it wraps to a line of its own (phones), it drops the divider
-   * and says "Your rating ★ 3".
+   * How much the line shortens to stay on one line:
+   * 0 "4,731 ratings[ on Amazon] · 87,105 readers", 1 "(4,731) · 87,105 readers",
+   * 2 "(4.7K) · 87.1K readers", 3 "(4.7K)" (the readers only in the breakdown),
+   * 4 nothing fits (a very narrow column): it wraps, and your rating says "Your rating ★ 3" on a
+   * line of its own.
    */
-  let yoursWrapped = false;
-  function watchWrap(node: HTMLElement) {
-    const measure = () => {
-      const yours = node.querySelector<HTMLElement>('[data-yours]');
-      const first = node.firstElementChild as HTMLElement | null;
-      yoursWrapped =
-        !!yours &&
-        !!first &&
-        yours !== first &&
-        yours.getBoundingClientRect().top >= first.getBoundingClientRect().bottom - 1;
-    };
-    const ro = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure);
-    ro?.observe(node);
-    measure();
-    return { destroy: () => ro?.disconnect() };
+  let fit = 0;
+  let row: HTMLElement | undefined;
+  let fitting = 0;
+
+  function overflows(): boolean {
+    if (!row) return false;
+    const right = row.getBoundingClientRect().right;
+    const items = Array.from(row.children) as HTMLElement[];
+    return items.some((el) => el.getBoundingClientRect().right > right + 0.5);
   }
+
+  async function refit() {
+    const mine = ++fitting;
+    fit = 0;
+    await tick();
+    while (mine === fitting && fit < 4 && overflows()) {
+      fit += 1;
+      await tick();
+    }
+  }
+
+  function watchWidth(node: HTMLElement) {
+    row = node;
+    let width = -1;
+    const ro =
+      typeof ResizeObserver === 'undefined'
+        ? null
+        : new ResizeObserver(() => {
+            // Only a new width: the line's own height changes as it fits.
+            if (node.clientWidth === width) return;
+            width = node.clientWidth;
+            void refit();
+          });
+    ro?.observe(node);
+    void refit();
+    return {
+      destroy: () => {
+        ro?.disconnect();
+        row = undefined;
+      }
+    };
+  }
+
+  // New figures or your rating: fit again.
+  function refitOn(...changed: unknown[]) {
+    if (row && changed.length) void refit();
+  }
+  $: refitOn(pieces, showYours, yourRating);
 
   onDestroy(() => {
     controller?.abort();
@@ -138,9 +179,10 @@
 
 {#if headline || readers}
   <div
-    class="-my-2 flex flex-wrap items-center gap-x-3"
+    class="c-rsum-row -my-2 flex items-center gap-x-3"
+    class:c-rsum-wrap={fit === 4}
     data-testid="details-store-ratings"
-    use:watchWrap
+    use:watchWidth
   >
     {#if summary.rows.length}
       <DropdownMenu
@@ -158,15 +200,17 @@
                 >{formatStars(headline.avg ?? 0)}</span
               >
               <span
-                >{ratingsCountText(headline.count)}{headline.label
-                  ? ` on ${headline.label}`
-                  : ''}</span
+                >{fit === 0
+                  ? `${ratingsCountText(headline.count)}${headline.label ? ` on ${headline.label}` : ''}`
+                  : `(${fit === 1 ? formatCount(headline.count) : formatCompact(headline.count)})`}</span
               >
             {/if}
-            {#if headline && readers}<span>·</span>{/if}
-            {#if readers}<span data-testid="details-store-readers"
-                >{formatCount(readers.count)} readers</span
-              >{/if}
+            {#if readers && (!headline || fit < 3 || fit === 4)}
+              {#if headline}<span>·</span>{/if}
+              <span data-testid="details-store-readers"
+                >{fit >= 2 && fit < 4 ? formatCompact(readers.count) : formatCount(readers.count)} readers</span
+              >
+            {/if}
             <Fa icon={faChevronDown} size="xs" />
           </span>
         </svelte:fragment>
@@ -174,7 +218,7 @@
           <dl class="c-rsum-rows">
             {#each summary.rows as row (row.part)}
               <dt title={asOfText(row.checkedAt)}>
-                {row.part === 'bookmeter' ? '読書メーター' : row.label}
+                {breakdownLabel(row)}
               </dt>
               <dd title={asOfText(row.checkedAt)} data-testid="store-rating-{row.part}">
                 {#if row.avg !== null}
@@ -203,13 +247,17 @@
         <span class="c-rsum-num" aria-hidden="true" data-testid="store-rating-pooled"
           >{formatStars(headline.avg ?? 0)}</span
         >
-        <span aria-hidden="true">{ratingsCountText(headline.count)}</span>
+        <span aria-hidden="true"
+          >{fit === 0
+            ? ratingsCountText(headline.count)
+            : `(${fit === 1 ? formatCount(headline.count) : formatCompact(headline.count)})`}</span
+        >
       </span>
     {/if}
     {#if showYours}
       <span
         class="c-rsum-yours"
-        class:c-rsum-yours-own={yoursWrapped}
+        class:c-rsum-yours-own={fit === 4}
         data-yours
         data-testid="details-rating"
       >
@@ -221,7 +269,7 @@
           aria-hidden="true"
           data-testid="details-rating-stars"
         >
-          {yoursWrapped ? 'Your rating' : 'You'}
+          {fit === 4 ? 'Your rating' : 'You'}
           {#if yourRating}
             <svg viewBox="0 0 24 24" width="15" height="15" class="c-rsum-star">
               <path
@@ -266,9 +314,18 @@
     }
   }
 
+  .c-rsum-row > :global(*) {
+    flex-shrink: 0;
+  }
+
+  .c-rsum-wrap {
+    flex-wrap: wrap;
+  }
+
   .c-rsum-line {
     display: inline-flex;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
+    white-space: nowrap;
     align-items: center;
     column-gap: 0.4rem;
     font-size: 0.875rem;
@@ -288,6 +345,15 @@
     border-left: 1px solid var(--c-line);
     font-size: 0.875rem;
     color: var(--c-muted);
+  }
+
+  .c-rsum-yours {
+    white-space: nowrap;
+  }
+
+  .c-rsum-wrap .c-rsum-line {
+    flex-wrap: wrap;
+    white-space: normal;
   }
 
   .c-rsum-yours-own {
