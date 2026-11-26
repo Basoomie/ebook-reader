@@ -18,6 +18,8 @@ import {
   arcOf,
   copyBooks,
   printedNumber,
+  RDB_PLACE_SURE,
+  SIDE_COUNTED,
   type SeriesBook,
 } from '../src/cleanup/stage4/series-order';
 import { firstColophonDate, storeListPlaces } from '../src/cleanup/stage4/analysis';
@@ -827,5 +829,132 @@ describe('the live run of 2026-11-22', () => {
     expect(inList.map((b) => got.get(b.uuid) ?? b.index)).toEqual(
       Array.from({ length: 32 }, (_, i) => i + 1),
     );
+  });
+});
+
+describe('the held series reviews measured (2026-11-25, rules 11)', () => {
+  // Real facts of these series from a copy of the live cleanup.db (pools cut to RanobeDB's list).
+  const fx = JSON.parse(
+    readFileSync(join(__dirname, 'fixtures', 'series-held-reviews.json'), 'utf8'),
+  ) as Record<string, SeriesBook[]>;
+  const choose = (series: string) => {
+    const books = fx[series];
+    const c = new Map(orderSeries(books).map((x) => [x.calibreId ?? 0, x]));
+    const byId = new Map(orderSeries(books).map((x) => [x.uuid, x]));
+    return (id: number) => {
+      const b = books.find((x) => x.calibreId === id)!;
+      return byId.get(b.uuid)?.index ?? (c.size ? b.index : b.index);
+    };
+  };
+  it('「Ep.14」 and 「level.15」 are the volume numbers, not RanobeDB places that count side books', () => {
+    expect(
+      printedNumber(
+        '86―エイティシックス―Ep.14 ―ペイント・イット・ブラック―',
+        '86―エイティシックス―',
+      ),
+    ).toBe(14);
+    expect(
+      printedNumber('灰と幻想のグリムガル level.15 強くて儚きニューゲーム', '灰と幻想のグリムガル'),
+    ).toBe(15);
+    const g = choose('灰と幻想のグリムガル');
+    expect(g(66668)).toBe(15); // level.15 (was 17)
+    expect(g(66670)).toBe(14.5); // level.14+ stays
+    expect(g(66671)).toBe(14.6); // level.14++ after it
+    expect(choose('86―エイティシックス―')(32975)).toBe(14); // Ep.14 (was 16)
+  });
+  it('「14+」 prints no number of its own and 「Vol.1+2」 is an omnibus', () => {
+    expect(
+      printedNumber(
+        '灰と幻想のグリムガル level.14＋ 相変わらずではいられない',
+        '灰と幻想のグリムガル',
+      ),
+    ).toBeNull();
+    expect(omnibusLast('恋愛処方箋 vol.1+2')).toBe(2);
+    expect(omnibusLast('恋愛処方箋Vol.5+6+7')).toBe(7);
+    expect(omnibusLast('超クソゲー１＋２')).toBe(2);
+    const r = choose('恋愛処方箋');
+    expect(r(27222)).toBe(2.9);
+    expect(r(27211)).toBe(7.9);
+  });
+  it('a book its part mark or list place backs is not moved by date beside another edition', () => {
+    expect(choose('罪と罰')(64979)).toBe(1); // 罪と罰（上） beside 罪と罰 1 (was 4)
+    expect(choose('西遊記')(58968)).toBe(1); // 西遊記（上） (was 0.6)
+    expect(choose('悪霊')(63991)).toBe(1); // 悪霊（上） (was 0.5)
+    expect(choose('鳴門秘帖')(46248)).toBe(2); // 鳴門秘帖（下） of the 上下 edition (was 8)
+  });
+  it('a list place backs a number only where the list places are the series numbers', () => {
+    // RanobeDB lists ∞ 7th and volume 7 8th: ∞ is not backed at 7 and goes between 6 and 7.
+    expect(choose('世界の危機はめくるめく!')(21583)).not.toBe(7);
+  });
+  it('a side book nothing places keeps the number it has', () => {
+    expect(choose('demi')(46093)).toBe(3); // was 0.5
+    expect(choose('アルカリレットウセイ')(21291)).toBe(1); // was 0.5
+    expect(choose('冴えない彼女の育てかた')(9134)).toBe(6.5); // FD (was 13.6)
+  });
+});
+
+describe('another edition in parts is not the series split (rehearsal of rules 11)', () => {
+  const fx = JSON.parse(
+    readFileSync(join(__dirname, 'fixtures', 'series-held-reviews.json'), 'utf8'),
+  ) as Record<string, SeriesBook[]>;
+  it('転スラ 1 （上）（中）（下） of the children’s edition does not renumber the 25-book series', () => {
+    const books = fx['転生したらスライムだった件'];
+    const byUuid = new Map(orderSeries(books).map((x) => [x.uuid, x]));
+    const n = (id: number) => {
+      const b = books.find((x) => x.calibreId === id)!;
+      const c = byUuid.get(b.uuid);
+      return c ? c.index : b.index;
+    };
+    expect(n(3317)).toBe(2); // 転スラ 2 (was 4)
+    expect(n(3309)).toBe(11); // 転スラ 11 (was 31)
+    expect(n(13660)).toBe(22); // 転スラ 22 (was 51)
+    expect(n(9600)).toBe(8.5); // 8.5 公式設定資料集 (was 22.5)
+  });
+});
+
+describe("RanobeDB's places and side books counted among its volumes (rules 11, the census of 214)", () => {
+  const fx = JSON.parse(
+    readFileSync(join(__dirname, 'fixtures', 'series-held-reviews.json'), 'utf8'),
+  ) as Record<string, SeriesBook[]>;
+  const choose = (series: string) => {
+    const books = fx[series];
+    const byUuid = new Map(orderSeries(books).map((x) => [x.uuid, x]));
+    return (id: number) => {
+      const b = books.find((x) => x.calibreId === id)!;
+      const c = byUuid.get(b.uuid);
+      return { index: c ? c.index : b.index, from: c?.from ?? null, review: !!c?.review };
+    };
+  };
+  it('a place beside two volumes of the same list on theirs is sure', () => {
+    const c = choose('〈小市民〉シリーズ');
+    expect(c(11361)).toMatchObject({ index: 4, from: RDB_PLACE_SURE }); // 秋期限定 下 (was 3)
+    expect(c(11362).index).toBe(3); // 秋期限定 上
+    expect(c(10782).index).toBe(6); // 冬期限定
+    // Volumes the models numbered on their list places count: 化物語（中） 1 → 2.
+    const m = choose('〈物語〉シリーズ');
+    expect(m(6342)).toMatchObject({ index: 2, from: RDB_PLACE_SURE });
+    expect(m(6345).index).toBe(1); // 化物語（上）
+    expect(m(6344).index).toBe(3); // 化物語（下）
+  });
+  it('a list of the book alone, or one volume on its place, is not sure', () => {
+    // ダイブ!: RanobeDB lists only the book itself at 1; the store list has it 2nd.
+    const c = choose('ダイブ');
+    expect(c(62153).from).not.toBe(RDB_PLACE_SURE);
+  });
+  it('a side book after the count of the main volumes before it on the list', () => {
+    const t = choose('とらドラ!');
+    expect(t(4985)).toMatchObject({ index: 9.5 }); // スピンオフ2 (2009-01, after 9; was 2)
+    expect(t(4985).from).toContain(SIDE_COUNTED);
+    expect(t(53276).index).toBe(10.5); // スピンオフ3 (2010-04, after 10; was 3)
+    expect(t(4986).index).toBe(4.5); // スピンオフ！ stays
+    expect(t(4998).index).toBe(5); // とらドラ5！ stays on its printed number
+    expect(choose('覇剣の皇姫アルティーナ')(21282).index).toBe(7.5); // 小綺譚 stays (was 6.5)
+    const b = choose('青春ブタ野郎');
+    expect(b(70080).index).toBe(15.6); // ドクターピッグ＋ (was 13.6)
+    expect(b(70353).index).toBe(15.5); // ビーチクイーン＋ stays (was 13.5)
+  });
+  it('a book whose own title numbers it is no side book', () => {
+    expect(choose('ハード・デイズ・ナイツ')(27413).index).toBe(6); // ハード・デイズ・ナイツ6 アンコール… (was 7.5)
+    expect(choose('キネマ探偵カレイドミステリー')(49609).index).toBe(2); // ～再演奇縁のアンコール～ (was 1.5)
   });
 });
