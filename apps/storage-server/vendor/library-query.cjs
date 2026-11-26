@@ -2,7 +2,7 @@
  * GENERATED FILE, DO NOT EDIT. The storage server library search parser, bundled from
  * the web app (apps/web/src/lib/library/query/server-entry.ts).
  * Rebuild with `pnpm build:server-query` in apps/web after changing that code.
- * build: fce912c4ae4d7274
+ * build: bf897a1f9cde67c4
  */
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
@@ -308,7 +308,8 @@ function parseField(s, field, negated, start) {
     }
     if (field === "bookmeter") {
       const lists = QUERY_BOOKMETER_LISTS.join(", ");
-      if (words.length === 0) throw new QueryError(`bookmeter: needs a list: ${lists}.`, start, end);
+      if (words.length === 0)
+        throw new QueryError(`bookmeter: needs a list: ${lists}.`, start, end);
       const values = [];
       for (const w of words) {
         if (!QUERY_BOOKMETER_LISTS.includes(w)) {
