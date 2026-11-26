@@ -15,6 +15,13 @@
 
 import { parseQuery, type Matcher, type QueryErrorInfo, type QueryTerm } from './parse';
 
+const BOOKMETER_LIST_NAMES = {
+  read: '読んだ本',
+  reading: '読んでる本',
+  stacked: '積読本',
+  wish: '読みたい本'
+} as const;
+
 export type QueryReading =
   /** Nothing to say: empty, or only plain words (they need no explanation). */
   { kind: 'none' } | { kind: 'reads'; text: string } | { kind: 'error'; error: QueryErrorInfo };
@@ -189,6 +196,10 @@ function describeTerm(term: QueryTerm, text: string): string {
       return term.negated ? 'not on this device' : 'on this device';
     case 'deviceAudio':
       return term.negated ? 'audio not on this device' : 'audio on this device';
+    case 'bookmeter': {
+      const d = `on your 読書メーター ${orList(term.values.map((v) => BOOKMETER_LIST_NAMES[v]))}`;
+      return term.negated ? `not ${d}` : d;
+    }
   }
 }
 

@@ -34,6 +34,7 @@
   import AddToCollectionDialog from '$lib/components/collections/add-to-collection-dialog.svelte';
   import AudioLinkSection from '$lib/components/audio/audio-link-section.svelte';
   import SummarySection from '$lib/components/summaries/summary-section.svelte';
+  import BookBookmeterLine from '$lib/components/bookmeter/book-bookmeter-line.svelte';
   import BookDescription from '$lib/components/summaries/book-description.svelte';
   import BookDownloadMenu from '$lib/components/library/book-download-menu.svelte';
   import BookLinks from '$lib/components/library/book-links.svelte';
@@ -809,6 +810,15 @@
             {/if}
             <span class="text-sm text-c-muted" data-testid="details-status">{statusText}</span>
           </div>
+        {/if}
+        {#if !book.missing}
+          <!-- Bookmeter sync (2026-11-25): the book on your 読書メーター lists. -->
+          <BookBookmeterLine
+            bookId={book.id}
+            title={book.title}
+            identifiers={shown?.identifiers}
+            status={state?.status}
+          />
         {/if}
         <!-- The actions (2026-11-21): Read (the one filled button) and the status button, then
              the soft ones; Remove from this device in ⋯. Phones: Read beside a Status tile, the

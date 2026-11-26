@@ -14,6 +14,7 @@
   import BookStateDialog from '$lib/components/library/book-state-dialog.svelte';
   import AddToCollectionDialog from '$lib/components/collections/add-to-collection-dialog.svelte';
   import CataloguePageHeader from '$lib/components/catalogue-page-header.svelte';
+  import BookmeterNotice from '$lib/components/bookmeter/bookmeter-notice.svelte';
   import {
     faArrowDown,
     faArrowUp,
@@ -784,6 +785,8 @@
       This device isn't connected to the library server yet.
       <a class="c-link" href="{pagePath}/library">Connect on the Library page</a>.
     </p>
+  {:else}
+    <BookmeterNotice />
   {/if}
 
   {#if editing}

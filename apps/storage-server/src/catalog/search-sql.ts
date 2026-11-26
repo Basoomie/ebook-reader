@@ -175,6 +175,19 @@ function favoriteSql(userId: string, value: boolean): SqlCondition {
 }
 
 /**
+ * bookmeter: (Bookmeter sync, 2026-11-25): the books matched to entries of these 読書メーター
+ * lists (bookmeter_links / bookmeter_entries, every account).
+ */
+function bookmeterSql(values: string[]): SqlCondition {
+  return {
+    sql: `b.id IN (SELECT l.book_id FROM bookmeter_links l JOIN bookmeter_entries e
+           ON e.account_id = l.account_id AND e.listing_id = l.listing_id
+           WHERE e.list IN (${values.map(() => '?').join(',')}))`,
+    params: values,
+  };
+}
+
+/**
  * on:device (WP15e): the books in the asking device's "device-books" record. Without a
  * device (a token that never registered one) nothing matches.
  */
@@ -281,6 +294,9 @@ export function termSql(
       break;
     case 'deviceAudio':
       cond = deviceAudioSql(userId, deviceId);
+      break;
+    case 'bookmeter':
+      cond = bookmeterSql(term.values);
       break;
   }
   return term.negated ? { sql: `NOT IFNULL(${cond.sql}, 0)`, params: cond.params } : cond;
