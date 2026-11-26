@@ -42,9 +42,11 @@ import { oneTimePassesDone, type BookmeterFacts, type Stage4Analysis } from './a
 import { chosenDecision, judge, mainTitle, type Check, type Gold } from './bookmeter-rules';
 import type { FetchQueue } from './queue';
 import {
-  BOOKMETER_AUTHOR_SEARCH_KEY,
+  BOOKMETER_AUTHOR_LIST_KEY,
+  BOOKMETER_PAGE_SIZE,
   BOOKMETER_SEARCH_KEY,
   acceptBookmeter,
+  bookmeterAuthorPage,
   bookmeterSearchUrl,
   bookmeterStoresUrl,
   editionNotes,
@@ -915,18 +917,11 @@ export class BookmeterMore {
       );
       return 'q1';
     }
+    // Q2: the first author's listings, page by page (bookmeter-listings.md 8, the user's
+    // decision 5: Bookmeter ignores the keyword of a search with the author field, so the search
+    // asked before only ever showed the author's 20 most-read books).
     if (au && q1) {
-      this.waiter(
-        lib,
-        uuid,
-        'q2',
-        {
-          key: `${BOOKMETER_AUTHOR_SEARCH_KEY}${au}\n${q1}`,
-          url: bookmeterSearchUrl(q1, au),
-          accept: 'text/html, */*; q=0.01',
-        },
-        labeled,
-      );
+      this.waiter(lib, uuid, 'q2', bookmeterAuthorPage(au, 1), labeled);
       return 'q2';
     }
     return null;
@@ -975,7 +970,7 @@ export class BookmeterMore {
     // The answers that came back.
     const ready = db
       .prepare(
-        `SELECT w.request_id, w.calibre_uuid, w.step, b.labeled, r.state AS rstate
+        `SELECT w.request_id, w.calibre_uuid, w.step, b.labeled, r.state AS rstate, r.key AS rkey
          FROM bookmeter_more_waiters w
          JOIN bookmeter_more_books b ON b.library_id = w.library_id AND b.calibre_uuid = w.calibre_uuid
          JOIN fetch_requests r ON r.id = w.request_id
@@ -987,6 +982,7 @@ export class BookmeterMore {
       step: 'q1' | 'q2';
       labeled: number;
       rstate: string;
+      rkey: string;
     }[];
     const del = db.prepare(
       'DELETE FROM bookmeter_more_waiters WHERE request_id = ? AND library_id = ? AND calibre_uuid = ? AND step = ?',
@@ -1017,6 +1013,22 @@ export class BookmeterMore {
           lib,
           w.calibre_uuid,
         );
+        continue;
+      }
+      // Q2's next page of the author's listings: while the pages are full, up to the setting.
+      const page = Number(w.rkey.slice(w.rkey.lastIndexOf('\n') + 1)) || 1;
+      const au = w.rkey.startsWith(BOOKMETER_AUTHOR_LIST_KEY)
+        ? w.rkey.slice(BOOKMETER_AUTHOR_LIST_KEY.length, w.rkey.lastIndexOf('\n'))
+        : null;
+      if (
+        w.step === 'q2' &&
+        au &&
+        hits.length >= BOOKMETER_PAGE_SIZE &&
+        page < (getSettings(db).fetch.bookmeterAuthorPages ?? 8)
+      ) {
+        this.waiter(lib, w.calibre_uuid, 'q2', bookmeterAuthorPage(au, page + 1), w.labeled === 1);
+        p.second.asked++;
+        upd.run('second', null, null, 'q2', Date.now(), lib, w.calibre_uuid);
         continue;
       }
       const q =

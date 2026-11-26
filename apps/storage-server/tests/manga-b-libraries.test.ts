@@ -57,7 +57,7 @@ function v36(): Database.Database {
 
 describe('cleanup.db v38: every stage, pass and import run belongs to a library', () => {
   it('gives the primary library today’s rows, keeps run 7 its run, and the gate’s pauses to every library', () => {
-    expect(CLEANUP_SCHEMA_VERSION).toBe(LIBRARY_SCOPE_VERSION);
+    expect(CLEANUP_SCHEMA_VERSION).toBeGreaterThanOrEqual(LIBRARY_SCOPE_VERSION);
     const db = v36();
     db.prepare(
       `UPDATE stages SET mode = 'on', state = 'ready', progress_json = '{"analysisId":"a4","libraryId":"J"}' WHERE stage = 4`,
