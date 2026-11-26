@@ -8,8 +8,11 @@ import { describe, expect, it } from 'vitest';
 import type { BookRatingsAnswer } from './api';
 import {
   RATING_PARTS,
+  breakdownLabel,
+  formatCompact,
   cardRatingText,
   ratingPieces,
+  ratingSummary,
   refreshLeftText,
   volumeOneText
 } from './store-ratings';
@@ -35,7 +38,7 @@ const answer: BookRatingsAnswer = {
 };
 
 describe('ratingPieces (the book page line)', () => {
-  it('leads with the pooled figure, then each store, never stars', () => {
+  it('leads with the pooled figure, then each store (stars are drawn, not in the text)', () => {
     const texts = ratingPieces(answer, RATING_PARTS, { bookmeter: true }).map((p) => [
       p.label,
       p.text
@@ -44,8 +47,8 @@ describe('ratingPieces (the book page line)', () => {
       ['', '4.3 · 251 ratings'],
       ['Amazon', '4.3 · 201 ratings'],
       ['BOOK☆WALKER', '4.4 · 50 ratings'],
-      ['読書メーター readers', '12,850 read it · 98 reviews'],
-      ['Natively learners', '3.0 · 1 rating']
+      ['読書メーター readers', '12,850 read it'],
+      ['Natively', '3.0 · 1 rating']
     ]);
     expect(texts.join(' ')).not.toMatch(/★/);
   });
@@ -83,6 +86,56 @@ describe('ratingPieces (the book page line)', () => {
       refreshing: false
     };
     expect(ratingPieces(none, RATING_PARTS, { bookmeter: true })).toEqual([]);
+  });
+});
+
+describe('ratingSummary (the book page: one line, breakdown on tap)', () => {
+  const features = { bookmeter: true };
+  it('heads with the pooled figure, readers beside it, every store in the breakdown', () => {
+    const s = ratingSummary(ratingPieces(answer, RATING_PARTS, features));
+    expect(s.headline?.part).toBe('pooled');
+    expect([s.headline?.avg, s.headline?.count]).toEqual([4.3, 251]);
+    expect(s.readers?.count).toBe(12850);
+    // Stars first (Natively before 読書メーター's readers).
+    expect(s.rows.map((r) => r.part)).toEqual(['amazon_jp', 'bookwalker', 'natively', 'bookmeter']);
+    expect(s.rows.map(breakdownLabel)).toEqual([
+      'Amazon',
+      'BOOK☆WALKER',
+      'Natively',
+      '読書メーター'
+    ]);
+    expect(s.checkedAt).toBe(1_700_000_000_000);
+  });
+
+  it('heads with a named store when the pooled figure is not shown', () => {
+    const s = ratingSummary(ratingPieces(answer, ['bookwalker', 'natively'], features));
+    expect(s.headline?.part).toBe('bookwalker');
+    expect(s.headline?.label).toBe('BOOK☆WALKER');
+    // Natively's learners head only when no store has stars.
+    const n = ratingSummary(ratingPieces(answer, ['natively', 'bookmeter'], features));
+    expect(n.headline?.part).toBe('natively');
+    expect(n.readers?.count).toBe(12850);
+  });
+
+  it('readers alone, or nothing', () => {
+    const r = ratingSummary(ratingPieces(answer, ['bookmeter'], features));
+    expect(r.headline).toBeNull();
+    expect(r.readers?.count).toBe(12850);
+    expect(ratingSummary([])).toEqual({ headline: null, readers: null, rows: [], checkedAt: null });
+  });
+
+  it('compact numbers for a tight line', () => {
+    expect([formatCompact(950), formatCompact(4731), formatCompact(87105)]).toEqual([
+      '950',
+      '4.7K',
+      '87.1K'
+    ]);
+  });
+
+  it('offline: the pooled figure with nothing to open', () => {
+    const s = ratingSummary(ratingPieces({ ...answer, sites: {} }, RATING_PARTS, features));
+    expect(s.headline?.part).toBe('pooled');
+    expect(s.rows).toEqual([]);
   });
 });
 

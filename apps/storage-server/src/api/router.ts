@@ -66,6 +66,8 @@ import { createNativelyRouter } from '../natively/routes';
 import type { NativelyLevels } from '../natively/levels';
 import { createRatingsRouter } from '../ratings/routes';
 import type { StoreRatings } from '../ratings/service';
+import { createBookmeterRouter } from '../bookmeter/routes';
+import type { BookmeterSync } from '../bookmeter/service';
 import type { AiCore } from '../ai/core';
 import { createNotificationsRouter } from '../notifications/routes';
 import type { NotificationService } from '../notifications/service';
@@ -139,6 +141,8 @@ export interface ApiOptions {
   natively?: NativelyLevels | null;
   /** Store ratings (2026-11-25). Without it their routes answer 503. */
   ratings?: StoreRatings | null;
+  /** Bookmeter sync (2026-11-25). Without it its routes answer 503. */
+  bookmeter?: BookmeterSync | null;
 }
 
 export interface FontOptions {
@@ -179,6 +183,7 @@ export function createApiRouter({
   summaries = null,
   natively = null,
   ratings = null,
+  bookmeter = null,
 }: ApiOptions): Router {
   const router = express.Router();
   // Pushes can carry many records; everything else keeps the small default limit.
@@ -302,6 +307,8 @@ export function createApiRouter({
     router.use(createNativelyRouter(natively));
     // Store ratings on the book page (2026-11-25).
     router.use(createRatingsRouter(ratings));
+    // Bookmeter sync (2026-11-25): the user's 読書メーター lists.
+    router.use(createBookmeterRouter(bookmeter));
     // Uploads (WP7b): a separate source adapter, mounted only when it is on.
     if (catalog.uploads) {
       router.use(
@@ -312,6 +319,8 @@ export function createApiRouter({
     const syncStore = new SyncStore(db, { maxClockSkewMs: sync.maxClockSkewSeconds * 1000 });
     // The summaries tell every device about a book's summary through a record of their own.
     summaries?.attachSync(syncStore);
+    // Bookmeter sync writes its entries' records (and the 読みたい本 collection) the same way.
+    bookmeter?.attachSync(syncStore);
     if (seedDefaults) {
       try {
         for (const userId of seedPlannedCollections(db, syncStore)) {

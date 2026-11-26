@@ -34,6 +34,7 @@
   import AddToCollectionDialog from '$lib/components/collections/add-to-collection-dialog.svelte';
   import AudioLinkSection from '$lib/components/audio/audio-link-section.svelte';
   import SummarySection from '$lib/components/summaries/summary-section.svelte';
+  import BookBookmeterLine from '$lib/components/bookmeter/book-bookmeter-line.svelte';
   import BookDescription from '$lib/components/summaries/book-description.svelte';
   import BookDownloadMenu from '$lib/components/library/book-download-menu.svelte';
   import BookLinks from '$lib/components/library/book-links.svelte';
@@ -115,7 +116,6 @@
   import BookEditForm from '$lib/components/calibre-edit/book-edit-form.svelte';
   import BookHistoryPanel from '$lib/components/calibre-edit/book-history-panel.svelte';
   import SeriesEdit from '$lib/components/calibre-edit/series-edit.svelte';
-  import RatingStars from '$lib/components/calibre-edit/rating-stars.svelte';
   import StoreRatingsLine from '$lib/components/library/store-ratings-line.svelte';
   import { CalibreEditApi } from '$lib/calibre-edit/api';
   import { bookEditAs$, bookRatingEmpty$, seriesEditAs$ } from '$lib/calibre-edit/settings';
@@ -215,12 +215,9 @@
   $: fraction = book
     ? bookProgressFraction(book.id, state, positions.get(book.id) ?? [], book.charCount)
     : null;
-  $: statusText = [
-    state && state.status !== 'unread' ? STATUS_LABELS[state.status] : '',
-    progressLabel && progressLabel !== 'Finished' ? progressLabel : ''
-  ]
-    .filter(Boolean)
-    .join(' · ');
+  // Only the progress: the status button below already names the book's status
+  // (user 2026-11-25: "Completed" was shown three times in a row).
+  $: statusText = progressLabel && progressLabel !== 'Finished' ? progressLabel : '';
   $: readLabel = fraction !== null ? 'Continue reading' : 'Read';
   /** The status button shows the book's status ("Set status" while unread). */
   $: statusName = state && state.status !== 'unread' ? STATUS_LABELS[state.status] : '';
@@ -771,17 +768,17 @@
                 >{i < illustrators.length - 1 ? ', ' : ''}{/each}{/if}
           </div>
         {/if}
-        {#if showRating && shown}
-          <!-- The rating, under the byline (design 2026-11-23); a book without one follows the
-               device's setting (hidden by default). -->
-          <div class="-mt-1 flex items-center gap-2" data-testid="details-rating">
-            <RatingStars rating={shown.rating ?? null} testid="details-rating-stars" />
-            {#if shown.rating}<span class="text-sm text-c-muted">Your rating</span>{/if}
-          </div>
-        {/if}
-        {#if shown && shown.source !== 'upload'}
-          <!-- Store ratings (2026-11-25): other readers' figures, never stars. -->
-          <StoreRatingsLine book={shown} api={api ?? null} {offline} />
+        {#if shown}
+          <!-- Ratings under the byline (redesign 2026-11-25): other readers' stars on one line
+               with your own rating beside it; a book without your rating follows the device's
+               setting (hidden by default). -->
+          <StoreRatingsLine
+            book={shown}
+            api={api ?? null}
+            {offline}
+            yourRating={shown.rating ?? null}
+            showYours={showRating}
+          />
         {/if}
         {#if waitingForLibrary}
           <p class="text-sm text-c-muted" role="status" data-testid="details-edit-waiting">
@@ -809,6 +806,15 @@
             {/if}
             <span class="text-sm text-c-muted" data-testid="details-status">{statusText}</span>
           </div>
+        {/if}
+        {#if !book.missing}
+          <!-- Bookmeter sync (2026-11-25): the book on your 読書メーター lists. -->
+          <BookBookmeterLine
+            bookId={book.id}
+            title={book.title}
+            identifiers={shown?.identifiers}
+            status={state?.status}
+          />
         {/if}
         <!-- The actions (2026-11-21): Read (the one filled button) and the status button, then
              the soft ones; Remove from this device in ⋯. Phones: Read beside a Status tile, the

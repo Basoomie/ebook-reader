@@ -38,7 +38,8 @@ import {
   groupComparator,
   newestFirst,
   seriesOrder,
-  volumeOrder
+  volumeOrder,
+  type CompletedAt
 } from './sort';
 
 /**
@@ -75,6 +76,10 @@ export interface OfflineData {
   nextHidden?: ReadonlySet<string>;
   nextOn?: boolean;
   nextBonus?: boolean;
+  /** Bookmeter sync: the 読書メーター lists each book is on (bookmeter:). */
+  bookmeterLists?: ReadonlyMap<string, ReadonlySet<string>>;
+  /** The best (newest) place of each book on a 読みたい本 list: 読書メーター order. */
+  bookmeterWishRank?: ReadonlyMap<string, number>;
 }
 
 /** Next in your series of one read of the device's data (computed once per read). */
@@ -106,6 +111,29 @@ export function offlineNext(data: OfflineData): NextEntry[] {
   return entries;
 }
 
+/** Date completed: the latest finished read-through's day as seconds (UTC), else null. */
+function completedAtOf(state: BookState | undefined): number | null {
+  let best: string | null = null;
+  for (const rt of state?.readThroughs ?? []) {
+    if (rt.finished && rt.finishedOn && (best === null || rt.finishedOn > best))
+      best = rt.finishedOn;
+  }
+  return best === null ? null : Date.parse(`${best}T00:00:00Z`) / 1000;
+}
+
+/** The day a computed sort reads (offline/sort.ts CompletedAt), from this device's data. */
+function dayOfSort(data: OfflineData, key: BookSortKey): CompletedAt | undefined {
+  if (key === 'completed') return (id) => completedAtOf(data.states.get(id));
+  if (key === 'wish') return (id) => data.bookmeterWishRank?.get(id) ?? null;
+  if (key !== 'finished') return undefined;
+  // Series last finished: the Home row's day (only the next volumes have one; status:next).
+  const days = new Map<string, number>();
+  for (const e of offlineNext(data)) if (e.finishedAt > 0) days.set(e.bookId, e.finishedAt / 1000);
+  return (id) => days.get(id) ?? null;
+}
+
+const NO_LISTS: ReadonlySet<string> = new Set();
+
 const DEFAULT_PAGE_SIZE = 50;
 const MAX_PAGE_SIZE = 200;
 const MAX_LOOKUP_IDS = 200;
@@ -121,7 +149,10 @@ const BOOK_SORTS: BookSortKey[] = [
   'level',
   'rating',
   'ratings',
-  'readers'
+  'readers',
+  'completed',
+  'finished',
+  'wish'
 ];
 const GROUP_SORTS: GroupSortKey[] = ['newest', 'name', 'count'];
 
@@ -277,7 +308,8 @@ export class OfflineCatalog {
       isNext: (id) => {
         next ??= new Set(offlineNext(data).map((e) => e.bookId));
         return next.has(id);
-      }
+      },
+      bookmeterLists: (id) => data.bookmeterLists?.get(id) ?? NO_LISTS
     };
   }
 
@@ -332,7 +364,7 @@ export class OfflineCatalog {
       query.sort && BOOK_SORTS.includes(query.sort.key as BookSortKey)
         ? (query.sort as ServerSort<BookSortKey>)
         : DEFAULT_SORT;
-    list.sort(bySeriesIndex ? seriesOrder : bookComparator(sort));
+    list.sort(bySeriesIndex ? seriesOrder : bookComparator(sort, dayOfSort(data, sort.key)));
     const { items, nextCursor } = page(list, query.cursor, query.limit);
     return { books: items.map(summaryOf), nextCursor };
   }

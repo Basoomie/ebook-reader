@@ -35,6 +35,17 @@ import { nfkc } from './ref-text';
 import { titleKey } from './pick';
 import { seriesKey } from './series-spelling';
 
+/** A RanobeDB place where the list's places are the series' numbers (proposals.ts: automatic). */
+/** A side book placed after the count of RanobeDB's main volumes before it (proposals.ts: automatic). */
+export const SIDE_COUNTED = "counted among the volumes of RanobeDB's list";
+export const RDB_PLACE_SURE = "its place in RanobeDB's series list, beside volumes on their places";
+/** A later part's volume placed by the series list, two volumes on their places beside it. */
+export const PART_PLACE = 'its place in the series list (a later part, counted straight through)';
+/** A side book the series counts as a volume: on its list place between volumes on theirs. */
+export const SIDE_LIST_COUNTED = 'its place in the series list, between volumes on their places';
+/** A side book after a volume in the list, none missing between them, its date agreeing. */
+export const SIDE_LISTED_SURE = 'listed and published';
+
 export type ValueFrom = 'store' | 'models' | 'guess' | 'calibre' | 'user';
 
 export interface PoolEntry {
@@ -235,7 +246,7 @@ function numberInsideName(t: string, name: string): string | null {
 
 /** Words after a number that make it something other than a volume (16人, 18禁, 2001年). */
 const NOT_VOLUME =
-  /^(?:人|禁|歳|才|年|月|日|時|分|秒|億|万|千|円|%|％|回|個|つ|名|匹|頭|世紀|階|号|度|倍|色|kg|km|cm|分の)/u;
+  /^(?:人|禁|歳|才|年|月|週|日|時|分|秒|億|万|千|円|%|％|回|個|つ|名|匹|頭|世紀|階|号|度|倍|色|kg|km|cm|分の)/u;
 /**
  * Words that make a book a side book of its series (after the series name only). Also read by
  * audiobook stage 8 (ebook-pair.ts): a side book is never paired with a main volume.
@@ -258,13 +269,18 @@ export function leadingNumber(rest: string): number | null {
   // 「13.暁の約束」: a full stop after the number is not a decimal point.
   // 「Lv.24 DLC(1)」: a level is the volume (changed-series measurement read the 1).
   // 「disc6」, 「Step2」: words of a volume (not season: 「season3～ 1」 is an arc's volume 1).
+  // 「Ep.14」, 「level.15」: an episode or level is the volume (series measurement 2026-11-25:
+  // 86 Ep.14 and グリムガル level.15 were read as unnumbered and placed by RanobeDB's list, which
+  // counts the side books: 16 and 17).
   let m =
-    /^(?:vol\.?|No\.?|Lv\.?|#|第|disc|step|stage|act|phase|episode)?\s*(\d+(?:\.\d+)?)(?!\d)(?!\.\d)/iu.exec(
+    /^(?:vol\.?|No\.?|Lv\.?|level\.?|ep\.?|#|第|disc|step|stage|act|phase|episode)?\s*(\d+(?:\.\d+)?)(?!\d)(?!\.\d)/iu.exec(
       r,
     );
   if (m) {
     const after = r.slice(m[0].length);
     const v = parseFloat(m[1]);
+    // 「level.14+」, 「14++」: a book after volume 14, not volume 14.
+    if (/^\s*\+/u.test(after)) return null;
     if (PART_THEN_VOLUME.test(after)) return null;
     if (v < 500 && !NOT_VOLUME.test(after)) return v;
     return null;
@@ -300,6 +316,8 @@ export function onlyNumber(rest: string): number | null {
   for (const m of r.matchAll(/(?<![\d.A-Za-z])(\d+(?:\.\d+)?)(?!\d)(?!\.\d)/gu)) {
     const after = r.slice((m.index ?? 0) + m[0].length);
     const v = parseFloat(m[1]);
+    // 「14+」: a book after a volume; 「1+2」: an omnibus. Neither prints a number of its own.
+    if (/^\s*\+/u.test(after) || /\+\s*$/u.test(r.slice(0, m.index ?? 0))) return null;
     if (v < 500 && !NOT_VOLUME.test(after)) found.add(v);
   }
   for (const m of r.matchAll(/(?<![A-Za-z])([IVX]{1,5})(?![A-Za-z])/gu))
@@ -332,7 +350,31 @@ export function plainVolume(title: string, name: string): number | null {
 export function printedNumber(title: string, name: string): number | null {
   const rest = afterName(title, name);
   if (rest === null) return null;
-  return leadingNumber(rest) ?? onlyNumber(rest);
+  const lead = leadingNumber(rest);
+  if (lead !== null) return lead;
+  // A later part, then a volume in it (「第五部「女神の化身II」」, 「第二部 西方諸国編3」): the
+  // number is the part's own count, never the series' (the user: arcs are counted straight
+  // through, as the store lists number them; 本好き's 第五部 II-XII were proposed as 2-12 over
+  // 23-33). In the first part the two counts are one (「第一部 中央諸国編Ⅲ」 is volume 3).
+  const p = partThenVolume(rest);
+  if (p !== null && p !== 1) return null;
+  return onlyNumber(rest);
+}
+
+/** The part of 「第N部 <subtitle><volume>」 right after the name, or null. */
+function partThenVolume(rest: string): number | null {
+  const r = nfkc(rest).replace(/^[\s・:：\-‐―─~～〜,、?？!！]+/u, '');
+  const part = /^第?(\d+|[〇零一二三四五六七八九十百壱弐参]+)(?=部)/u.exec(r);
+  if (!part || !PART_THEN_VOLUME.test(r.slice(part[0].length))) return null;
+  return /^\d/u.test(part[1]) ? parseInt(part[1], 10) : kanjiNumber(part[1]);
+}
+
+/** Whether a title is a volume of a part after the first (「第五部「女神の化身II」」). */
+export function laterPart(title: string, name: string): boolean {
+  const rest = afterName(title, name);
+  if (rest === null) return false;
+  const p = partThenVolume(rest);
+  return p !== null && p >= 2;
 }
 
 /** 上/中/下 (前編/後編) of one work: its part, as a word of its own after the name. */
@@ -354,6 +396,13 @@ export function omnibusLast(title: string): number | null {
   if (m && Number(m[2]) > Number(m[1]) && Number(m[2]) < 500) return Number(m[2]);
   m = /全\s*(\d+)\s*巻/u.exec(t);
   if (m && Number(m[1]) < 500) return Number(m[1]);
+  // 「Vol.5+6+7」, 「超クソゲー1＋2」: volumes joined with + (series measurement 2026-11-25).
+  m = /(?<!\d)(?<!\d\.)(\d+)((?:\s*\+\s*\d+)+)(?![\d.])/u.exec(t);
+  if (m) {
+    const nums = [m[1], ...m[2].split('+').slice(1)].map((x) => Number(x.trim()));
+    if (nums.every((x, i) => i === 0 || x > nums[i - 1]) && nums[nums.length - 1] < 500)
+      return nums[nums.length - 1];
+  }
   return null;
 }
 
@@ -468,7 +517,10 @@ export function isSideTitle(title: string, name: string): boolean {
   const rest = afterName(title, name);
   // A title printing its volume number first is that volume, whatever it comes with (「英雄教室 6
   // 画集＋キャラクター事典収録…特装版」: stop 1's test half).
-  return rest !== null && SIDE.test(nfkc(rest)) && leadingNumber(rest) === null;
+  // A side word inside a 〜subtitle〜 is part of the subtitle's phrase (「キネマ探偵カレイドミステリー
+  // ～再演奇縁のアンコール～」 is volume 2: held reviews 2026-11-25).
+  const words = rest === null ? '' : nfkc(rest).replace(/[~～〜][^~～〜]*[~～〜]/gu, ' ');
+  return rest !== null && SIDE.test(words) && leadingNumber(rest) === null;
 }
 
 /** The subtitle words after the series name with numbers set aside (for matching volumes). */
@@ -685,7 +737,14 @@ export function orderSeries(books: SeriesBook[]): SeriesChoice[] {
       (b.kind === 'full' || b.kind === 'special edition') &&
       // Only the titles that are this book's: a colophon also lists the series' other books
       // (「僕は友達が少ない⑦」's names CONNECT, a side book: ⑦ was placed as one, 6.5).
-      (own.some((t) => isSideTitle(t, name)) || (key !== '' && !!rdbByKey.get(key)?.side));
+      // A book one of whose own titles prints its volume number first is that volume (「ハード・
+      // デイズ・ナイツ6 アンコールは誓いの」: Calibre's old title left the 6 out).
+      ((key !== '' && !!rdbByKey.get(key)?.side) ||
+        (!own.some((t) => {
+          const r = afterName(t, name);
+          return r !== null && leadingNumber(r) !== null;
+        }) &&
+          own.some((t) => isSideTitle(t, name))));
     const rdbEntry = key ? rdbByKey.get(key) : undefined;
     const rdbOrder: number | null = rdbEntry && !rdbEntry.mixed ? rdbEntry.order : null;
     return {
@@ -778,6 +837,28 @@ export function orderSeries(books: SeriesBook[]): SeriesChoice[] {
     if (w.b.indexFrom === 'store' && w.index !== null)
       set(w, w.index, 'its store record', false, null);
     else if (w.printed !== null) set(w, w.printed, w.printedFrom!, false, null);
+
+  // A volume of a later part (「第五部「女神の化身II」」) prints only the part's own count
+  // (printedNumber). The series list counts straight through (the user): where two other
+  // volumes of the list sit on their places, its place in the list is its number.
+  {
+    const later = mains.filter(
+      (w) =>
+        w.ours &&
+        w.b.indexFrom !== 'store' &&
+        w.listOrder !== null &&
+        (w.b.own.length ? w.b.own : [w.b.title]).some((t) => laterPart(t, name)),
+    );
+    const onPlace = mains.filter(
+      (o) =>
+        !later.includes(o) &&
+        o.listOrder !== null &&
+        o.index !== null &&
+        o.index === o.listOrder &&
+        (!o.ours || !o.guess || o.b.indexFrom === 'models'),
+    );
+    if (onPlace.length >= 2) for (const w of later) set(w, w.listOrder, PART_PLACE, false, null);
+  }
 
   // 上/中/下 of one work, when every main book is a part (神獣聖戦 Perfect Edition 上 / 下).
   // Also with a subtitle after the part (「徳川幕閣盛衰記（中）―吉宗の陰謀」), when no book prints a
@@ -884,7 +965,32 @@ export function orderSeries(books: SeriesBook[]): SeriesChoice[] {
     const listed = open.filter((w) => place(w) !== null);
     const listedAll = mains.filter((w) => place(w) !== null);
     if (listedAll.length && listedAll.length * 2 >= mains.length) {
-      for (const w of listed) set(w, place(w), "its place in RanobeDB's series list", false, null);
+      // Where two other volumes with sure numbers already sit on their places in the list, the
+      // list's places are the series' numbers (the census of 2026-11-25: 57 right, none wrong;
+      // a list of the book alone, or of 2-3 books in another order than Amazon's, was wrong on
+      // 6 of 17: ダイブ！, 俺様弁護士の耽溺ロマンス, NARUTO 秘伝…). Those places are automatic.
+      // A number the models gave counts where it is the list's place too (two sources agree):
+      // the 40 held books this adds moved (化物語（中）, 無責任シリーズ, 飛空士シリーズ…) were 39 right,
+      // 1 right before and after, none wrong.
+      const onPlace = mains.filter(
+        (o) =>
+          place(o) !== null &&
+          o.index !== null &&
+          o.index === place(o) &&
+          (!o.ours || !o.guess || o.b.indexFrom === 'models'),
+      );
+      const sameList = (o: Work, w: Work) =>
+        (o.b.lists?.ranobedbList ?? null) === (w.b.lists?.ranobedbList ?? null);
+      for (const w of listed)
+        set(
+          w,
+          place(w),
+          w.b.lists?.ranobedbList && onPlace.filter((o) => o !== w && sameList(o, w)).length >= 2
+            ? RDB_PLACE_SURE
+            : "its place in RanobeDB's series list",
+          false,
+          null,
+        );
       for (const w of open)
         if (place(w) === null)
           w.reason = 'Not in the series list: placed by first publication date';
@@ -939,10 +1045,26 @@ export function orderSeries(books: SeriesBook[]): SeriesChoice[] {
   // shown before 上): a series with a volume split into 上/中/下 counts every book in reading
   // order, 1, 2, 3… (境界線上のホライゾン I上 1, I下 2, II上 3…). Bonuses and omnibus editions follow
   // the new numbers; side books are placed after them below.
+  // The store list most of the series' main books are in (Amazon's, by its total): a part in
+  // another list is another edition (rehearsal of rules 11, 2026-11-25: 転生したらスライムだった件
+  // 1 （上）（中）（下） are the 46-book children's edition beside the 25-book series, and counting
+  // their parts renumbered 22 volumes, 11 -> 31).
+  const listCount = new Map<string, number>();
+  for (const w of mains) {
+    const l = w.b.lists?.amazonList;
+    if (l) listCount.set(l, (listCount.get(l) ?? 0) + 1);
+  }
+  const mainList = [...listCount].sort((a, c) => c[1] - a[1])[0];
+  const otherEdition = (w: Work) =>
+    !!mainList &&
+    mainList[1] >= 2 &&
+    !!w.b.lists?.amazonList &&
+    w.b.lists.amazonList !== mainList[0];
   const split = mains.some(
     (w) =>
       w.index !== null &&
       partRank(w.b.title) > 0 &&
+      !otherEdition(w) &&
       // Another book on the number with another part mark (each part may have its own subtitle:
       // リビルドワールドI〈上〉 誘う亡霊 / I〈下〉 無理無茶無謀).
       mains.some(
@@ -1209,6 +1331,29 @@ export function orderSeries(books: SeriesBook[]): SeriesChoice[] {
 
   // 5. Side books: N.5 after the main volume published (or listed) just before them.
   const sides = works.filter((w) => w.side && w.ours);
+  // The number of main volumes before a side book's own entry in its RanobeDB list (the entries
+  // its own lookups saw), when the list's main volumes are the series' numbers: two library
+  // volumes on that list sit on their counts and none elsewhere. Null otherwise.
+  const mainsBeforeInRdb = (w: Work): number | null => {
+    const L = w.b.lists?.ranobedbList ?? null;
+    const P = w.b.lists?.ranobedb ?? null;
+    if (!L || P === null || w.b.lists?.ranobedbType === 'main') return null;
+    const entries = new Map<number, string>();
+    for (const e of w.b.pool)
+      if (e.from === 'ranobedb' && e.order != null && e.type) entries.set(e.order, e.type);
+    if (!entries.has(P)) return null;
+    for (let o = 1; o < P; o++) if (!entries.has(o)) return null; // the list is not whole
+    const rank = (o: number) => [...entries].filter(([k, t]) => k <= o && t === 'main').length;
+    let on = 0;
+    for (const m of mains) {
+      const mp = m.b.lists?.ranobedb ?? null;
+      if (m.b.lists?.ranobedbList !== L || mp === null || m.index === null) continue;
+      if (entries.get(mp) !== 'main') continue;
+      if (m.index === rank(mp)) on++;
+      else return null;
+    }
+    return on >= 2 ? rank(P - 1) : null;
+  };
   if (sides.length) {
     const numbered = mains.filter((w) => w.index !== null);
     const used = new Set(works.filter((w) => !sides.includes(w)).map((w) => w.index));
@@ -1234,7 +1379,35 @@ export function orderSeries(books: SeriesBook[]): SeriesChoice[] {
       placed.push(w);
       let before: Work | null = null;
       let how = '';
-      if (w.listOrder !== null) {
+      // A side entry of RanobeDB's list goes after the list's main volumes before it, counted in
+      // the list, where the library's volumes on that list sit on those counts (held reviews
+      // 2026-11-25: 青ブタ ビーチクイーン＋ after volume 15 when 14 is not in the library, 冴えカノ
+      // Girls Side 3 after 12, アルティーナ 小綺譚 after VII; they went after 13, 11 and 6).
+      const mainsBefore = mainsBeforeInRdb(w);
+      if (mainsBefore !== null && mainsBefore >= 1) {
+        // (The volume itself may not be in the library: the side book goes after its number.)
+        before = { ...w, index: mainsBefore };
+        how = SIDE_COUNTED;
+      }
+      // A side book the series counts as a volume: main volumes before and after it sit on their
+      // places in the list, so its place is its number (トラブルシューター SS mission 02 on 4
+      // between 3 and 5, バッカーノ! 1931 臨時急行編 Another Junk Railroad on 14).
+      if (!before && w.listOrder !== null && !used.has(w.listOrder)) {
+        const onIt = (m: Work) => m.listOrder !== null && m.index === m.listOrder;
+        // (Right beside it: spin-offs a store numbers by their far places, はたらく魔王さま!'s メシ
+        // on 25, are no neighbours.)
+        if (
+          numbered.some((m) => onIt(m) && m.listOrder === w.listOrder! - 1) &&
+          numbered.some((m) => onIt(m) && m.listOrder === w.listOrder! + 1) &&
+          !works.some((o) => o !== w && !copyBooks(o.b, w.b) && o.index === w.listOrder)
+        ) {
+          used.add(w.listOrder);
+          set(w, w.listOrder, SIDE_LIST_COUNTED, false, null);
+          continue;
+        }
+      }
+      let listedSure = false;
+      if (!before && w.listOrder !== null) {
         for (const m of numbered)
           if (
             m.listOrder !== null &&
@@ -1242,7 +1415,37 @@ export function orderSeries(books: SeriesBook[]): SeriesChoice[] {
             (!before || m.index! > before.index!)
           )
             before = m;
-        if (before) how = 'listed';
+        if (before) {
+          how = 'listed';
+          // Sure where the list holds every place between that volume and the side book in the
+          // library (none missing), and the dates agree: published after that volume and before
+          // the next main volume of the list.
+          const held = new Set(works.map((o) => o.listOrder).filter((p) => p !== null));
+          let whole = before.listOrder !== null;
+          for (let p = before.listOrder! + 1; whole && p < w.listOrder; p++) whole = held.has(p);
+          const next = numbered
+            .filter((m) => m.listOrder !== null && m.listOrder > w.listOrder!)
+            .sort((a, c) => a.listOrder! - c.listOrder!)[0];
+          // The volume it follows is the nearest in the list, and both neighbours keep the
+          // numbers they have (ウィザーズ・ブレイン アンコール followed a volume another choice
+          // moved to 23; シグマフォース's 外伝 between volumes renumbered only as best guesses).
+          const nearest = numbered
+            .filter((m) => m.listOrder !== null && m.listOrder < w.listOrder!)
+            .sort((a, c) => c.listOrder! - a.listOrder!)[0];
+          const kept = (m: Work) => !m.guess && m.index === m.b.index;
+          // (Below the next volume: 「安達としまむら99.9」 is a title, not volume 99.9.)
+          listedSure =
+            whole &&
+            nearest === before &&
+            kept(before) &&
+            (!next || kept(next)) &&
+            (!next || next.index! > Math.floor(before.index!) + 0.5) &&
+            w.b.date !== null &&
+            before.b.date !== null &&
+            before.b.date <= w.b.date &&
+            (!next || (next.b.date !== null && w.b.date <= next.b.date));
+          if (listedSure) how = SIDE_LISTED_SURE;
+        }
       }
       if (!before && w.b.date !== null) {
         for (const m of numbered)
@@ -1289,6 +1492,19 @@ export function orderSeries(books: SeriesBook[]): SeriesChoice[] {
         }
       }
       const known = !!before;
+      // Nothing places it (no list, no date): the number it has stays when no other book holds
+      // it (series measurement 2026-11-25: 「demi - another -」 3 and 「アルカリレットウセイ」 1, both
+      // right, were moved to 0.5; 冴えカノ FD 6.5 to 13.6). It is not a source of its own.
+      if (
+        !known &&
+        w.index !== null &&
+        !used.has(w.index) &&
+        !numbered.some((m) => m.index === w.index) &&
+        !works.some((o) => o !== w && !copyBooks(o.b, w.b) && o.index === w.index)
+      ) {
+        used.add(w.index);
+        continue;
+      }
       const base = before
         ? Math.floor(before.index!)
         : Math.max(0, ...numbered.map((m) => Math.floor(m.index!)));
@@ -1337,6 +1553,34 @@ export function orderSeries(books: SeriesBook[]): SeriesChoice[] {
     squash(plain(a.b.own[0] ?? a.b.title)) === squash(plain(c.b.own[0] ?? c.b.title)) ||
     (a.key === c.key && a.index === c.index && sameDigits(a.b, c.b)) ||
     copyBooks(a.b, c.b);
+  // A number the book itself backs: its own title prints it, its part mark is that place of one
+  // work in parts (上 1, 中 2, 下 2 or 3), or its own list place is that number. Such a book is
+  // not moved by date or by another list (series measurement 2026-11-25, held reviews: 罪と罰（上）
+  // 1 -> 4, 西遊記（上） 1 -> 0.6, 文学少女 (RanobeDB 2) 2 -> 10, キグナス⑤ 5 -> 0.5 beside another
+  // edition or copy on the same number). Two such books on one number go to review instead.
+  // A list place backs a number only where the list's places are the series' numbers: every
+  // other book it places with a sure number is on its own place (世界の危機はめくるめく！∞ is
+  // RanobeDB's 7th, volume 7 its 8th: the 7 is not ∞'s).
+  const placesAreNumbers = (at: (w: Work) => number | null) => {
+    const sure = works.filter(
+      (w) => isMain(w) && w.index !== null && (!w.ours || !w.guess) && at(w) !== null,
+    );
+    return sure.length >= 2 && sure.every((w) => at(w) === w.index);
+  };
+  const listIsNumbers = placesAreNumbers((w) => w.listOrder);
+  const rdbIsNumbers = placesAreNumbers((w) => w.rdbOrder);
+  const backed = (w: Work) => {
+    if (w.index === null) return false;
+    if (w.printed === w.index) return true;
+    if ((listIsNumbers && w.listOrder === w.index) || (rdbIsNumbers && w.rdbOrder === w.index))
+      return true;
+    const p = partOf(afterName(w.b.own[0] ?? w.b.title, name) ?? '');
+    return (
+      (p === 'first' && w.index === 1) ||
+      (p === 'middle' && w.index === 2) ||
+      (p === 'last' && (w.index === 2 || w.index === 3))
+    );
+  };
   const byIndex = new Map<number, Work[]>();
   for (const w of works)
     if (w.index !== null && (isMain(w) || w.side))
@@ -1396,7 +1640,7 @@ export function orderSeries(books: SeriesBook[]): SeriesChoice[] {
     for (const w of ws) if (!distinct.some((d) => sameWork(d, w))) distinct.push(w);
     if (distinct.length < 2) continue;
     // Keep the confirmed one(s); move the guesses. Two confirmed: a person decides.
-    const confirmed = ws.filter((w) => !w.ours || !w.guess);
+    const confirmed = ws.filter((w) => !w.ours || !w.guess || backed(w));
     const keep = confirmed.length
       ? confirmed
       : [
@@ -1405,9 +1649,18 @@ export function orderSeries(books: SeriesBook[]): SeriesChoice[] {
               (a.b.date ?? Infinity) - (c.b.date ?? Infinity) || a.b.calibreId - c.b.calibreId,
           )[0],
         ];
-    if (confirmed.filter((w, i) => !confirmed.slice(0, i).some((d) => sameWork(d, w))).length > 1)
-      for (const w of confirmed)
+    const distinctOf = (xs: Work[]) =>
+      xs.filter((w, i) => !xs.slice(0, i).some((d) => sameWork(d, w))).length;
+    const sure = ws.filter((w) => !w.ours || !w.guess);
+    if (distinctOf(sure) > 1)
+      for (const w of sure)
         if (w.ours) w.review = `Another book of the series also prints number ${fmt(w.index!)}`;
+    // A guess its own title or list backs, beside another book on that number: it stays and only
+    // it goes to review (the other book's number is not put in doubt by a guess).
+    if (distinctOf(confirmed) > 1)
+      for (const w of confirmed)
+        if (w.ours && w.guess && backed(w))
+          w.review = `Another book of the series also has number ${fmt(w.index!)}`;
     for (const w of ws)
       if (!keep.includes(w) && w.ours && !keep.some((k) => sameWork(k, w)) && !movers.includes(w))
         movers.push(w);
@@ -1434,6 +1687,7 @@ export function orderSeries(books: SeriesBook[]): SeriesChoice[] {
         w.index !== null &&
         w.listOrder !== null &&
         !movers.includes(w) &&
+        !backed(w) &&
         confirmedListed.some(
           (c) => c.listOrder !== w.listOrder && c.listOrder! < w.listOrder! !== c.index! < w.index!,
         ) &&

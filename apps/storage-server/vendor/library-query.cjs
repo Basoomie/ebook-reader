@@ -2,7 +2,7 @@
  * GENERATED FILE, DO NOT EDIT. The storage server library search parser, bundled from
  * the web app (apps/web/src/lib/library/query/server-entry.ts).
  * Rebuild with `pnpm build:server-query` in apps/web after changing that code.
- * build: fc219bd99a3060db
+ * build: bf897a1f9cde67c4
  */
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
@@ -46,6 +46,7 @@ var QUERY_LIMITS = {
   maxRegexLength: 200
 };
 var QUERY_STATUSES = ["unread", "reading", "completed", "dropped", "next"];
+var QUERY_BOOKMETER_LISTS = ["read", "reading", "stacked", "wish"];
 var QueryError = class extends Error {
   constructor(message, start, end) {
     super(message);
@@ -66,9 +67,10 @@ var FIELDS = [
   "myrating",
   "status",
   "favorite",
-  "on"
+  "on",
+  "bookmeter"
 ];
-var FIELD_RE = /^(author|illustrator|series|tag|chars|level|ratings|rating|readers|myrating|status|favorite|on)[:：]/i;
+var FIELD_RE = /^(author|illustrator|series|tag|chars|level|ratings|rating|readers|myrating|status|favorite|on|bookmeter)[:：]/i;
 var FIELD_LOOKAHEAD = Math.max(...FIELDS.map((f) => f.length)) + 1;
 function isSpace(ch) {
   return ch !== void 0 && /\s/.test(ch);
@@ -279,7 +281,7 @@ function parseWordList(raw) {
 }
 function parseField(s, field, negated, start) {
   const valueStart = s.pos;
-  if (field === "chars" || field === "level" || field === "rating" || field === "ratings" || field === "readers" || field === "myrating" || field === "status" || field === "favorite" || field === "on") {
+  if (field === "chars" || field === "level" || field === "rating" || field === "ratings" || field === "readers" || field === "myrating" || field === "status" || field === "favorite" || field === "on" || field === "bookmeter") {
     const raw = s.readBare(false);
     const end = s.pos;
     if (field === "chars")
@@ -303,6 +305,19 @@ function parseField(s, field, negated, start) {
         start,
         end
       );
+    }
+    if (field === "bookmeter") {
+      const lists = QUERY_BOOKMETER_LISTS.join(", ");
+      if (words.length === 0)
+        throw new QueryError(`bookmeter: needs a list: ${lists}.`, start, end);
+      const values = [];
+      for (const w of words) {
+        if (!QUERY_BOOKMETER_LISTS.includes(w)) {
+          throw new QueryError(`"${w}" isn't a 読書メーター list. Use ${lists}.`, start, end);
+        }
+        if (!values.includes(w)) values.push(w);
+      }
+      return { type: "bookmeter", negated, start, end, values };
     }
     if (field === "status") {
       if (words.length === 0) {

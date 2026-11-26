@@ -7,6 +7,7 @@
    */
   import { goto } from '$app/navigation';
   import { builtinCollection } from '$lib/collections/builtins';
+  import { listsOnlyCompleted, listsOnlyWish } from '$lib/library/query/chips';
   import type { Collection, CollectionItem } from '$lib/collections/collections';
   import AppBottomBar from '$lib/components/app-nav/app-bottom-bar.svelte';
   import AppHeader from '$lib/components/app-nav/app-header.svelte';
@@ -14,6 +15,7 @@
   import BookStateDialog from '$lib/components/library/book-state-dialog.svelte';
   import AddToCollectionDialog from '$lib/components/collections/add-to-collection-dialog.svelte';
   import CataloguePageHeader from '$lib/components/catalogue-page-header.svelte';
+  import BookmeterNotice from '$lib/components/bookmeter/bookmeter-notice.svelte';
   import {
     faArrowDown,
     faArrowUp,
@@ -378,7 +380,14 @@
     a: LibraryApi | OfflineCatalog
   ): Promise<{ books: CatalogBook[]; whole: boolean }> {
     const page = async (query: BookListQuery) => {
-      const p = await a.books({ ...query, limit: rowLength });
+      // A list of Completed books (the built-in or a saved search) is newest completed first.
+      // A list of the 読みたい本 books is in Bookmeter's own order, newest added first.
+      const sort = listsOnlyCompleted(query.scope)
+        ? { key: 'completed', dir: 'desc' as const }
+        : listsOnlyWish(query.scope)
+          ? { key: 'wish', dir: 'desc' as const }
+          : undefined;
+      const p = await a.books({ ...query, limit: rowLength, sort });
       return { books: p.books, whole: p.nextCursor === null };
     };
     const picked = async (ids: string[]) => ({
@@ -784,6 +793,8 @@
       This device isn't connected to the library server yet.
       <a class="c-link" href="{pagePath}/library">Connect on the Library page</a>.
     </p>
+  {:else}
+    <BookmeterNotice />
   {/if}
 
   {#if editing}

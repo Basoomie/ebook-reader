@@ -134,6 +134,18 @@ export function clearRecentlyViewedCopy(count: number): ConfirmCopy {
   };
 }
 
+/** Settings › Library › 読書メーター: remove an account (Bookmeter sync, 2026-11-25). */
+export function removeBookmeterAccountCopy(name: string): ConfirmCopy {
+  return {
+    title: `Stop syncing ${quoted(name)}?`,
+    message: [
+      'Its lists are no longer read, its 読みたい本 collection is removed on every device, and your Link and Not in my library choices for it are forgotten.',
+      'Statuses it already changed stay as they are. Nothing changes on 読書メーター.'
+    ],
+    confirmLabel: 'Stop syncing'
+  };
+}
+
 export function deleteThemeCopy(name: string): ConfirmCopy {
   return {
     title: `Delete the theme ${quoted(name)}?`,

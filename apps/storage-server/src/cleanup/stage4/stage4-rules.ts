@@ -54,8 +54,21 @@ import {
  * a best guess yields to a confirmed one (titles, authors and illustrators keep rules 7: their
  * confirmed values measured worse); after a write, the series step proposes again a book whose
  * review proposal disagrees with its choice, and no title only loses its volume number.
+ * 11 (2026-11-25, the held series reviews measured): 「Ep.N」/「level.N」 are volume numbers, 「N+」
+ * is no number and 「N+M」 an omnibus; a book whose own title, part mark or list place backs its
+ * number is not moved by date or by another list; a side book nothing places keeps its number.
+ * Also: RanobeDB's places beside two volumes on theirs, and side books after the count of the
+ * list's main volumes, are automatic; parts in another store list are another edition; deciding
+ * again deletes only stage 4's own open proposals.
+ * 12 (2026-11-25, 本好き's 第五部 II-XII proposed as 2-12): a volume of a later part (「第五部「女神
+ * の化身II」」) prints the part's own count, not the series'; its place in the series list is its
+ * number where two volumes of the list sit on theirs (automatic). A side book between two volumes
+ * on their list places is counted as a volume; one listed after the volume just before it, none
+ * missing between, its date agreeing and both neighbours on their numbers, is automatic.
+ * 13 (2026-11-25): a count of weeks (「2週間でわかる」) is no volume number; new arrivals propose the
+ * series changes of books already in Calibre under stage 4's own analysis (arrivals/stage4-ai.ts).
  */
-export const STAGE4_RULES_VERSION = 10;
+export const STAGE4_RULES_VERSION = 13;
 
 /** The gold labels' names for the kinds. */
 export type Kind = 'full' | 'sample' | 'bonus' | 'special edition' | 'omnibus';

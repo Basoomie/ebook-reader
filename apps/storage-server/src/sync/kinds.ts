@@ -1404,6 +1404,67 @@ const seriesNextHideKind: KindSpec = {
   },
 };
 
+// ---------------------------------------------------------------------------
+// Bookmeter sync (2026-11-25, docs/design/bookmeter-sync.md)
+// ---------------------------------------------------------------------------
+
+/**
+ * kind "bookmeter-entry": one entry of a 読書メーター list, id `<account id>:<listing id>`, lww,
+ * deletable (gone from Bookmeter). data { account, listing, list, date, title, authors, cover,
+ * rank, books, target, how, statuses, wish }: `books` the reader books it matched (every copy),
+ * `target` the copy a status goes on. Written only by the server's Bookmeter device
+ * (user_seeds "bookmeter-device"); devices read it to apply statuses and for bookmeter: searches.
+ */
+const bookmeterEntryKind: KindSpec = {
+  policy: () => 'lww',
+  deletable: true,
+  validate(id, data, deleted, ctx) {
+    if (!/^[0-9a-f-]{36}:\d{1,12}$/.test(id))
+      throw new RecordError('invalid_id', 'ids are <account>:<listing>');
+    const own = ctx.db
+      .prepare(
+        `SELECT 1 FROM user_seeds WHERE user_id = ? AND name = 'bookmeter-device' AND device_id = ?`,
+      )
+      .get(ctx.userId, ctx.deviceId);
+    if (!own) throw new RecordError('read_only', 'Bookmeter entries are written by the server');
+    if (deleted) return { bookId: null, data: {} };
+    return { bookId: null, data: requireObject(data) };
+  },
+};
+
+/** held: left unticked in Review: still waiting, never applied without asking. */
+const BOOKMETER_APPLIED_OUTCOMES = ['applied', 'skipped', 'held'] as const;
+
+/**
+ * kind "bookmeter-applied": a Bookmeter change a device applied to a book (or the user
+ * skipped), so it happens once on any device. id = the book id, lww. data { account, listing,
+ * list: read|reading, date (YYYY-MM-DD or null), outcome: applied|skipped|held, at }.
+ */
+const bookmeterAppliedKind: KindSpec = {
+  policy: () => 'lww',
+  deletable: false,
+  validate(id, data, _deleted, ctx) {
+    if (!UUID_RE.test(id)) throw new RecordError('invalid_id', 'ids are the book id');
+    const obj = requireObject(data);
+    const keys = new Set(['account', 'listing', 'list', 'date', 'outcome', 'at']);
+    if (Object.keys(obj).some((k) => !keys.has(k)))
+      throw new RecordError('invalid_data', 'only account, listing, list, date, outcome and at');
+    if (typeof obj.account !== 'string' || !UUID_RE.test(obj.account))
+      throw new RecordError('invalid_data', 'account must be an account id');
+    if (typeof obj.listing !== 'string' || !/^\d{1,12}$/.test(obj.listing))
+      throw new RecordError('invalid_data', 'listing must be a Bookmeter listing id');
+    const list = oneOf(obj.list, ['read', 'reading'] as const, 'list');
+    const date = dateOrNull(obj.date, 'date');
+    const outcome = oneOf(obj.outcome, BOOKMETER_APPLIED_OUTCOMES, 'outcome');
+    if (typeof obj.at !== 'number' || !Number.isFinite(obj.at) || obj.at < 0)
+      throw new RecordError('invalid_data', 'at must be a time');
+    return {
+      bookId: bookExists(ctx, id) ? id : null,
+      data: { account: obj.account, listing: obj.listing, list, date, outcome, at: obj.at },
+    };
+  },
+};
+
 export const DEVICE_BOOKS_KIND = 'device-books';
 
 /**
@@ -1474,4 +1535,6 @@ export const DEFAULT_KINDS: KindRegistry = {
   [SEARCH_HISTORY_KIND]: searchHistoryKind,
   [RECENTLY_VIEWED_KIND]: recentlyViewedKind,
   [SERIES_NEXT_HIDE_KIND]: seriesNextHideKind,
+  'bookmeter-entry': bookmeterEntryKind,
+  'bookmeter-applied': bookmeterAppliedKind,
 };

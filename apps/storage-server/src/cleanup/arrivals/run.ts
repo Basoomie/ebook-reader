@@ -745,6 +745,30 @@ export class BookArrivals {
 
   // ---------------------------------------------------------------- runs
 
+  /**
+   * The new arrivals are done with the books the reader's index first saw before this time
+   * (series-arrivals.md 3.2), across the cleanup's libraries (manga part B: the earliest of
+   * theirs, so a book is never taken as done while any library's run is open). Per library:
+   * Off: every book (Infinity); a run open: none (-Infinity); else that library's last run's
+   * end (the run that added a book, or the one that took in a book added by hand, ended after
+   * it was seen). Read only.
+   */
+  doneBefore(): number {
+    let out = Infinity;
+    for (const lib of this.libraries()) {
+      const s = this.db
+        .prepare('SELECT mode, current_run FROM calibre_arrivals_state WHERE library_id = ?')
+        .get(lib) as { mode: string; current_run: number | null } | undefined;
+      if (!s || s.mode === 'off') continue;
+      if (s.current_run !== null) return -Infinity;
+      const r = this.db
+        .prepare('SELECT MAX(finished_at) AS at FROM calibre_arrival_runs WHERE library_id = ?')
+        .get(lib) as { at: number | null };
+      out = Math.min(out, r.at ?? -Infinity);
+    }
+    return out;
+  }
+
   /** The run going on, of whichever library (one at a time). */
   currentRun(): (RunRow & { p: RunProgress }) | null {
     const s = this.db
@@ -3514,6 +3538,25 @@ export class BookArrivals {
       this.deps.log?.(
         `New arrivals: run ${run.id}: ${w.held} stage-${stage} changes held${heldWhy ? ` (${heldWhy})` : ''}`,
       );
+    // Books already in Calibre whose series choice this run changed: proposed under stage 4's own
+    // analysis once the run's own changes are written, so stage 4's own On writes the sure ones
+    // (they had waited for the next rules deploy; the user, 2026-11-25).
+    const so = stage === 4 ? p.ai?.series : null;
+    if (so?.existing?.length && (so.existingDone ?? 0) < so.existing.length) {
+      const lib4 = this.a4(libraryId)?.progress();
+      const ai4 = this.ai4Of(libraryId);
+      if (lib4 && ai4) {
+        const all = await ai4.proposeExisting(lib4, so, () => false);
+        this.save(run.id, p);
+        if (!all) {
+          p.waiting = `Proposing the series changes of books already in the library (${so.existingDone} of ${so.existing.length})`;
+          return 'more';
+        }
+        this.deps.log?.(
+          `New arrivals: run ${run.id}: ${so.existing.length} books already in the library proposed again for their series (stage 4's own On writes the sure ones)`,
+        );
+      }
+    }
     this.deps.wantIngest(libraryId);
     this.next(run.id, p, nextPhase);
     return 'more';
@@ -3697,11 +3740,6 @@ export class BookArrivals {
       this.next(run.id, p, 'report');
       return 'more';
     }
-    const wait = mv.writeWait(libraryId, target);
-    if (wait) {
-      p.waiting = wait;
-      return 'wait';
-    }
     const left = (
       this.db
         .prepare(
@@ -3713,7 +3751,14 @@ export class BookArrivals {
     ).n;
     const cm = this.count(p, 'move');
     cm.total = p.move.auto;
+    // Each moved book's proposal is applied as it moves (move-batches.ts), so this counts
+    // inside an open batch too; it runs before the wait on that batch so the bar moves.
     cm.done = Math.max(0, p.move.auto - left);
+    const wait = mv.writeWait(libraryId, target);
+    if (wait) {
+      p.waiting = wait;
+      return 'wait';
+    }
     if (left === 0) {
       p.move.moved = (
         this.db

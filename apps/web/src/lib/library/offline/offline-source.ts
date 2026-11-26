@@ -27,7 +27,8 @@ import {
   collectionsApi,
   getSyncEngine,
   libraryViewApi,
-  nextInSeriesApi
+  nextInSeriesApi,
+  bookmeterApi
 } from '$lib/sync/sync-service';
 import { copyFromDetail, refreshCopies, type RefreshResult } from './copies';
 import { updateChangedFiles, type FileUpdateDeps } from './file-updates';
@@ -38,6 +39,7 @@ import { OfflineCatalog, type OfflineData } from './offline-catalog';
 import { firstServerAnswer, serverReachability, type FirstAnswer } from './reachability';
 import { serverCheckSeconds } from '$lib/library/settings';
 import { nextInSeriesBonus$, nextInSeriesOn$ } from '$lib/library/next-in-series-settings';
+import { listsByBook, wishRankByBook } from '$lib/bookmeter/plan';
 
 /**
  * The offline Library in the browser: keeping the copies current (copies.ts) and the
@@ -346,8 +348,8 @@ export function bookFromLink(link: CalibreLink, thumbnail: string | null): Catal
 
 export async function loadOfflineData(): Promise<OfflineData> {
   const started = Date.now();
-  const [{ links, ids }, copies, saved, states, positions, view, audio, hidden] = await Promise.all(
-    [
+  const [{ links, ids }, copies, saved, states, positions, view, audio, hidden, bm] =
+    await Promise.all([
       deviceLinks(),
       getOfflineStore().getAll(),
       getOfflineStore().getLibraries(),
@@ -355,9 +357,9 @@ export async function loadOfflineData(): Promise<OfflineData> {
       libraryViewApi().positions(),
       collectionsApi().view(),
       audioBookIdsOnDevice().catch(() => [] as string[]),
-      nextInSeriesApi().loadHidden()
-    ]
-  );
+      nextInSeriesApi().loadHidden(),
+      bookmeterApi().reload()
+    ]);
   const byId = new Map(copies.map((c) => [c.bookId, c]));
   const linkById = new Map(links.map((l) => [l.bookId, l]));
   // Books without a copy yet: their EPUB covers are read together, not one after another.
@@ -384,7 +386,9 @@ export async function loadOfflineData(): Promise<OfflineData> {
     audioOnDevice: new Set(audio),
     nextHidden: new Set(hidden.map((h) => h.id)),
     nextOn: nextInSeriesOn$.getValue(),
-    nextBonus: nextInSeriesBonus$.getValue()
+    nextBonus: nextInSeriesBonus$.getValue(),
+    bookmeterLists: listsByBook(bm.entries),
+    bookmeterWishRank: wishRankByBook(bm.entries)
   };
 }
 
@@ -404,6 +408,8 @@ export function offlineCatalog(): OfflineCatalog {
     nextInSeriesApi().hidden.subscribe(invalidate);
     nextInSeriesOn$.subscribe(invalidate);
     nextInSeriesBonus$.subscribe(invalidate);
+    // Bookmeter sync: the lists changed (a pull, or a change applied here).
+    bookmeterApi().view.subscribe(invalidate);
   }
   return catalog;
 }

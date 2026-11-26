@@ -36,6 +36,8 @@ export interface MatchContext {
   audioOnDevice(bookId: string): boolean;
   /** status:next: the next volume of a series you are reading (next-in-series.ts). */
   isNext?(bookId: string): boolean;
+  /** bookmeter: the 読書メーター lists the book is on (Bookmeter sync's records). */
+  bookmeterLists?(bookId: string): ReadonlySet<string>;
 }
 
 const regexCache = new Map<string, RegExp>();
@@ -123,6 +125,10 @@ function termMatches(book: CatalogBook, term: QueryTerm, ctx: MatchContext): boo
       return ctx.onDevice(book.id);
     case 'deviceAudio':
       return ctx.audioOnDevice(book.id);
+    case 'bookmeter': {
+      const lists = ctx.bookmeterLists?.(book.id);
+      return !!lists && term.values.some((v) => lists.has(v));
+    }
   }
 }
 

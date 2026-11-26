@@ -53,15 +53,16 @@ export function createRatingsRouter(ratings: StoreRatings | null): Router {
         book.rating_x10 !== null && book.rating_count !== null
           ? { avg: book.rating_x10 / 10, count: book.rating_count }
           : null,
-      readers: service.settings().bookmeter ? book.readers : null,
+      readers: book.readers,
       sites,
       refreshing,
     });
   });
 
-  // What the pages show: 読書メーター's numbers only once its links are fixed (its setting).
+  // What the pages show. 読書メーター had its own switch until its link fix (2026-11-25); it is
+  // fetched with the other stores now, so its numbers are always shown when there are any.
   router.get('/ratings/features', (_req, res) => {
-    res.json({ bookmeter: ratings ? ratings.settings().bookmeter : false });
+    res.json({ bookmeter: ratings !== null });
   });
 
   router.get('/ratings/progress', (_req, res) => {

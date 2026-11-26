@@ -181,6 +181,56 @@ describe('next in your series: searches, order and records', () => {
     expect((res.body.ids as string[]).map((id) => names.get(id))).toEqual(['b2', 'a2']);
   });
 
+  it('orders by the finish day, not when the records were saved', async () => {
+    const { ids, names } = env.load(SERIES);
+    // A bulk import saves every completion now, b1's first: the save times say a1 was last.
+    const later = Date.now();
+    env.record('book-status', ids.get('b1')!, ids.get('b1')!, { status: 'completed' }, later);
+    env.record('book-status', ids.get('a1')!, ids.get('a1')!, { status: 'completed' }, later + 1);
+    expect(nextInSeriesIds(env.db, env.userId).map((id) => names.get(id))).toEqual(['b2', 'a2']);
+  });
+
+  it('sorts the search by Series last finished in the Home row order', async () => {
+    const { names } = env.load({
+      name: 'four series',
+      books: [
+        { id: 'a1', library: 'L', series: 'A', index: 1 },
+        { id: 'a2', library: 'L', series: 'A', index: 2 },
+        { id: 'b1', library: 'L', series: 'B', index: 1 },
+        { id: 'b2', library: 'L', series: 'B', index: 2 },
+        { id: 'b3', library: 'L', series: 'B', index: 3 },
+        { id: 'c1', library: 'L', series: 'C', index: 1 },
+        { id: 'c2', library: 'L', series: 'C', index: 2 },
+        { id: 'd1', library: 'L', series: 'D', index: 1 },
+        { id: 'd2', library: 'L', series: 'D', index: 2 },
+      ],
+      // B: its latest day is b1's (read out of order), C finished the same day as A.
+      finished: { a1: '2026-03-01', b1: '2026-05-01', b2: '2026-02-01', c1: '2026-03-01' },
+      status: { d1: 'completed' }, // no read-through: no day, last
+      next: [],
+    });
+    const home = nextInSeriesIds(env.db, env.userId).map((id) => names.get(id));
+    expect(home.slice(0, 1)).toEqual(['b3']);
+    expect([...home.slice(1, 3)].sort()).toEqual(['a2', 'c2']);
+    expect(home[3]).toBe('d2');
+    const page = async (dir: string) => {
+      const out: string[] = [];
+      let cursor: string | undefined;
+      do {
+        const res = await request(env.app)
+          .get('/api/v1/books')
+          .query({ q: 'status:next', sort: 'finished', dir, limit: 1, cursor })
+          .set(auth());
+        expect(res.status, JSON.stringify(res.body)).toBe(200);
+        out.push(...(res.body.books as { id: string }[]).map((b) => names.get(b.id) as string));
+        cursor = res.body.nextCursor ?? undefined;
+      } while (cursor);
+      return out;
+    };
+    expect(await page('desc')).toEqual(home);
+    expect((await page('asc')).slice(0, 3)).toEqual(home.slice(0, 3).reverse());
+  });
+
   it('combines with other statuses, other terms and negation', async () => {
     const { names } = env.load(SERIES);
     const named = (books: { id: string }[]) => books.map((b) => names.get(b.id)).sort();

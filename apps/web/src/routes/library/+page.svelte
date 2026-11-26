@@ -41,6 +41,7 @@
   import MessageDialog from '$lib/components/message-dialog.svelte';
   import { browser } from '$app/environment';
   import CataloguePageHeader from '$lib/components/catalogue-page-header.svelte';
+  import BookmeterWantedMissing from '$lib/components/bookmeter/bookmeter-wanted-missing.svelte';
   import { pxScreen } from '$lib/css-classes';
   import { dialogManager, type Dialog } from '$lib/data/dialog-manager';
   import { confirmDestructive } from '$lib/confirm/confirm';
@@ -115,6 +116,9 @@
   import {
     activeChips,
     chipOnlyQuery,
+    listsOnlyCompleted,
+    listsOnlyNext,
+    listsOnlyWish,
     CHIPS,
     toggleChip,
     type ChipId
@@ -1303,12 +1307,31 @@
     const by = TABS.find((t) => t.id === tab)?.by ?? null;
     if (by && group === null) return 'groups';
     if (group?.by === 'series' && group.name !== null) return 'series';
-    if (group) return 'books';
+    // Every list of Completed books (the collection, the chip, a typed search, a saved search)
+    // opens newest completed first; a series keeps its own order.
+    const completed = () =>
+      listsOnlyCompleted(appliedQuery) ||
+      (collectionId !== null &&
+        listsOnlyCompleted(builtinCollection(collectionId)?.query ?? smartQuery()));
+    // Every list of next volumes (Next in your series' See all, status:next with other terms, a
+    // saved search) opens in the Home row's order, Series last finished.
+    const next = () =>
+      listsOnlyNext(appliedQuery) ||
+      (collectionId !== null &&
+        listsOnlyNext(builtinCollection(collectionId)?.query ?? smartQuery()));
+    // The 読みたい本 collection (bookmeter:wish) opens in Bookmeter's own order.
+    const wish = () =>
+      listsOnlyWish(appliedQuery) ||
+      (collectionId !== null &&
+        listsOnlyWish(builtinCollection(collectionId)?.query ?? smartQuery()));
+    const listed = (): SortContext =>
+      completed() ? 'completed' : next() ? 'next' : wish() ? 'wish' : 'books';
+    if (group) return listed();
     if (collectionId !== null) {
       const c = collectionList.find((x) => x.id === collectionId);
-      return c?.type === 'manual' ? 'list' : 'books';
+      if (c?.type === 'manual') return 'list';
     }
-    return 'books';
+    return listed();
   }
 
   /** WP19a: a new sort from the Sort menu (remembered per device outside a series or list). */
@@ -1644,7 +1667,7 @@
         {
           q: appliedQuery || undefined,
           scope,
-          sort: serverSort(sortValue, 'books'),
+          sort: serverSort(sortValue, sortContext),
           cursor: reset ? undefined : (nextCursor ?? undefined)
         },
         { signal }
@@ -2295,6 +2318,10 @@
               </div>
             {/if}
           </div>
+          {#if userCollection?.type === 'smart' && /\bbookmeter[:：]\S*wish/i.test(userCollection.query ?? '')}
+            <!-- Bookmeter sync (2026-11-25): wanted books the library doesn't have. -->
+            <BookmeterWantedMissing />
+          {/if}
         {:else if group}
           <div class="flex flex-wrap items-center gap-x-4 gap-y-2 pt-1" data-testid="group-header">
             {#if groupInfo}
