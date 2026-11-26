@@ -116,7 +116,6 @@
   import BookEditForm from '$lib/components/calibre-edit/book-edit-form.svelte';
   import BookHistoryPanel from '$lib/components/calibre-edit/book-history-panel.svelte';
   import SeriesEdit from '$lib/components/calibre-edit/series-edit.svelte';
-  import RatingStars from '$lib/components/calibre-edit/rating-stars.svelte';
   import StoreRatingsLine from '$lib/components/library/store-ratings-line.svelte';
   import { CalibreEditApi } from '$lib/calibre-edit/api';
   import { bookEditAs$, bookRatingEmpty$, seriesEditAs$ } from '$lib/calibre-edit/settings';
@@ -772,17 +771,17 @@
                 >{i < illustrators.length - 1 ? ', ' : ''}{/each}{/if}
           </div>
         {/if}
-        {#if showRating && shown}
-          <!-- The rating, under the byline (design 2026-11-23); a book without one follows the
-               device's setting (hidden by default). -->
-          <div class="-mt-1 flex items-center gap-2" data-testid="details-rating">
-            <RatingStars rating={shown.rating ?? null} testid="details-rating-stars" />
-            {#if shown.rating}<span class="text-sm text-c-muted">Your rating</span>{/if}
-          </div>
-        {/if}
-        {#if shown && shown.source !== 'upload'}
-          <!-- Store ratings (2026-11-25): other readers' figures, never stars. -->
-          <StoreRatingsLine book={shown} api={api ?? null} {offline} />
+        {#if shown}
+          <!-- Ratings under the byline (redesign 2026-11-25): other readers' stars on one line
+               with your own rating beside it; a book without your rating follows the device's
+               setting (hidden by default). -->
+          <StoreRatingsLine
+            book={shown}
+            api={api ?? null}
+            {offline}
+            yourRating={shown.rating ?? null}
+            showYours={showRating}
+          />
         {/if}
         {#if waitingForLibrary}
           <p class="text-sm text-c-muted" role="status" data-testid="details-edit-waiting">
