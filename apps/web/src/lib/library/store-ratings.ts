@@ -73,7 +73,7 @@ export interface RatingPiece {
   part: RatingPart;
   /** The store's name ('' for the pooled figure). */
   label: string;
-  /** "4.3 · 201 ratings", "12,850 read it · 98 reviews". */
+  /** "4.3 · 201 ratings", "12,850 read it" (読書メーター's 感想 count is left to a later review showcase). */
   text: string;
   /** For the hover: "as of 25 Nov 2026". */
   checkedAt: number | null;
@@ -83,10 +83,7 @@ function siteText(part: RatingPart, f: RatingFigure): string | null {
   if (f.state === 'gone') return null;
   if (part === 'bookmeter') {
     if (f.count === null) return null;
-    const reviews = f.reviews
-      ? ` · ${formatCount(f.reviews)} ${f.reviews === 1 ? 'review' : 'reviews'}`
-      : '';
-    return `${formatCount(f.count)} read it${reviews}`;
+    return `${formatCount(f.count)} read it`;
   }
   if (f.avg === null || !f.count) return null;
   return `${formatStars(f.avg)} · ${formatCount(f.count)} ${f.count === 1 ? 'rating' : 'ratings'}`;
