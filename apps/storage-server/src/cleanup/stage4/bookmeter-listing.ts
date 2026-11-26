@@ -1016,11 +1016,14 @@ export class BookmeterListings {
    */
   dropRemoved(p: BlProgress, lib: string): number {
     const aid = listingAnalysisId(p.run);
+    // Run on every tick of the write step, also while a batch is applied: without stage = 4 it
+    // walked every change of the library (686,674 rows, 6.8 s, the server unreachable for an
+    // hour on 2026-11-26); the counts index reads only this run's open changes.
     const rows = this.db
       .prepare(
-        `SELECT calibre_uuid FROM proposed_changes
-         WHERE library_id = ? AND field = 'identifiers' AND analysis_id = ? AND state = 'proposed'
-           AND batch_id IS NULL`,
+        `SELECT calibre_uuid FROM proposed_changes INDEXED BY proposed_changes_counts
+         WHERE stage = 4 AND library_id = ? AND state = 'proposed' AND field = 'identifiers'
+           AND analysis_id = ? AND batch_id IS NULL`,
       )
       .all(lib, aid) as { calibre_uuid: string }[];
     if (!rows.length) return 0;
