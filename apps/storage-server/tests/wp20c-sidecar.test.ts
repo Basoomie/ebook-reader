@@ -237,7 +237,7 @@ describe('a stage-3 batch through the real sidecar', () => {
       .set(auth(user))
       .send({ mode: 'on' })
       .expect(200);
-    for (let i = 0; i < 400 && getStage(env.cleanupDb, 3).state !== 'ready'; i++) {
+    for (let i = 0; i < 400 && getStage(env.cleanupDb, env.libraryId(), 3).state !== 'ready'; i++) {
       await env.service.tick();
       await new Promise((r) => setTimeout(r, 20));
     }

@@ -597,6 +597,14 @@ export class MoveBatches {
         note.fields ? JSON.stringify(note.fields) : null,
         now,
       );
+    // Manga part B: the moved copy is known to the new arrivals of the library it moved to (its
+    // own baseline may come later): never taken for a book added there by hand.
+    this.db
+      .prepare(
+        `INSERT OR IGNORE INTO calibre_known_books (library_id, calibre_id, calibre_uuid, origin, added_at, settled_at)
+         VALUES (?, ?, ?, 'move', ?, ?)`,
+      )
+      .run(to.libraryId, to.calibreId, to.uuid, now, now);
     const rec = this.db
       .prepare('SELECT handoff_json FROM calibre_moves WHERE batch_id = ? AND change_id = ?')
       .get(batch.id, changeId) as { handoff_json: string };

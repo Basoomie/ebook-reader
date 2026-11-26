@@ -396,13 +396,14 @@ export class BatchService {
   }
 
   /** The stage's oldest finished batch the index hasn't taken in yet (stage 1 waits for it). */
-  awaitingIngest(stage: number): BatchRow | null {
+  awaitingIngest(stage: number, libraryId?: string): BatchRow | null {
+    // Manga part B: of one library when it is named, else of any.
     const r = this.db
       .prepare(
         `SELECT * FROM batches WHERE stage = ? AND state IN ('applied', 'partial', 'failed', 'undone')
-           AND ingested_at IS NULL ORDER BY created_at LIMIT 1`,
+           AND ingested_at IS NULL${libraryId ? ' AND library_id = ?' : ''} ORDER BY created_at LIMIT 1`,
       )
-      .get(stage) as RawBatch | undefined;
+      .get(stage, ...(libraryId ? [libraryId] : [])) as RawBatch | undefined;
     return r ? toBatch(r) : null;
   }
 
@@ -440,6 +441,7 @@ export class BatchService {
         ) {
           pauseStage(
             this.db,
+            batch.libraryId,
             2,
             'ingest_mismatch',
             "The reader's library index doesn't show the last batch's changes (a book may have been edited again in Calibre). Check the batch, then resume.",
@@ -485,6 +487,7 @@ export class BatchService {
         if (state.indexedAt !== null && state.indexedAt > finishedAt && state.status === 'idle') {
           pauseStage(
             this.db,
+            batch.libraryId,
             batch.stage,
             'ingest_mismatch',
             state.lastWarning
@@ -547,7 +550,7 @@ export class BatchService {
     shouldStop: () => boolean,
     analysisId?: string,
   ): Promise<{ batch: BatchRow | null; reason: string | null }> {
-    const analysis = analysisId ?? currentAnalysisId(this.db, stage);
+    const analysis = analysisId ?? currentAnalysisId(this.db, libraryId, stage);
     if (this.open()) return { batch: null, reason: 'A batch is being applied' };
     if (REMOVAL_STAGES.some((st) => this.awaitingIngest(st))) {
       return {
@@ -615,8 +618,11 @@ export class BatchService {
 
     const verdict = await this.verifyRemovals(stage, libraryId, candidates, shouldStop);
     if (verdict.stopped) return { batch: null, reason: null };
-    const progress = getStage(this.db, stage).precision as { checked?: number; identical?: number };
-    updateStage(this.db, stage, {
+    const progress = getStage(this.db, libraryId, stage).precision as {
+      checked?: number;
+      identical?: number;
+    };
+    updateStage(this.db, libraryId, stage, {
       precision: {
         checked: (progress.checked ?? 0) + verdict.checked,
         identical: (progress.identical ?? 0) + verdict.identical,
@@ -632,6 +638,7 @@ export class BatchService {
     if (verdict.libraryChanged > 0 && changedShare > settings.libraryChangedPausePercent) {
       pauseStage(
         this.db,
+        libraryId,
         stage,
         'library_changed',
         `${verdict.libraryChanged} of the next ${candidates.length} copies to remove changed in Calibre since the analysis (${summarizeReasons(verdict.skipped)}). ` +
@@ -650,6 +657,7 @@ export class BatchService {
       if (verdict.notIdentical > 0) {
         pauseStage(
           this.db,
+          libraryId,
           stage,
           'not_identical',
           stage === 1
@@ -1533,6 +1541,7 @@ export class BatchService {
     } else if (failed > 0 && batch.kind === 'apply') {
       pauseStage(
         this.db,
+        batch.libraryId,
         batch.stage,
         'batch_failed',
         `${failed} of ${states.length} items failed in the last batch${error ? `: ${error}` : ''}. ` +

@@ -71,7 +71,7 @@ describe('stage 3: resuming a failed analysis', () => {
   async function settle() {
     for (let i = 0; i < 1200; i++) {
       await env.service.tick();
-      const st = getStage(env.cleanupDb, 3).state;
+      const st = getStage(env.cleanupDb, env.libraryId(), 3).state;
       if (st === 'ready' || st === 'failed') return st;
       await new Promise((r) => setTimeout(r, 25));
     }
@@ -101,9 +101,9 @@ describe('stage 3: resuming a failed analysis', () => {
     expect(readsBefore).toBe(5);
 
     // Nothing to resume when it has not failed; then the resume itself.
-    const out = resumeFailedStage3(env.cleanupDb);
+    const out = resumeFailedStage3(env.cleanupDb, env.libraryId());
     expect(out).toMatchObject({ ok: true, phase: 'candidates' });
-    expect(resumeFailedStage3(env.cleanupDb).ok).toBe(false);
+    expect(resumeFailedStage3(env.cleanupDb, env.libraryId()).ok).toBe(false);
     expect(await settle()).toBe('ready');
     const resumed = env.service.analysis3!.progress()!;
     expect(resumed.error).toBeNull();
@@ -126,7 +126,7 @@ describe('stage 3: resuming a failed analysis', () => {
   });
 
   it('a failure recorded before the failed step was kept resumes at the first step not complete', () => {
-    const stage = getStage(env.cleanupDb, 3);
+    const stage = getStage(env.cleanupDb, env.libraryId(), 3);
     const p = { ...(stage.progress as Record<string, unknown>) };
     // As the NAS's analysis was saved: failed after the text, no index, no failedPhase.
     Object.assign(p, {
@@ -138,6 +138,9 @@ describe('stage 3: resuming a failed analysis', () => {
     env.cleanupDb
       .prepare("UPDATE stages SET state = 'failed', progress_json = ? WHERE stage = 3")
       .run(JSON.stringify(p));
-    expect(resumeFailedStage3(env.cleanupDb)).toMatchObject({ ok: true, phase: 'candidates' });
+    expect(resumeFailedStage3(env.cleanupDb, env.libraryId())).toMatchObject({
+      ok: true,
+      phase: 'candidates',
+    });
   });
 });

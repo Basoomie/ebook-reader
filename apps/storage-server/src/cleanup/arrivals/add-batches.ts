@@ -39,8 +39,16 @@ export interface ClaimedBatch {
   id: number;
   kind: 'add' | 'undo_add';
   leaseSeconds: number;
+  /**
+   * Manga part B: the content server's id of the library the batch adds to (or takes out of);
+   * the sidecar (1.7.0) works in it, an older one only in its own library.
+   */
+  calibreLibrary: string | null;
   items: ClaimedItem[];
 }
+
+/** The apply sidecar that adds into another library than its own (manga part B). */
+export const ARRIVALS_LIBRARY_SIDECAR = { major: 1, minor: 7 };
 
 /** Whether the apply sidecar last seen is at least major.minor (sidecar_status). */
 export function sidecarAtLeast(db: Database.Database, major: number, minor: number): boolean {
@@ -125,17 +133,36 @@ export class ArrivalBatches {
   }
 
   /** The next batch for the sidecar: the oldest planned one, or a claimed one whose lease ran out. */
-  claim(now = Date.now()): ClaimedBatch | null {
+  /**
+   * The next batch for the sidecar. calibreLibraryOf: the content server's id of a reader
+   * library; defaultLibrary: the sidecar's own (a batch of another library waits for 1.7.0).
+   */
+  claim(
+    now = Date.now(),
+    calibreLibraryOf: (readerLibraryId: string) => string | null = () => null,
+    defaultLibrary: string | null = null,
+  ): ClaimedBatch | null {
     const lease = getSettings(this.db).arrivals.addLeaseSeconds;
     if (this.open(now)) return null;
     const b = this.db
       .prepare(
-        `SELECT id, kind FROM calibre_arrival_batches
+        `SELECT id, kind, library_id FROM calibre_arrival_batches
          WHERE state = 'planned' OR (state = 'claimed' AND lease_expires_at <= ?)
          ORDER BY id LIMIT 1`,
       )
-      .get(now) as { id: number; kind: 'add' | 'undo_add' } | undefined;
+      .get(now) as { id: number; kind: 'add' | 'undo_add'; library_id: string } | undefined;
     if (!b) return null;
+    // Manga part B: the batch's own library on the content server; another than the sidecar's
+    // own only for a sidecar that adds there (an older one would add into its own library).
+    // Without either (a test, a sidecar not set up): the sidecar's own library, as before.
+    const calibreLibrary = calibreLibraryOf(b.library_id) ?? defaultLibrary;
+    if (
+      calibreLibrary !== null &&
+      defaultLibrary !== null &&
+      calibreLibrary !== defaultLibrary &&
+      !sidecarAtLeast(this.db, ARRIVALS_LIBRARY_SIDECAR.major, ARRIVALS_LIBRARY_SIDECAR.minor)
+    )
+      return null;
     // A sidecar before 1.4.0 can't give the add a title (a fitted one for a name too long):
     // such a batch waits for the rebuilt sidecar (a plain add would leave a record without a file).
     if (b.kind === 'add' && !sidecarAtLeast(this.db, 1, 4)) {
@@ -175,6 +202,7 @@ export class ArrivalBatches {
       id: b.id,
       kind: b.kind,
       leaseSeconds: lease,
+      calibreLibrary,
       items: items.map((i) => {
         const facts = i.facts_json
           ? (JSON.parse(i.facts_json) as { title?: string | null; addTitle?: string | null })

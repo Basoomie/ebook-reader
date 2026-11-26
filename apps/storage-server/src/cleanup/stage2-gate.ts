@@ -18,6 +18,7 @@ import fs from 'fs';
 import path from 'path';
 import { gateBar, type CleanupSettings } from './settings';
 import type { ApplyGroup, FieldProposal } from './stage2-rules';
+import { stageLibraries } from './stages';
 import {
   type GoldLabel,
   type GroupScore,
@@ -70,11 +71,33 @@ export function mapLabeledIds(
     .all(libraryId) as { removed_calibre_id: number; kept_calibre_id: number }[]) {
     removed.set(r.removed_calibre_id, r.kept_calibre_id);
   }
+  // Manga part B (answer 2 at stop 0: one gate across both libraries): a labeled book follows
+  // its move. The labels name the primary library's books (the oldest stage rows); a book moved
+  // out of it counts in the library it moved to, never in both.
+  const primary = stageLibraries(cleanup)[0] ?? libraryId;
+  const movedOut = new Set<number>();
+  const movedIn = new Map<number, number>();
+  for (const r of cleanup
+    .prepare(
+      `SELECT from_library_id, from_calibre_id, to_library_id, to_calibre_id FROM calibre_moves
+       WHERE state = 'moved' AND from_library_id = ?`,
+    )
+    .all(primary) as {
+    from_library_id: string;
+    from_calibre_id: number;
+    to_library_id: string;
+    to_calibre_id: number;
+  }[]) {
+    movedOut.add(r.from_calibre_id);
+    if (r.to_library_id === libraryId) movedIn.set(r.from_calibre_id, r.to_calibre_id);
+  }
   const out = new Map<string, number>();
   for (const id of goldIds) {
     const n = Number(id);
     if (!Number.isInteger(n)) continue;
-    out.set(id, removed.get(n) ?? n);
+    const m = libraryId === primary ? (removed.get(n) ?? n) : n;
+    if (movedIn.has(m)) out.set(id, movedIn.get(m)!);
+    else if (libraryId === primary && !movedOut.has(m)) out.set(id, m);
   }
   return out;
 }
@@ -189,63 +212,113 @@ export interface FieldPause {
   pausedAt: number;
 }
 
-export function listFieldPauses(db: Database.Database, stage: number): FieldPause[] {
-  return (
-    db
-      .prepare(
-        'SELECT field, reason, detail, paused_at FROM stage_field_pauses WHERE stage = ? ORDER BY field',
-      )
-      .all(stage) as {
-      field: string;
-      reason: FieldPause['reason'];
-      detail: string | null;
-      paused_at: number;
-    }[]
-  ).map((r) => ({ field: r.field, reason: r.reason, detail: r.detail, pausedAt: r.paused_at }));
+/**
+ * Manga part B: a pause belongs to one library, or to every library (library_id '' : a gate's
+ * verdict, answer 2 at stop 0: one gate per stage across both libraries). A library's pauses are
+ * its own and the shared ones; a field paused both ways is listed once (its own pause).
+ */
+export const ALL_LIBRARIES = '';
+
+/** The reasons that come from a gate and so pause the field in every library. */
+export const SHARED_PAUSE_REASONS: readonly FieldPause['reason'][] = ['gate', 'no_labels'];
+
+export function listFieldPauses(
+  db: Database.Database,
+  libraryId: string,
+  stage: number,
+): FieldPause[] {
+  const rows = db
+    .prepare(
+      `SELECT field, reason, detail, paused_at FROM stage_field_pauses
+       WHERE stage = ? AND library_id IN (?, '')
+       ORDER BY field, library_id = '' -- the library's own pause first`,
+    )
+    .all(stage, libraryId) as {
+    field: string;
+    reason: FieldPause['reason'];
+    detail: string | null;
+    paused_at: number;
+  }[];
+  const out: FieldPause[] = [];
+  for (const r of rows) {
+    if (out.length > 0 && out[out.length - 1].field === r.field) continue;
+    out.push({ field: r.field, reason: r.reason, detail: r.detail, pausedAt: r.paused_at });
+  }
+  return out;
 }
 
+/**
+ * Pauses a field. A gate's reason (SHARED_PAUSE_REASONS) pauses it in every library, whatever
+ * library is given; any other reason only in that library.
+ */
 export function pauseField(
   db: Database.Database,
+  libraryId: string,
   stage: number,
   field: string,
   reason: FieldPause['reason'],
   detail: string | null,
   now = Date.now(),
 ): void {
+  const lib = SHARED_PAUSE_REASONS.includes(reason) ? ALL_LIBRARIES : libraryId;
   db.prepare(
-    `INSERT INTO stage_field_pauses (stage, field, reason, detail, paused_at) VALUES (?, ?, ?, ?, ?)
-     ON CONFLICT(stage, field) DO UPDATE SET reason = excluded.reason, detail = excluded.detail,
+    `INSERT INTO stage_field_pauses (stage, library_id, field, reason, detail, paused_at)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(stage, library_id, field) DO UPDATE SET reason = excluded.reason,
+       detail = excluded.detail,
        paused_at = CASE WHEN stage_field_pauses.reason = excluded.reason THEN stage_field_pauses.paused_at
                         ELSE excluded.paused_at END`,
-  ).run(stage, field, reason, detail, now);
+  ).run(stage, lib, field, reason, detail, now);
 }
 
-export function resumeField(db: Database.Database, stage: number, field?: string): void {
+/**
+ * Lifts a field's pause in this library and its shared (gate) pause; without a field, every
+ * pause of the stage there. A gate that passes again lifts its pause in every library.
+ */
+export function resumeField(
+  db: Database.Database,
+  libraryId: string,
+  stage: number,
+  field?: string,
+): void {
   if (field)
-    db.prepare('DELETE FROM stage_field_pauses WHERE stage = ? AND field = ?').run(stage, field);
-  else db.prepare('DELETE FROM stage_field_pauses WHERE stage = ?').run(stage);
+    db.prepare(
+      `DELETE FROM stage_field_pauses WHERE stage = ? AND library_id IN (?, '') AND field = ?`,
+    ).run(stage, libraryId, field);
+  else
+    db.prepare(`DELETE FROM stage_field_pauses WHERE stage = ? AND library_id IN (?, '')`).run(
+      stage,
+      libraryId,
+    );
 }
 
 /** Applies the gate's verdicts: pauses a failing field, lifts an earlier gate pause that now passes. */
-export function applyGate(db: Database.Database, gate: GateResult, now = Date.now()): void {
+export function applyGate(
+  db: Database.Database,
+  libraryId: string,
+  gate: GateResult,
+  now = Date.now(),
+): void {
   for (const field of ['title', 'authors'] as const) {
     const v = gate.fields[field];
-    const current = listFieldPauses(db, 2).find((p) => p.field === field);
-    if (!v.ok) pauseField(db, 2, field, 'gate', v.reason, now);
+    const current = listFieldPauses(db, libraryId, 2).find((p) => p.field === field);
+    if (!v.ok) pauseField(db, libraryId, 2, field, 'gate', v.reason, now);
     else if (current && (current.reason === 'gate' || current.reason === 'no_labels'))
-      resumeField(db, 2, field);
+      resumeField(db, libraryId, 2, field);
   }
 }
 
 /** Without labels the gate can't run: titles and authors stay paused, with the reason. */
 export function pauseForMissingLabels(
   db: Database.Database,
+  libraryId: string,
   error: string,
   now = Date.now(),
 ): void {
   for (const field of ['title', 'authors']) {
     pauseField(
       db,
+      libraryId,
       2,
       field,
       'no_labels',

@@ -23,6 +23,11 @@ export interface HeartbeatAnswer {
   pollSeconds: number;
   /** 1.6.0: the library the move puts books in (its columns are checked), or null. */
   moveTarget?: string | null;
+  /**
+   * 1.7.0 (manga part B): every library the cleanup works on (content-server ids); each one's
+   * #illustrator is checked and reported with its library.
+   */
+  cleanupLibraries?: string[];
 }
 
 export type ItemState =
@@ -118,6 +123,8 @@ export interface CheckResult {
   name: string;
   ok: boolean;
   detail?: string | null;
+  /** 1.7.0: the library a per-library check is about (absent: the sidecar's own). */
+  library?: string;
 }
 
 export interface Heartbeat {

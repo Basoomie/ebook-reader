@@ -164,6 +164,7 @@ export const SETTINGS_REGISTRY: Record<string, SettingSpec> = {
   libraryGroupSort: d('String'),
   collectionGroupsAs: d('String'),
   collectionSectionsBy: d('String'),
+  cleanupLibrariesAs: d('String'),
   notesBookSort: d('String'),
   notesHighlightSort: d('String'),
   libraryCoverSize: d('Number'),

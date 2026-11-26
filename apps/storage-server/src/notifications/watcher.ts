@@ -412,20 +412,50 @@ export class NotificationWatcher {
 
   // ---- the cleanup ----
 
+  /**
+   * Manga part B: the primary library (its stage rows came first: migration v38 gave it the
+   * cleanup's rows), whose alerts keep their keys; null before any stage row exists.
+   */
+  private primaryLibrary(db: Database.Database): string | null {
+    const r = db
+      .prepare('SELECT library_id FROM stages GROUP BY library_id ORDER BY MIN(rowid) LIMIT 1')
+      .get() as { library_id: string } | undefined;
+    return r?.library_id ?? null;
+  }
+
+  /** " (manga-library)" for another library than the primary one, else "". */
+  private libraryLabel(db: Database.Database, libraryId: string): string {
+    if (!libraryId || libraryId === this.primaryLibrary(db)) return '';
+    const lib = this.s.db
+      .prepare('SELECT name, folder FROM libraries WHERE id = ?')
+      .get(libraryId) as { name: string | null; folder: string } | undefined;
+    return ` (${lib?.name || lib?.folder || libraryId})`;
+  }
+
+  /** An alert's key: the primary library's as before, another library's with its id. */
+  private libKey(db: Database.Database, key: string, libraryId: string): string {
+    return !libraryId || libraryId === this.primaryLibrary(db) ? key : `${key}:${libraryId}`;
+  }
+
   private stages(indexAlert: Message | null): void {
     const db = this.s.cleanupDb;
     if (!db) return;
     const rows = db
       .prepare(
-        'SELECT stage, pause_reason, pause_detail FROM stages WHERE pause_reason IS NOT NULL',
+        'SELECT stage, library_id, pause_reason, pause_detail FROM stages WHERE pause_reason IS NOT NULL',
       )
-      .all() as { stage: number; pause_reason: string; pause_detail: string | null }[];
+      .all() as {
+      stage: number;
+      library_id: string;
+      pause_reason: string;
+      pause_detail: string | null;
+    }[];
     const active = new Set<string>();
     const alerts: typeof rows = [];
     for (const r of rows) {
-      const key = `stage_paused:${r.stage}`;
+      const key = this.libKey(db, `stage_paused:${r.stage}`, r.library_id);
       active.add(key);
-      const summary = `Calibre cleanup stage ${r.stage} (${STAGE_NAMES[r.stage] ?? 'stage'}) paused: ${stagePauseText(r.pause_reason)}`;
+      const summary = `Calibre cleanup${this.libraryLabel(db, r.library_id)} stage ${r.stage} (${STAGE_NAMES[r.stage] ?? 'stage'}) paused: ${stagePauseText(r.pause_reason)}`;
       if (
         this.service.observe(key, 'stage_paused', { waitMs: 0, summary, detail: r.pause_detail })
       ) {
@@ -434,13 +464,14 @@ export class NotificationWatcher {
     }
     // WP20g: the Calibre new arrivals' pause (its own row), one alert per pause.
     try {
-      const a = db
-        .prepare('SELECT pause_reason, pause_detail FROM calibre_arrivals_state WHERE id = 1')
-        .get() as { pause_reason: string | null; pause_detail: string | null } | undefined;
-      if (a?.pause_reason) {
-        const key = 'stage_paused:arrivals';
+      for (const a of db
+        .prepare(
+          'SELECT library_id, pause_reason, pause_detail FROM calibre_arrivals_state WHERE pause_reason IS NOT NULL',
+        )
+        .all() as { library_id: string; pause_reason: string; pause_detail: string | null }[]) {
+        const key = this.libKey(db, 'stage_paused:arrivals', a.library_id);
         active.add(key);
-        const summary = `Calibre new arrivals paused: ${stagePauseText(a.pause_reason)}`;
+        const summary = `Calibre new arrivals${this.libraryLabel(db, a.library_id)} paused: ${stagePauseText(a.pause_reason)}`;
         if (
           this.service.observe(key, 'stage_paused', { waitMs: 0, summary, detail: a.pause_detail })
         )
@@ -455,13 +486,14 @@ export class NotificationWatcher {
     }
     // More Bookmeter coverage's pass (its own row), one alert per pause.
     try {
-      const b = db
-        .prepare('SELECT paused_reason, paused_detail FROM bookmeter_more_state WHERE id = 1')
-        .get() as { paused_reason: string | null; paused_detail: string | null } | undefined;
-      if (b?.paused_reason) {
-        const key = 'stage_paused:bookmeter';
+      for (const b of db
+        .prepare(
+          'SELECT library_id, paused_reason, paused_detail FROM bookmeter_more_state WHERE paused_reason IS NOT NULL',
+        )
+        .all() as { library_id: string; paused_reason: string; paused_detail: string | null }[]) {
+        const key = this.libKey(db, 'stage_paused:bookmeter', b.library_id);
         active.add(key);
-        const summary = `More Bookmeter matches paused: ${b.paused_detail ?? stagePauseText(b.paused_reason)}`;
+        const summary = `More Bookmeter matches${this.libraryLabel(db, b.library_id)} paused: ${b.paused_detail ?? stagePauseText(b.paused_reason)}`;
         if (
           this.service.observe(key, 'stage_paused', { waitMs: 0, summary, detail: b.paused_detail })
         )
@@ -607,9 +639,10 @@ export class NotificationWatcher {
   private stage4HasWork(): boolean {
     const db = this.s.cleanupDb;
     if (!db) return false;
-    const st = db.prepare('SELECT mode FROM stages WHERE stage = 4').get() as
-      | { mode: string }
-      | undefined;
+    // Manga part B: any library's stage 4 that is not Off.
+    const st = db
+      .prepare("SELECT mode FROM stages WHERE stage = 4 AND mode <> 'off' LIMIT 1")
+      .get() as { mode: string } | undefined;
     let audio: { mode: string } | undefined;
     try {
       audio = db.prepare('SELECT mode FROM audio_stages WHERE stage = 4').get() as
@@ -620,7 +653,7 @@ export class NotificationWatcher {
     }
     let bm: { mode: string } | undefined;
     try {
-      bm = db.prepare('SELECT mode FROM bookmeter_more_state WHERE id = 1').get() as
+      bm = db.prepare("SELECT mode FROM bookmeter_more_state WHERE mode <> 'off' LIMIT 1").get() as
         | { mode: string }
         | undefined;
     } catch {
@@ -672,8 +705,8 @@ export class NotificationWatcher {
     let row: { mode: string; progress_json: string } | undefined;
     try {
       row = db
-        .prepare('SELECT mode, progress_json FROM bookmeter_more_state WHERE id = 1')
-        .get() as { mode: string; progress_json: string } | undefined;
+        .prepare('SELECT mode, progress_json FROM bookmeter_more_state WHERE library_id = ?')
+        .get(this.primaryLibrary(db) ?? '') as { mode: string; progress_json: string } | undefined;
     } catch {
       return; // cleanup.db before More Bookmeter coverage
     }
@@ -730,8 +763,8 @@ export class NotificationWatcher {
     let row: { mode: string; progress_json: string } | undefined;
     try {
       row = db
-        .prepare('SELECT mode, progress_json FROM link_discovery_state WHERE id = 1')
-        .get() as { mode: string; progress_json: string } | undefined;
+        .prepare('SELECT mode, progress_json FROM link_discovery_state WHERE library_id = ?')
+        .get(this.primaryLibrary(db) ?? '') as { mode: string; progress_json: string } | undefined;
     } catch {
       return; // cleanup.db before More direct links
     }
@@ -785,8 +818,8 @@ export class NotificationWatcher {
     let row: { mode: string; progress_json: string } | undefined;
     try {
       row = db
-        .prepare('SELECT mode, progress_json FROM bookmeter_listing_state WHERE id = 1')
-        .get() as { mode: string; progress_json: string } | undefined;
+        .prepare('SELECT mode, progress_json FROM bookmeter_listing_state WHERE library_id = ?')
+        .get(this.primaryLibrary(db) ?? '') as { mode: string; progress_json: string } | undefined;
     } catch {
       return; // cleanup.db before Bookmeter links
     }
@@ -841,14 +874,22 @@ export class NotificationWatcher {
     if (!db) return;
     const rows = db
       .prepare(
-        'SELECT stage, field, reason, paused_at FROM stage_field_pauses WHERE stage IN (2, 4)',
+        'SELECT stage, library_id, field, reason, paused_at FROM stage_field_pauses WHERE stage IN (2, 4)',
       )
-      .all() as { stage: number; field: string; reason: string; paused_at: number }[];
+      .all() as {
+      stage: number;
+      library_id: string;
+      field: string;
+      reason: string;
+      paused_at: number;
+    }[];
     type Seen = { key: string; stage: number; field: string; reason: string };
+    // Manga part B: a pause of another library than the primary one names it (a gate's pause,
+    // library '', is every library's).
     const current: Seen[] = rows.map((r) => ({
-      key: `${r.stage}|${r.field}|${r.reason}|${r.paused_at}`,
+      key: `${r.stage}|${r.field}|${r.reason}|${r.paused_at}${r.library_id && r.library_id !== this.primaryLibrary(db) ? `|${r.library_id}` : ''}`,
       stage: r.stage,
-      field: r.field,
+      field: r.field + this.libraryLabel(db, r.library_id),
       reason: r.reason,
     }));
     const before = this.service.store.getState<Seen[]>('field_pauses');

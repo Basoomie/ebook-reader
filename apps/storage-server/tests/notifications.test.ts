@@ -488,8 +488,8 @@ describe('the cleanup', () => {
         '3700 of 65000 books (5.7%) are no longer in metadata.db, more than CALIBRE_MAX_MISSING_PERCENT=5. They were NOT flagged missing.',
         e.clock.t,
       );
-    pauseStage(e.cdb, 1, 'mass_missing', 'The reader index reported: …');
-    pauseStage(e.cdb, 3, 'mass_missing', 'The reader index reported: …');
+    pauseStage(e.cdb, 'lib1', 1, 'mass_missing', 'The reader index reported: …');
+    pauseStage(e.cdb, 'lib1', 3, 'mass_missing', 'The reader index reported: …');
     await new Promise((r) => setTimeout(r, 800));
     await e.svc.sendDue();
     expect(e.discord.messages).toEqual([
@@ -504,13 +504,13 @@ describe('the cleanup', () => {
     expect(open).toEqual(['index_refused', 'stage_paused', 'stage_paused']);
 
     // A pause repeated with the same reason: nothing new.
-    pauseStage(e.cdb, 1, 'mass_missing', 'The reader index reported: …');
+    pauseStage(e.cdb, 'lib1', 1, 'mass_missing', 'The reader index reported: …');
     await new Promise((r) => setTimeout(r, 800));
     await e.svc.sendDue();
     expect(e.discord.messages).toHaveLength(1);
 
     // Another reason later: its own message.
-    pauseStage(e.cdb, 2, 'library_changed', '3 of the next 40 books changed in Calibre.');
+    pauseStage(e.cdb, 'lib1', 2, 'library_changed', '3 of the next 40 books changed in Calibre.');
     await new Promise((r) => setTimeout(r, 800));
     await e.svc.sendDue();
     expect(e.discord.messages[1]).toBe(
@@ -519,7 +519,7 @@ describe('the cleanup', () => {
     );
 
     // Resumed by the user: one "Resolved" line in the next digest.
-    resumeStage(e.cdb, 2);
+    resumeStage(e.cdb, 'lib1', 2);
     await e.round();
     e.svc.sendDigest();
     await e.svc.sendDue();
@@ -592,7 +592,7 @@ describe('the cleanup', () => {
     await withDiscord(e);
     e.cdb
       .prepare(
-        "INSERT INTO stage_field_pauses (stage, field, reason, detail, paused_at) VALUES (2, 'title', 'gate', 'x', ?)",
+        "INSERT INTO stage_field_pauses (stage, library_id, field, reason, detail, paused_at) VALUES (2, '', 'title', 'gate', 'x', ?)",
       )
       .run(e.clock.t);
     await e.round();
@@ -806,7 +806,7 @@ describe('switches, digest time, restarts', () => {
   it('a restart repeats no alert (problems are kept in ttsu.db)', async () => {
     const e = await makeEnv();
     await withDiscord(e);
-    pauseStage(e.cdb, 1, 'batch_failed', '2 of 40 items failed.');
+    pauseStage(e.cdb, 'lib1', 1, 'batch_failed', '2 of 40 items failed.');
     await e.round();
     expect(e.discord.messages).toHaveLength(1);
     const again = new NotificationService({

@@ -115,8 +115,8 @@ describe('cleanup.db migration 8', () => {
     // Later migrations (WP20d's 9) run on top; the audiobook tables come with 8.
     expect(db.pragma('user_version', { simple: true })).toBe(CLEANUP_SCHEMA_VERSION);
     expect(CLEANUP_SCHEMA_VERSION).toBeGreaterThanOrEqual(8);
-    expect(getStage(db, 3).mode).toBe('analyse');
-    expect(getStage(db, 3).state).toBe('ready');
+    expect(getStage(db, 'lib', 3).mode).toBe('analyse');
+    expect(getStage(db, 'lib', 3).state).toBe('ready');
     expect(
       (
         db.prepare('SELECT stage, mode FROM audio_stages ORDER BY stage').all() as {
@@ -275,20 +275,24 @@ describe('the shared disk lock', () => {
     try {
       await setup();
       lock.tryAcquire(DISK_OWNERS.audio1, 'audio');
-      env.service.setMode(1, 'analyse');
+      env.service.setMode(null, 1, 'analyse');
       for (let i = 0; i < 20; i++) {
         await env.service.tick();
         await new Promise((r) => setTimeout(r, 10));
       }
-      expect(getStage(env.cleanupDb, 1).state).not.toBe('ready');
+      expect(getStage(env.cleanupDb, env.libraryId(), 1).state).not.toBe('ready');
       expect(lock.shouldYield(DISK_OWNERS.audio1)).toBe(true);
       expect(lock.state().waiting[0].owner).toBe(DISK_OWNERS.calibre1);
       lock.release(DISK_OWNERS.audio1);
-      for (let i = 0; i < 100 && getStage(env.cleanupDb, 1).state !== 'ready'; i++) {
+      for (
+        let i = 0;
+        i < 100 && getStage(env.cleanupDb, env.libraryId(), 1).state !== 'ready';
+        i++
+      ) {
         await env.service.tick();
         await new Promise((r) => setTimeout(r, 20));
       }
-      expect(getStage(env.cleanupDb, 1).state).toBe('ready');
+      expect(getStage(env.cleanupDb, env.libraryId(), 1).state).toBe('ready');
       expect(lock.state().holder).toBeNull();
       expect(env.service.status().disk).toEqual({
         holder: null,

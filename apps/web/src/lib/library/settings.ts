@@ -65,6 +65,16 @@ export const collectionGroupsAs$ = writableStringLocalStorageSubject<'tabs' | 's
   'tabs'
 );
 
+/**
+ * Manga part B (the user at stop 0b, 2026-11-25: "make it a configurable per device setting"):
+ * how /cleanup shows the Calibre libraries it works on: 'picker' (a row of library buttons, the
+ * cards of the one picked) or 'columns' (side by side; one column after the other on phones).
+ */
+export const cleanupLibrariesAs$ = writableStringLocalStorageSubject<'picker' | 'columns'>()(
+  'cleanupLibrariesAs',
+  'picker'
+);
+
 /** Sections mode: the last Group by picked in a collection ('' = none). Per device. */
 export const collectionSectionsBy$ = writableStringLocalStorageSubject<
   '' | 'series' | 'author' | 'tag'

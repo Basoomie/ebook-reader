@@ -300,6 +300,7 @@ describe("the AI step's spelling phase", () => {
     };
     const step = new Stage4Ai({
       db,
+      libraryId: 'lib',
       runner: cleanupRunner(db, makeAiCore().core),
       analysis: analysis as never,
     });
@@ -345,6 +346,7 @@ describe('the evidence built again (series-order follow-up, stop 2)', () => {
     };
     const step = new Stage4Ai({
       db: s.db,
+      libraryId: 'lib',
       runner: cleanupRunner(s.db, makeAiCore().core),
       analysis: { progress: () => progress } as never,
     });

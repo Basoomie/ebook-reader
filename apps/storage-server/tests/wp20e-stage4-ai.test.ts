@@ -549,6 +549,7 @@ describe("the AI check's progress bar (WP20e follow-up)", () => {
     const progress = { analysisId: 'run1', phase: 'done', finishedAt: 5, ai };
     const step = new Stage4Ai({
       db,
+      libraryId: 'lib',
       runner: {} as never,
       analysis: { progress: () => progress } as never,
     });
@@ -607,6 +608,7 @@ describe('asking the given-up questions again (WP20e stop 2)', () => {
     const runner = cleanupRunner(db, makeAiCore().core);
     const step = new Stage4Ai({
       db,
+      libraryId: 'lib',
       runner,
       analysis: { progress: () => progress } as never,
     });
@@ -656,6 +658,7 @@ describe("the test batches' undone books (series-order stop 3)", () => {
     const progress = { libraryId: 'lib', analysisId: 'run1', phase: 'done' };
     const step = new Stage4Ai({
       db,
+      libraryId: 'lib',
       runner: cleanupRunner(db, makeAiCore().core),
       analysis: { progress: () => progress } as never,
     });
@@ -701,6 +704,7 @@ describe("the AI check's gate in steps (its progress bar)", () => {
     let reads = 0;
     const step = new Stage4Ai({
       db,
+      libraryId: 'lib',
       runner: cleanupRunner(db, makeAiCore().core),
       analysis: {
         progress: () => progress,

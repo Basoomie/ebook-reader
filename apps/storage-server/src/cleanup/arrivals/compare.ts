@@ -244,6 +244,51 @@ export function dropNewSketches(deps: CompareDeps, keys: number[]): void {
   })();
 }
 
+/**
+ * Manga part B: the source files' sketches (negative keys) put under another library too, so
+ * that library's candidate index compares them with its books (a check across the libraries).
+ */
+export function copyNewSketches(deps: CompareDeps, fromLibraryId: string, keys: number[]): void {
+  const cache = openCache(deps);
+  const copy = cache.prepare(
+    `INSERT INTO sketches (library_id, calibre_id, size, mtime_ms, build, samples)
+     SELECT ?, calibre_id, size, mtime_ms, 'arrivals-cross', samples FROM sketches
+     WHERE library_id = ? AND calibre_id = ?
+     ON CONFLICT(library_id, calibre_id) DO UPDATE SET samples = excluded.samples,
+       build = excluded.build`,
+  );
+  cache.transaction(() => {
+    for (const k of keys) if (k < 0) copy.run(deps.libraryId, fromLibraryId, k);
+  })();
+}
+
+/** Manga part B: one book's sketch put under another library at another key (a hand-added book). */
+export function copySketchAs(
+  deps: CompareDeps,
+  fromLibraryId: string,
+  fromKey: number,
+  toKey: number,
+): void {
+  openCache(deps)
+    .prepare(
+      `INSERT INTO sketches (library_id, calibre_id, size, mtime_ms, build, samples)
+       SELECT ?, ?, size, mtime_ms, 'arrivals-cross', samples FROM sketches
+       WHERE library_id = ? AND calibre_id = ?
+       ON CONFLICT(library_id, calibre_id) DO UPDATE SET samples = excluded.samples,
+         build = excluded.build`,
+    )
+    .run(deps.libraryId, toKey, fromLibraryId, fromKey);
+}
+
+/** Removes the sketches a check across the libraries put under another library (copyNewSketches). */
+export function dropCrossSketches(deps: CompareDeps): void {
+  openCache(deps)
+    .prepare(
+      `DELETE FROM sketches WHERE library_id = ? AND calibre_id < 0 AND build = 'arrivals-cross'`,
+    )
+    .run(deps.libraryId);
+}
+
 interface LibraryFacts {
   calibre_id: number;
   chars: number | null;

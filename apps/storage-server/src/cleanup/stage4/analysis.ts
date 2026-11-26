@@ -18,6 +18,7 @@
  * The gate grades the labeled books per field as soon as they are proposed, and again at the end.
  * Writes nothing but cleanup.db and the fetch cache.
  */
+import { saveGatePart, unionOfParts } from '../gate-parts';
 import type Database from 'better-sqlite3';
 import { calibreAsFound, type Stage4Write } from './as-found';
 import { randomUUID } from 'crypto';
@@ -378,6 +379,8 @@ const NATIVELY_WAITER = 'natively';
 
 export interface Stage4Deps {
   cleanup: Database.Database;
+  /** Manga part B: the reader library this instance works on (one instance per library). */
+  libraryId: string;
   main: Database.Database;
   calibreDir: string;
   cacheDir: string;
@@ -598,6 +601,11 @@ export interface RefEvidence {
 }
 
 export class Stage4Analysis {
+  /** Manga part B: the library this analysis works on (one instance per library). */
+  get libraryId(): string {
+    return this.deps.libraryId;
+  }
+
   private snapshot: Stage2Snapshot | null = null;
   private extras: Map<number, Stage4Extras> | null = null;
   private snapshotFor: string | null = null;
@@ -740,7 +748,7 @@ export class Stage4Analysis {
   }
 
   progress(): Stage4Progress | null {
-    const p = getStage(this.db, STAGE).progress as unknown as Stage4Progress;
+    const p = getStage(this.db, this.deps.libraryId, STAGE).progress as unknown as Stage4Progress;
     return p && typeof p.analysisId === 'string' ? p : null;
   }
 
@@ -750,7 +758,7 @@ export class Stage4Analysis {
       this.arrivalSink?.(p);
       return;
     }
-    updateStage(this.db, STAGE, {
+    updateStage(this.db, this.deps.libraryId, STAGE, {
       progress: p as unknown as Record<string, unknown>,
       ...(state ? { state } : {}),
     });
@@ -760,7 +768,8 @@ export class Stage4Analysis {
     const p = emptyStage4Progress(libraryId);
     this.invalidate();
     // Lookups of an earlier analysis are kept (their answers are cached); the books start over.
-    this.db.prepare('DELETE FROM fetch_waiters').run();
+    // Manga part B: this library's waiters only (another library's analysis keeps its own).
+    this.db.prepare('DELETE FROM fetch_waiters WHERE library_id = ?').run(libraryId);
     this.db.prepare('DELETE FROM stage4_books WHERE library_id = ?').run(libraryId);
     this.save(p, 'analysing');
     return p;
@@ -1935,9 +1944,10 @@ export class Stage4Analysis {
     t = performance.now();
     const ready = db
       .prepare(
-        `SELECT request_id, library_id, calibre_uuid, step FROM fetch_waiters WHERE ready = 1 LIMIT ?`,
+        `SELECT request_id, library_id, calibre_uuid, step FROM fetch_waiters INDEXED BY fetch_waiters_ready
+         WHERE ready = 1 AND library_id IN (?, 'natively') LIMIT ?`,
       )
-      .all(ANSWER_CHUNK) as {
+      .all(this.deps.libraryId, ANSWER_CHUNK) as {
       request_id: number;
       library_id: string;
       calibre_uuid: string;
@@ -3684,9 +3694,9 @@ ${f?.colophon_text ?? ''}`,
     if (!gold) return null;
     const settings = getSettings(this.db);
     const mapped = mapLabeledIds(this.db, p.libraryId, Object.keys(gold));
-    const groups = { ABC: emptyScores(), D: emptyScores(), all: emptyScores() };
-    const kind = { right: 0, all: 0 };
-    let books = 0;
+    // One gate across the libraries: this library's labeled books are saved, then the gate is
+    // scored over every library's (each labeled book is in one library; one library = as before).
+    const mine: GateBook4[] = [];
     const slicer = new Slicer(p);
     for (const [gid, calibreId] of mapped) {
       await slicer.maybeYield();
@@ -3694,13 +3704,25 @@ ${f?.colophon_text ?? ''}`,
       if (!book) continue;
       const res = this.proposalsFor(p, book.uuid, settings);
       if (!res) continue;
-      const g = (gold as Record<string, Stage4Gold>)[gid];
+      mine.push({
+        gid,
+        values: res.decision.values as unknown as Record<ScoredField, unknown>,
+        auto: res.decision.auto,
+        kind: res.decision.values.kind ?? null,
+      });
+    }
+    saveGatePart(this.db, STAGE, 'rules', this.deps.libraryId, mine);
+    const groups = { ABC: emptyScores(), D: emptyScores(), all: emptyScores() };
+    const kind = { right: 0, all: 0 };
+    let books = 0;
+    for (const b of unionOfParts<GateBook4>(this.db, STAGE, 'rules', this.deps.libraryId)) {
+      const g = (gold as Record<string, Stage4Gold>)[b.gid];
+      if (!g) continue;
       books += 1;
-      const values = res.decision.values as unknown as Record<ScoredField, unknown>;
-      addScore(groups[g.sample === 'D' ? 'D' : 'ABC'], gid, values, res.decision.auto, g);
-      addScore(groups.all, gid, values, res.decision.auto, g);
+      addScore(groups[g.sample === 'D' ? 'D' : 'ABC'], b.gid, b.values, b.auto as never, g);
+      addScore(groups.all, b.gid, b.values, b.auto as never, g);
       kind.all += 1;
-      if (g.kind === res.decision.values.kind) kind.right += 1;
+      if (g.kind === b.kind) kind.right += 1;
     }
     const fields: Record<string, unknown> = {};
     for (const f of SCORED_FIELDS) {
@@ -3733,12 +3755,13 @@ ${f?.colophon_text ?? ''}`,
       if (below)
         pauseField(
           this.db,
+          this.deps.libraryId,
           STAGE,
           name,
           'gate',
           `${pct!.toFixed(1)} % right on the labeled books (bar ${bar} %)`,
         );
-      else resumeField(this.db, STAGE, name);
+      else resumeField(this.db, this.deps.libraryId, STAGE, name);
     }
     const precision = {
       gate: {
@@ -3748,9 +3771,17 @@ ${f?.colophon_text ?? ''}`,
         kind: { ...kind, percent: percent(kind.right, kind.all) },
       },
     };
-    updateStage(this.db, STAGE, { precision });
+    updateStage(this.db, this.deps.libraryId, STAGE, { precision });
     return precision;
   }
+}
+
+/** One labeled book's decided values for the gate shared by the libraries (gate-parts.ts). */
+interface GateBook4 {
+  gid: string;
+  values: Record<ScoredField, unknown>;
+  auto: unknown;
+  kind: unknown;
 }
 
 /** One book's Bookmeter facts for the step-2 pass (Stage4Analysis.bookmeterFacts). */

@@ -305,9 +305,23 @@
               {#each lists[l.id].items as item, i (i)}
                 <div class="c-row flex flex-col gap-0.5 border-b border-c-line py-1">
                   {#if l.id === 'reviews'}
-                    <span><b>{str(item.kind).replace(/_/g, ' ')}</b> {str(item.rel_path)}</span>
+                    <span
+                      ><b
+                        >{item.kind === 'cross_copy'
+                          ? 'copy of a book in another library'
+                          : str(item.kind).replace(/_/g, ' ')}</b
+                      >
+                      {str(item.rel_path)}</span
+                    >
                     {#if item.calibre_id}<span class="text-c-muted"
-                        >Library book {str(item.calibre_id)} {str(detailOf(item).title)}</span
+                        >{item.kind === 'cross_copy'
+                          ? `${str(detailOf(item).libraryName)} book`
+                          : 'Library book'}
+                        {str(item.calibre_id)}
+                        {str(detailOf(item).title)}{item.kind === 'cross_copy' &&
+                        detailOf(item).reason
+                          ? ` · ${str(detailOf(item).reason)}`
+                          : ''}</span
                       >{/if}
                     <div class="flex flex-wrap gap-2">
                       {#if item.kind === 'better_copy'}
@@ -323,6 +337,22 @@
                         <button
                           class="c-btn c-btn-ghost c-btn-sm"
                           on:click={() => decide(num(item.id), 'keep_both')}>Keep both</button
+                        >
+                      {:else if item.kind === 'cross_copy'}
+                        <!-- Manga part B: a copy across the libraries is only recorded; nothing
+                             is removed from one library because of another. -->
+                        <button
+                          class="c-btn c-btn-ghost c-btn-sm"
+                          on:click={() => decide(num(item.id), 'keep_library')}
+                          >Keep only the other library’s</button
+                        >
+                        <button
+                          class="c-btn c-btn-ghost c-btn-sm"
+                          on:click={() => decide(num(item.id), 'keep_both')}>Keep both</button
+                        >
+                        <button
+                          class="c-btn c-btn-ghost c-btn-sm"
+                          on:click={() => decide(num(item.id), 'seen')}>Seen</button
                         >
                       {:else if item.kind === 'add_failed'}
                         <button
@@ -387,7 +417,9 @@
                       {OUTCOME_LABELS[str(item.outcome)] ?? str(item.outcome)}{item.title
                         ? ` · ${str(item.title)}`
                         : ''}{item.calibre_id
-                        ? ` · Calibre book ${str(item.calibre_id)}`
+                        ? item.calibre_library_id && item.calibre_library_id !== api.libraryId
+                          ? ` · ${str(item.calibre_library_name)} book ${str(item.calibre_id)}`
+                          : ` · Calibre book ${str(item.calibre_id)}`
                         : ''}{item.added_as ? ` · added as ${str(item.added_as)}` : ''}</span
                     >
                     {#if item.detail}<span class="text-c-muted">{str(item.detail)}</span>{/if}

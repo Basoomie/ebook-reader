@@ -189,8 +189,11 @@ export interface SpState {
   pausedReason: string | null;
 }
 
-export function getSpState(db: Database.Database): SpState {
-  const r = db.prepare('SELECT * FROM series_pairs_state WHERE id = 1').get() as {
+export function getSpState(db: Database.Database, libraryId: string): SpState {
+  db.prepare(`INSERT OR IGNORE INTO series_pairs_state (library_id, updated_at) VALUES (?, 0)`).run(
+    libraryId,
+  );
+  const r = db.prepare('SELECT * FROM series_pairs_state WHERE library_id = ?').get(libraryId) as {
     mode: SpMode;
     progress_json: string;
     paused_reason: string | null;
@@ -204,15 +207,23 @@ export function getSpState(db: Database.Database): SpState {
   };
 }
 
-function saveProgress(db: Database.Database, p: SpProgress): void {
+function saveProgress(db: Database.Database, libraryId: string, p: SpProgress): void {
+  db.prepare(`INSERT OR IGNORE INTO series_pairs_state (library_id, updated_at) VALUES (?, 0)`).run(
+    libraryId,
+  );
   db.prepare(
-    'UPDATE series_pairs_state SET progress_json = ?, library_id = ?, updated_at = ? WHERE id = 1',
-  ).run(JSON.stringify(p), p.libraryId, Date.now());
+    'UPDATE series_pairs_state SET progress_json = ?, updated_at = ? WHERE library_id = ?',
+  ).run(JSON.stringify(p), Date.now(), libraryId);
 }
 
 const pairKey = (a: string, b: string): [string, string] => (a < b ? [a, b] : [b, a]);
 
 export class SeriesPairs {
+  /** Manga part B: the library this pass works on (one instance per library). */
+  private lib(): string {
+    return this.deps.targetLibrary() ?? '';
+  }
+
   private readonly db: Database.Database;
   /** The library's books by series name, kept for one run's slices. */
   private library: { at: number; byName: Map<string, SpLibraryBook[]> } | null = null;
@@ -224,13 +235,16 @@ export class SeriesPairs {
   }
 
   state(): SpState {
-    return getSpState(this.db);
+    return getSpState(this.db, this.lib());
   }
 
   setMode(mode: SpMode): void {
     this.db
-      .prepare('UPDATE series_pairs_state SET mode = ?, updated_at = ? WHERE id = 1')
-      .run(mode, Date.now());
+      .prepare(`INSERT OR IGNORE INTO series_pairs_state (library_id, updated_at) VALUES (?, 0)`)
+      .run(this.lib());
+    this.db
+      .prepare('UPDATE series_pairs_state SET mode = ?, updated_at = ? WHERE library_id = ?')
+      .run(mode, Date.now(), this.lib());
     this.deps.log?.(`Series under two names: ${mode === 'analyse' ? 'Preview' : mode}`);
   }
 
@@ -247,7 +261,7 @@ export class SeriesPairs {
              AND state = 'proposed' AND batch_id IS NULL`,
         )
         .run(p.libraryId, seriesPairsAnalysisId(p.run));
-    saveProgress(this.db, emptySpProgress(p.run + 1, p.libraryId));
+    saveProgress(this.db, this.lib(), emptySpProgress(p.run + 1, p.libraryId));
     this.library = null;
     this.facts.clear();
   }
@@ -261,7 +275,7 @@ export class SeriesPairs {
     let p = st.progress;
     if (p.libraryId !== lib) {
       p = emptySpProgress(p.run + (p.libraryId ? 1 : 0), lib);
-      saveProgress(this.db, p);
+      saveProgress(this.db, this.lib(), p);
       this.library = null;
       this.facts.clear();
     }
@@ -288,7 +302,7 @@ export class SeriesPairs {
       t.n++;
       t.maxMs = Math.max(t.maxMs, Math.round(ms));
       t.totalMs += Math.round(ms);
-      saveProgress(this.db, p);
+      saveProgress(this.db, this.lib(), p);
     }
     return r;
   }
@@ -891,7 +905,7 @@ export class SeriesPairs {
         const p = this.state().progress;
         if (r.answer && p.counts[r.answer] > 0) p.counts[r.answer]--;
         p.counts[d.answer]++;
-        saveProgress(this.db, p);
+        saveProgress(this.db, this.lib(), p);
         if (d.answer === 'merge' && r.books_json)
           this.proposeMerge(lib, run, { ...r, books_json: r.books_json, rule: d.rule });
       }
@@ -901,7 +915,7 @@ export class SeriesPairs {
     if (choice === 'merge' && p.phase === 'done' && !p.error) {
       p.phase = 'write';
       p.finishedAt = null;
-      saveProgress(this.db, p);
+      saveProgress(this.db, this.lib(), p);
     }
     return this.pair(lib, id)!;
   }

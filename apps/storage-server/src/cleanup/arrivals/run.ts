@@ -67,6 +67,9 @@ import {
   BOOKS_PER_COMPARE,
   buildLibraryLookup,
   candidatePairsOf,
+  copyNewSketches,
+  copySketchAs,
+  dropCrossSketches,
   dropNewSketches,
   judgePair,
   libraryQuality,
@@ -142,12 +145,11 @@ export function continueArrivalsStage4(
   fromRunId: number,
   present: (libraryId: string) => Map<number, string>,
 ): { runId: number; books: number } {
-  const state = db
-    .prepare('SELECT current_run, mode FROM calibre_arrivals_state WHERE id = 1')
-    .get() as { current_run: number | null; mode: string } | undefined;
-  if (!state) throw new Error('No new-arrivals state');
-  if (state.current_run !== null) throw new Error(`Run ${state.current_run} is going on`);
-  if (state.mode !== 'on') throw new Error('New arrivals must be On');
+  // One run at a time across the libraries (manga part B).
+  const going = db
+    .prepare('SELECT current_run FROM calibre_arrivals_state WHERE current_run IS NOT NULL LIMIT 1')
+    .get() as { current_run: number } | undefined;
+  if (going) throw new Error(`Run ${going.current_run} is going on`);
   const from = db
     .prepare('SELECT state, mode, progress_json FROM calibre_arrival_runs WHERE id = ?')
     .get(fromRunId) as { state: string; mode: string; progress_json: string } | undefined;
@@ -155,6 +157,12 @@ export function continueArrivalsStage4(
     throw new Error(`Run ${fromRunId} is not a finished On run`);
   const fp = JSON.parse(from.progress_json) as RunProgress;
   if (!fp.libraryId) throw new Error('The run has no library');
+  // Manga part B: the run's own library's state row.
+  const state = db
+    .prepare('SELECT mode FROM calibre_arrivals_state WHERE library_id = ?')
+    .get(fp.libraryId) as { mode: string } | undefined;
+  if (!state) throw new Error('No new-arrivals state');
+  if (state.mode !== 'on') throw new Error('New arrivals must be On');
   const books = present(fp.libraryId);
   const read = new Set(
     (
@@ -181,14 +189,14 @@ export function continueArrivalsStage4(
     const id = Number(
       db
         .prepare(
-          `INSERT INTO calibre_arrival_runs (trigger, mode, state, phase, started_at, progress_json)
-           VALUES ('now', 'on', 'running', 'stage4', ?, ?)`,
+          `INSERT INTO calibre_arrival_runs (trigger, mode, state, phase, started_at, progress_json, library_id)
+           VALUES ('now', 'on', 'running', 'stage4', ?, ?, ?)`,
         )
-        .run(Date.now(), JSON.stringify(p)).lastInsertRowid,
+        .run(Date.now(), JSON.stringify(p), fp.libraryId).lastInsertRowid,
     );
     db.prepare(
-      'UPDATE calibre_arrivals_state SET current_run = ?, updated_at = ? WHERE id = 1 AND current_run IS NULL',
-    ).run(id, Date.now());
+      'UPDATE calibre_arrivals_state SET current_run = ?, updated_at = ? WHERE library_id = ? AND current_run IS NULL',
+    ).run(id, Date.now(), fp.libraryId);
     return id;
   })();
   return { runId, books: n };
@@ -268,6 +276,9 @@ export interface CompareFacts {
   verdicts?: MeasuredPair[];
   measured?: boolean;
   compared?: boolean;
+  /** Manga part B: the other libraries this file was checked against, and those verdicts. */
+  crossChecked?: string[];
+  crossVerdicts?: (MeasuredPair & { library: string })[];
   [k: string]: unknown;
 }
 
@@ -291,12 +302,27 @@ export interface RunProgress {
   waiting: string | null;
   pairs: { key: string; source: string; libraryId: string; firstRun: boolean }[];
   libraryId: string | null;
+  /**
+   * Manga part B: the other libraries a new copy is checked against (identical files, same
+   * text). Absent in a run made before (it checks its own library only, as it did).
+   */
+  otherLibraries?: string[];
   /** The run's books (Calibre ids) by where they came from. */
   scope: { import: number[]; hand: number[] };
   /** Pairs measured in compare: file id -> the library copy it lost to or beat. */
   betterOf: Record<string, { calibreId: number; uuid: string; pair: Record<string, unknown> }>;
   /** The compare phase's stage and its own start (the bar's pace). */
   cmp?: { stage: CompareStage; cursor: number; startedAt: number; startDone: number };
+  /**
+   * Manga part B: the check against the other libraries after the run's own (p.otherLibraries):
+   * which library, its part, the cursor, and its candidate pairs (new book, library book).
+   */
+  cross?: {
+    at: number;
+    stage: 'library' | 'identical' | 'text' | 'measure' | 'decide';
+    cursor: number;
+    pairs?: { a: number; b: number }[];
+  };
   /**
    * The part of another phase that runs in parts counted on their own (stage 1's file sizes,
    * then its same-size books; the AI's first pair, then the stronger pair), with its own start
@@ -381,15 +407,21 @@ export interface ArrivalsDeps {
   sourcesDir: string | null;
   diskLock: DiskLock;
   batches: BatchService;
-  stage2: Stage2Analysis | null;
+  /** Manga part B: each library's own stage 2 and stage 4 (CleanupService.lp()). */
+  stage2: (libraryId: string) => Stage2Analysis | null;
   stage2Batches: Stage2Batches;
   stage4Batches: Stage2Batches;
   stage5Batches: Stage2Batches;
-  analysis4: Stage4Analysis | null;
+  analysis4: (libraryId: string) => Stage4Analysis | null;
   runner: AiRunner;
   reader: () => Stage3Reader;
   counterBuild: string;
   targetLibrary: () => string | null;
+  /**
+   * Manga part B: the Calibre libraries the cleanup works on, the primary one first (each has its
+   * own runs, mode and baseline; one run at a time across them). Absent: the primary one only.
+   */
+  libraries?: () => string[];
   /** Whether a stage's own analysis is running (an arrivals run never overlaps one). */
   libraryBusy: () => string | null;
   /** Asks the reader's index to copy metadata.db at once (books were added). */
@@ -404,7 +436,7 @@ export interface ArrivalsDeps {
   /** The source folders must be mounted read-only (tests on a writable temp folder: false). */
   requireReadOnlySources?: boolean;
   /** The safety checks (stage 0) every write waits for, as the stages' own writes do. */
-  checksPass?: () => { ok: boolean; failing: string[] };
+  checksPass?: (libraryId: string) => { ok: boolean; failing: string[] };
   /**
    * Manga part A: the move pass (its card's mode and target) and why its write must wait now.
    * Without it the run has no move phase (it goes from the check to the report).
@@ -430,6 +462,8 @@ interface StateRow {
 
 interface RunRow {
   id: number;
+  /** Manga part B (v38): the library the run works on. */
+  library_id: string | null;
   trigger: 'schedule' | 'now' | 'hand';
   mode: 'analyse' | 'on';
   state: 'running' | 'done' | 'failed' | 'stopped';
@@ -539,16 +573,23 @@ export async function inPool<T>(
 /** A run without new books goes from one write to the next (the stages have no books). */
 const NEXT_WRITE = { write2: 'write4', write4: 'write5', write5: 'check' } as const;
 
+/**
+ * Manga part B: the keys a hand-added book's sketch takes under another library (negative, apart
+ * from the source files' -id keys, which stay far below this).
+ */
+const HAND_CROSS_KEY = 1_000_000_000;
+
 export class BookArrivals {
   readonly addBatches: ArrivalBatches;
   readonly archives: BookArchives;
-  private readonly ai4: ArrivalStage4Ai | null;
-  private readonly s5: ArrivalStage5 | null;
+  /** Stage 4's AI check and stage 5 for new books, per library (made on first use). */
+  private readonly ai4s = new Map<string, ArrivalStage4Ai | null>();
+  private readonly s5s = new Map<string, ArrivalStage5 | null>();
   private stepping = false;
   private stopRequested = false;
   private readonly log: (m: string) => void;
 
-  private settleCheckedAt = 0;
+  private readonly settleCheckedAt = new Map<string, number>();
   /** The compare stage's pace was started in this process. */
   /** The library lookup file this process built, per run (null: the reader has none). */
   private lookup: { run: number; file: string | null } | null = null;
@@ -560,21 +601,58 @@ export class BookArrivals {
     this.log = deps.log ?? (() => {});
     this.addBatches = new ArrivalBatches(deps.cleanup);
     this.archives = new BookArchives(deps.cleanup, (key) => this.rootOf(key));
-    this.ai4 = deps.analysis4
-      ? new ArrivalStage4Ai({
-          db: deps.cleanup,
-          runner: deps.runner,
-          analysis: deps.analysis4,
+  }
+
+  /** The library's stage 4 analysis, its arrival view saved in the run (never over its progress). */
+  private a4(libraryId: string): Stage4Analysis | null {
+    const a4 = this.deps.analysis4(libraryId);
+    if (a4 && !this.ai4s.has(libraryId)) {
+      a4.setArrivalSink((p) => this.saveStage4View(p));
+      this.ai4s.set(
+        libraryId,
+        new ArrivalStage4Ai({
+          db: this.deps.cleanup,
+          runner: this.deps.runner,
+          analysis: a4,
           log: this.log,
-        })
-      : null;
-    this.s5 = deps.analysis4
-      ? new ArrivalStage5({ db: deps.cleanup, runner: deps.runner, analysis: deps.analysis4 })
-      : null;
-    if (deps.analysis4) {
-      // An arrival view of stage 4 is saved in the run, never over the library's progress.
-      deps.analysis4.setArrivalSink((p) => this.saveStage4View(p));
+        }),
+      );
+      this.s5s.set(
+        libraryId,
+        new ArrivalStage5({ db: this.deps.cleanup, runner: this.deps.runner, analysis: a4 }),
+      );
     }
+    return a4;
+  }
+
+  private ai4Of(libraryId: string): ArrivalStage4Ai | null {
+    return this.a4(libraryId) ? (this.ai4s.get(libraryId) ?? null) : null;
+  }
+
+  private s5Of(libraryId: string): ArrivalStage5 | null {
+    return this.a4(libraryId) ? (this.s5s.get(libraryId) ?? null) : null;
+  }
+
+  /** The libraries whose arrivals run, the primary one first. */
+  libraries(): string[] {
+    const libs = this.deps.libraries?.() ?? [];
+    if (libs.length) return libs;
+    const primary = this.deps.targetLibrary();
+    return primary ? [primary] : [];
+  }
+
+  /**
+   * The library a call is about: the one named, else the current run's, else the primary one
+   * ('' when there is none: its state reads as Off).
+   */
+  private libOr(libraryId?: string | null): string {
+    if (libraryId) return libraryId;
+    const r = this.db
+      .prepare(
+        'SELECT library_id FROM calibre_arrivals_state WHERE current_run IS NOT NULL LIMIT 1',
+      )
+      .get() as { library_id: string } | undefined;
+    return r?.library_id ?? this.deps.targetLibrary() ?? '';
   }
   /** The Calibre library a source folder pair adds to. */
   private pairLibrary(pairKey: string): string {
@@ -590,18 +668,40 @@ export class BookArrivals {
 
   // ---------------------------------------------------------------- state
 
-  state(): StateRow {
-    return this.db.prepare('SELECT * FROM calibre_arrivals_state WHERE id = 1').get() as StateRow;
-  }
-
-  private setState(fields: Partial<Record<keyof StateRow, unknown>>): void {
-    const keys = Object.keys(fields);
-    if (!keys.length) return;
+  /** A library's state (its row is made on first read: Off). */
+  state(libraryId?: string | null): StateRow {
+    const lib = this.libOr(libraryId);
+    // A row the migration could not give a library (no ttsu.db to ask) is the first library's.
+    if (
+      lib !== '' &&
+      !this.db.prepare('SELECT 1 FROM calibre_arrivals_state WHERE library_id = ?').get(lib)
+    )
+      this.db
+        .prepare("UPDATE calibre_arrivals_state SET library_id = ? WHERE library_id = ''")
+        .run(lib);
     this.db
       .prepare(
-        `UPDATE calibre_arrivals_state SET ${keys.map((k) => `${k} = @${k}`).join(', ')}, updated_at = @now WHERE id = 1`,
+        'INSERT OR IGNORE INTO calibre_arrivals_state (library_id, updated_at) VALUES (?, 0)',
       )
-      .run({ ...fields, now: Date.now() });
+      .run(lib);
+    return this.db
+      .prepare('SELECT * FROM calibre_arrivals_state WHERE library_id = ?')
+      .get(lib) as StateRow;
+  }
+
+  private setState(
+    fields: Partial<Record<keyof StateRow, unknown>>,
+    libraryId?: string | null,
+  ): void {
+    const keys = Object.keys(fields);
+    if (!keys.length) return;
+    const lib = this.libOr(libraryId);
+    this.state(lib);
+    this.db
+      .prepare(
+        `UPDATE calibre_arrivals_state SET ${keys.map((k) => `${k} = @${k}`).join(', ')}, updated_at = @now WHERE library_id = @lib`,
+      )
+      .run({ ...fields, now: Date.now(), lib });
   }
 
   /** The source folder of a pair, relative to the sources mount (and to the sidecar's torrents/). */
@@ -621,27 +721,33 @@ export class BookArrivals {
     return null;
   }
 
-  setMode(mode: 'off' | 'analyse' | 'on'): void {
-    this.setState({ mode });
+  setMode(mode: 'off' | 'analyse' | 'on', libraryId?: string | null): void {
+    const lib = this.libOr(libraryId);
+    this.setState({ mode }, lib);
     if (mode === 'off') {
       // Off stops the run that is going too (WP20g stop 2: it went on while Off).
-      this.stopRequested = true;
       const run = this.currentRun();
-      if (run) this.finish(run.id, run.p, 'stopped', 'Stopped: new arrivals set Off');
+      if (run && this.runLibrary(run) === lib) {
+        this.stopRequested = true;
+        this.finish(run.id, run.p, 'stopped', 'Stopped: new arrivals set Off');
+      }
     }
   }
 
-  requestRun(): void {
-    const s = this.state();
+  /** Run now: queued behind a run of another library (one run at a time). */
+  requestRun(libraryId?: string | null): void {
+    const lib = this.libOr(libraryId);
+    const s = this.state(lib);
     if (s.mode === 'off') throw new Error('New arrivals are Off: set Preview or On first');
     if (s.current_run !== null) throw new Error('A run is going on');
-    this.setState({ run_now: 1 });
+    this.setState({ run_now: 1 }, lib);
   }
 
   /** Stops the current run where it is (its batches already handed out finish on their own). */
   stopRun(): void {
     const run = this.currentRun();
     if (!run) return;
+    const lib = this.runLibrary(run);
     this.stopRequested = true;
     this.finish(run.id, run.p, 'stopped', 'Stopped on the page');
     // Nothing starts again by itself (WP20g stop 2: a scheduled run that was due started at
@@ -652,38 +758,42 @@ export class BookArrivals {
       scheduledRunDue(
         now,
         { arrivalsTime: a.time, arrivalsQuietStart: a.quietStart, arrivalsQuietEnd: a.quietEnd },
-        this.state().last_scheduled_day,
+        this.state(lib).last_scheduled_day,
         this.zone(),
       )
     )
-      this.setState({ last_scheduled_day: clockNow(now, this.zone()).day });
+      this.setState({ last_scheduled_day: clockNow(now, this.zone()).day }, lib);
   }
 
   /** The latest run was stopped (on the page or by Off): only a scheduled run or Run now next. */
-  private lastStopped(): boolean {
+  private lastStopped(libraryId: string): boolean {
     const r = this.db
-      .prepare('SELECT state FROM calibre_arrival_runs ORDER BY id DESC LIMIT 1')
-      .get() as { state: string } | undefined;
+      .prepare(
+        'SELECT state FROM calibre_arrival_runs WHERE library_id = ? ORDER BY id DESC LIMIT 1',
+      )
+      .get(libraryId) as { state: string } | undefined;
     return r?.state === 'stopped';
   }
 
-  resume(): void {
-    this.setState({ pause_reason: null, pause_detail: null, paused_at: null });
+  resume(libraryId?: string | null): void {
+    this.setState({ pause_reason: null, pause_detail: null, paused_at: null }, libraryId);
   }
 
-  private pause(reason: string, detail: string): void {
-    this.setState({
-      pause_reason: reason,
-      pause_detail: detail.slice(0, 1000),
-      paused_at: Date.now(),
-    });
+  private pause(reason: string, detail: string, libraryId: string): void {
+    this.setState(
+      {
+        pause_reason: reason,
+        pause_detail: detail.slice(0, 1000),
+        paused_at: Date.now(),
+      },
+      libraryId,
+    );
     this.log(`New arrivals paused (${reason}): ${detail}`);
   }
 
   /** The pairs as set, each recorded on first sight (a changed folder is a new pair). */
-  private syncPairs(now = Date.now()): RunProgress['pairs'] {
+  private syncPairs(target: string, now = Date.now()): RunProgress['pairs'] {
     const s = getSettings(this.db);
-    const target = this.deps.targetLibrary();
     const out: RunProgress['pairs'] = [];
     for (const p of s.arrivals.pairs) {
       const key = pairKeyOf(p);
@@ -696,8 +806,7 @@ export class BookArrivals {
       const r = this.db
         .prepare('SELECT * FROM calibre_arrival_pairs WHERE pair_key = ?')
         .get(key) as { first_done_at: number | null };
-      // Stages 1-5 run in the library the cleanup cleans: a pair into another library waits for
-      // the English follow-up (plan section 11).
+      // Manga part B: a run takes its own library's pairs (each library has its runs).
       if (p.libraryId !== target) continue;
       out.push({
         key,
@@ -713,27 +822,45 @@ export class BookArrivals {
 
   /**
    * The new arrivals are done with the books the reader's index first saw before this time
-   * (series-arrivals.md 3.2): Off: every book (Infinity); a run open: none (-Infinity); else
-   * the last run's end (the run that added a book, or the one that took in a book added by
-   * hand, ended after it was seen). Read only.
+   * (series-arrivals.md 3.2), across the cleanup's libraries (manga part B: the earliest of
+   * theirs, so a book is never taken as done while any library's run is open). Per library:
+   * Off: every book (Infinity); a run open: none (-Infinity); else that library's last run's
+   * end (the run that added a book, or the one that took in a book added by hand, ended after
+   * it was seen). Read only.
    */
   doneBefore(): number {
-    const s = this.state();
-    if (s.mode === 'off') return Infinity;
-    if (s.current_run !== null) return -Infinity;
-    const r = this.db.prepare('SELECT MAX(finished_at) AS at FROM calibre_arrival_runs').get() as {
-      at: number | null;
-    };
-    return r.at ?? -Infinity;
+    let out = Infinity;
+    for (const lib of this.libraries()) {
+      const s = this.db
+        .prepare('SELECT mode, current_run FROM calibre_arrivals_state WHERE library_id = ?')
+        .get(lib) as { mode: string; current_run: number | null } | undefined;
+      if (!s || s.mode === 'off') continue;
+      if (s.current_run !== null) return -Infinity;
+      const r = this.db
+        .prepare('SELECT MAX(finished_at) AS at FROM calibre_arrival_runs WHERE library_id = ?')
+        .get(lib) as { at: number | null };
+      out = Math.min(out, r.at ?? -Infinity);
+    }
+    return out;
   }
 
+  /** The run going on, of whichever library (one at a time). */
   currentRun(): (RunRow & { p: RunProgress }) | null {
-    const s = this.state();
-    if (s.current_run === null) return null;
+    const s = this.db
+      .prepare(
+        'SELECT current_run FROM calibre_arrivals_state WHERE current_run IS NOT NULL LIMIT 1',
+      )
+      .get() as { current_run: number } | undefined;
+    if (!s) return null;
     const r = this.db
       .prepare('SELECT * FROM calibre_arrival_runs WHERE id = ?')
       .get(s.current_run) as RunRow | undefined;
     return r ? { ...r, p: JSON.parse(r.progress_json) as RunProgress } : null;
+  }
+
+  /** A run's library: its own (a run made before manga part B: the progress's, else the primary). */
+  runLibrary(run: { library_id?: string | null; p: RunProgress }): string {
+    return run.library_id ?? run.p.libraryId ?? this.deps.targetLibrary() ?? '';
   }
 
   private save(runId: number, p: RunProgress): void {
@@ -822,8 +949,8 @@ export class BookArrivals {
     return getSettings(this.db).arrivals.timeZone || undefined;
   }
 
-  nextRunAt(now = Date.now()): number | null {
-    const s = this.state();
+  nextRunAt(libraryId?: string | null, now = Date.now()): number | null {
+    const s = this.state(libraryId);
     if (s.mode === 'off') return null;
     const a = getSettings(this.db).arrivals;
     return nextScheduledRun(
@@ -835,11 +962,12 @@ export class BookArrivals {
   }
 
   /** Starts a run when one is due: Run now, the daily time, or books added by hand settled. */
-  maybeStart(now = Date.now()): number | null {
-    const s = this.state();
-    if (s.mode === 'off' || s.pause_reason || s.current_run !== null) return null;
-    const target = this.deps.targetLibrary();
+  maybeStart(target: string | null = this.deps.targetLibrary(), now = Date.now()): number | null {
     if (!target || !this.deps.calibreDir) return null;
+    const s = this.state(target);
+    if (s.mode === 'off' || s.pause_reason || s.current_run !== null) return null;
+    // One run at a time across the libraries.
+    if (this.currentRun()) return null;
     const a = getSettings(this.db).arrivals;
     const sched = {
       arrivalsTime: a.time,
@@ -851,42 +979,48 @@ export class BookArrivals {
     if (s.run_now) trigger = 'now';
     else if (scheduledRunDue(now, sched, s.last_scheduled_day, this.zone())) trigger = 'schedule';
     else if (
-      !this.lastStopped() &&
+      !this.lastStopped(target) &&
       (s.hand_checked_at === null || now - s.hand_checked_at >= a.handCheckMinutes * 60_000) &&
       this.handSettled(target, now).length > 0
     )
       trigger = 'hand';
     // Files waiting to settle that have settled since: a follow-up run looks at them now instead
     // of at the next day's run (checked at most once a minute).
-    else if (!this.lastStopped() && now - this.settleCheckedAt >= 60_000) {
-      this.settleCheckedAt = now;
-      if (this.settledWaiting(now)) {
+    else if (!this.lastStopped(target) && now - (this.settleCheckedAt.get(target) ?? 0) >= 60_000) {
+      this.settleCheckedAt.set(target, now);
+      if (this.settledWaiting(target, now)) {
         trigger = 'now';
         followUp = 'settle';
       }
     }
     if (s.hand_checked_at === null || now - s.hand_checked_at >= a.handCheckMinutes * 60_000)
-      this.setState({ hand_checked_at: now });
+      this.setState({ hand_checked_at: now }, target);
     if (!trigger) return null;
     const busy = this.deps.libraryBusy();
     if (busy) return null;
     const mode = s.mode === 'on' ? 'on' : 'analyse';
     const p = emptyProgress();
     p.libraryId = target;
+    // Manga part B: a run made now checks new copies against the other libraries too (a run made
+    // before has no such field and works as it did: run 7).
+    p.otherLibraries = this.libraries().filter((l) => l !== target);
     if (followUp) p.followUp = followUp;
     const id = Number(
       this.db
         .prepare(
-          `INSERT INTO calibre_arrival_runs (trigger, mode, state, phase, started_at, progress_json)
-           VALUES (?, ?, 'running', 'scan', ?, ?)`,
+          `INSERT INTO calibre_arrival_runs (trigger, mode, state, phase, started_at, progress_json, library_id)
+           VALUES (?, ?, 'running', 'scan', ?, ?, ?)`,
         )
-        .run(trigger, mode, now, JSON.stringify(p)).lastInsertRowid,
+        .run(trigger, mode, now, JSON.stringify(p), target).lastInsertRowid,
     );
-    this.setState({
-      current_run: id,
-      run_now: 0,
-      ...(trigger === 'schedule' ? { last_scheduled_day: clockNow(now, this.zone()).day } : {}),
-    });
+    this.setState(
+      {
+        current_run: id,
+        run_now: 0,
+        ...(trigger === 'schedule' ? { last_scheduled_day: clockNow(now, this.zone()).day } : {}),
+      },
+      target,
+    );
     this.log(
       `New arrivals: run ${id} started (${followUp ? 'files settled' : trigger}, ${mode === 'on' ? 'On' : 'Preview'})`,
     );
@@ -971,7 +1105,8 @@ export class BookArrivals {
     const file = snapshotFile(this.deps.cacheDir, libraryId);
     if (!fs.existsSync(file)) return;
     const presence = readSnapshotPresence(file);
-    const s = this.state();
+    // Manga part B: each library's own baseline (its first look), never another library's.
+    const s = this.state(libraryId);
     const ins = this.db.prepare(
       `INSERT INTO calibre_known_books (library_id, calibre_id, calibre_uuid, origin, added_at)
        VALUES (?, ?, ?, ?, ?) ON CONFLICT(library_id, calibre_id) DO NOTHING`,
@@ -980,7 +1115,7 @@ export class BookArrivals {
       this.db.transaction(() => {
         for (const [uuid, b] of presence) ins.run(libraryId, b.calibreId, uuid, 'baseline', now);
       })();
-      this.setState({ baseline_at: now });
+      this.setState({ baseline_at: now }, libraryId);
       return;
     }
     const known = new Set(
@@ -1019,7 +1154,7 @@ export class BookArrivals {
       .all(libraryId) as { calibre_id: number; added_at: number }[];
     // Books a Preview run took in were only shown: the first On run takes them in again and
     // analyses them as they are then (a Preview's proposals are never written later).
-    if (this.state().mode === 'on')
+    if (this.state(libraryId).mode === 'on')
       rows.push(
         ...(this.db
           .prepare(
@@ -1051,14 +1186,21 @@ export class BookArrivals {
     const shouldStop = () => this.stopRequested;
     let run = this.currentRun();
     // No run goes on while Off (a run started before Off was set is stopped here too).
-    if (run && this.state().mode === 'off') {
+    if (run && this.state(this.runLibrary(run)).mode === 'off') {
       this.finish(run.id, run.p, 'stopped', 'Stopped: new arrivals set Off');
       this.stepping = false;
       return 'idle';
     }
     try {
       if (!run) {
-        const id = this.maybeStart();
+        let id: number | null = null;
+        // A library whose Run now was pressed goes first (one run at a time across them).
+        const libs = this.libraries();
+        const asked = libs.filter((l) => this.state(l).run_now);
+        for (const lib of [...asked, ...libs.filter((l) => !asked.includes(l))]) {
+          id = this.maybeStart(lib);
+          if (id !== null) break;
+        }
         if (id === null) return 'idle';
         run = this.currentRun()!;
       }
@@ -1072,7 +1214,7 @@ export class BookArrivals {
         const stop = err instanceof RunStop;
         const msg = (err as Error).message ?? String(err);
         this.finish(run.id, p, 'failed', msg);
-        this.pause(stop ? (err as RunStop).reason : 'failed', msg);
+        this.pause(stop ? (err as RunStop).reason : 'failed', msg, this.runLibrary(run));
       }
       this.log(`New arrivals: ${(err as Error).message}`);
       return 'idle';
@@ -1107,7 +1249,7 @@ export class BookArrivals {
     p: RunProgress,
     shouldStop: () => boolean,
   ): Promise<'more' | 'wait' | 'idle'> {
-    const libraryId = p.libraryId ?? this.deps.targetLibrary();
+    const libraryId = p.libraryId ?? this.runLibrary(run);
     if (!libraryId || !this.deps.calibreDir)
       throw new RunStop('setup', 'The library to clean is not chosen');
     p.libraryId = libraryId;
@@ -1145,17 +1287,17 @@ export class BookArrivals {
     const st = stageOf[p.phase];
     // A run without new books only writes what earlier runs held: a stage that is Off is passed.
     if (st !== undefined && this.emptyScope(p) && /^write/.test(p.phase)) {
-      if (getStage(this.db, st).mode === 'off') {
+      if (getStage(this.db, libraryId, st).mode === 'off') {
         this.next(run.id, p, NEXT_WRITE[p.phase as 'write2' | 'write4' | 'write5']);
         return 'more';
       }
-    } else if (st !== undefined && getStage(this.db, st).mode === 'off') {
+    } else if (st !== undefined && getStage(this.db, libraryId, st).mode === 'off') {
       p.waiting = `Waiting: stage ${st} is Off (set it to Preview or On)`;
       return 'wait';
     }
     switch (p.phase) {
       case 'scan': {
-        p.pairs = this.syncPairs();
+        p.pairs = this.syncPairs(libraryId);
         if (this.importProblem() || !p.pairs.length) {
           this.next(run.id, p, 'identify');
           return 'more';
@@ -1293,13 +1435,14 @@ export class BookArrivals {
       }
       case 'stage2': {
         const uuids = this.scopeUuids(p, libraryId);
-        if (this.deps.stage2 && uuids.length) {
+        const stage2 = this.deps.stage2(libraryId);
+        if (stage2 && uuids.length) {
           const n = await this.withDisk(
             p,
             () =>
               stage2Pass(
                 this.passDeps(run.id, libraryId, libDir, p, ['read']),
-                this.deps.stage2!,
+                stage2,
                 uuids,
                 shouldStop,
               ),
@@ -1322,12 +1465,13 @@ export class BookArrivals {
         return this.writeStep(run, p, libraryId, 4, this.emptyScope(p) ? 'write5' : 'stage5');
       case 'stage5': {
         const uuids = this.stage4Uuids(p);
-        if (!this.s5 || !p.stage4 || !uuids.length) {
+        const s5 = this.s5Of(libraryId);
+        if (!s5 || !p.stage4 || !uuids.length) {
           this.next(run.id, p, 'write5');
           return 'more';
         }
         p.s5 ??= emptyStage5Pass();
-        const r = await this.s5.step(p.stage4, p.s5, uuids, shouldStop);
+        const r = await s5.step(p.stage4, p.s5, uuids, shouldStop);
         p.cost = (p.ai?.cost ?? 0) + (p.s5.cost ?? 0);
         const c5 = this.count(p, 'stage5');
         // Two questions a book while the models answer, then the books decided.
@@ -1680,9 +1824,11 @@ export class BookArrivals {
     const rows = this.db
       .prepare(
         `SELECT id, calibre_id, calibre_uuid FROM calibre_arrival_files INDEXED BY calibre_arrival_files_outcome
-         WHERE outcome = 'added'`,
+         WHERE outcome = 'added' AND (calibre_library_id = ? OR calibre_library_id IS NULL)`,
       )
-      .all() as { id: number; calibre_id: number; calibre_uuid: string }[];
+      // Manga part B: the books added to this library only (another library's are not in its
+      // snapshot and were never removed).
+      .all(libraryId) as { id: number; calibre_id: number; calibre_uuid: string }[];
     const byCleanup = this.db.prepare(
       `SELECT 1 FROM proposed_changes INDEXED BY proposed_changes_book
        WHERE library_id = ? AND calibre_uuid = ? AND field = 'book' AND state = 'applied' LIMIT 1`,
@@ -2164,6 +2310,11 @@ export class BookArrivals {
     // decide
     const part = rows(`AND json_extract(facts_json, '$.compared') IS NULL`, 500);
     if (!part.length) {
+      // Manga part B: then against the other libraries (a run made before has none: run 7).
+      if ((p.otherLibraries ?? []).length) {
+        const r = await this.crossStep(run, p, keys, shouldStop);
+        if (r !== 'done') return r;
+      }
       p.cmp = undefined;
       this.next(run.id, p, 'plan');
       return 'more';
@@ -2263,6 +2414,298 @@ export class BookArrivals {
   }
 
   /**
+   * Manga part B (answer 3 at stop 0): the files still new after their own library's check are
+   * checked against each other library: identical files (stage 1's hashes of that library), then
+   * the same text (that library's candidate index and stage 3's measure and best copy). A file
+   * that is a copy of a book there is recorded (identical or duplicate), never added; a file
+   * better than that library's copy goes to review (nothing is removed from one library because
+   * of a book in another). Resumable: the part and the cursor are kept in the run.
+   */
+  private async crossStep(
+    run: RunRow & { p: RunProgress },
+    p: RunProgress,
+    keys: string[],
+    shouldStop: () => boolean,
+  ): Promise<'more' | 'wait' | 'done'> {
+    const others = p.otherLibraries ?? [];
+    p.cross ??= { at: 0, stage: 'library', cursor: 0 };
+    const x = p.cross;
+    const nextLibrary = () => {
+      x.at++;
+      x.stage = 'library';
+      x.cursor = 0;
+      delete x.pairs;
+    };
+    if (x.at >= others.length) return 'done';
+    const lib = others[x.at];
+    const row = getLibrary(this.deps.main, lib);
+    if (!row || !this.deps.calibreDir || !fs.existsSync(snapshotFile(this.deps.cacheDir, lib))) {
+      nextLibrary();
+      return 'more';
+    }
+    const name = row.name || row.folder;
+    const libDir = path.join(this.deps.calibreDir, row.folder);
+    const books = this.snapshotBooks(lib);
+    const cd = this.compareDeps(lib, libDir, books);
+    const pd = this.passDeps(run.id, lib, libDir);
+    const settings = getSettings(this.db);
+    const srcPacer = new SourcePacer(settings.pacing.readMbPerSecond * 1024 * 1024);
+    const ph = keys.map(() => '?').join(', ');
+    type Row = {
+      id: number;
+      pair_key: string;
+      rel_path: string;
+      size: number;
+      sha256: string | null;
+      facts_json: string | null;
+    };
+    const facts = (r: { facts_json: string | null }) =>
+      (r.facts_json ? JSON.parse(r.facts_json) : {}) as CompareFacts;
+    // The files of this run's folders still new after their own check, not checked against lib.
+    const still = (after: number, limit: number) =>
+      (
+        this.db
+          .prepare(
+            `SELECT id, pair_key, rel_path, size, sha256, facts_json FROM calibre_arrival_files
+             INDEXED BY calibre_arrival_files_outcome
+             WHERE outcome = 'new' AND pair_key IN (${ph}) AND gone_at IS NULL AND id > ?
+               AND json_extract(facts_json, '$.compared') = 1
+             ORDER BY id LIMIT ${limit}`,
+          )
+          .all(...keys, after) as Row[]
+      ).filter((r) => !(facts(r).crossChecked ?? []).includes(lib));
+    const setFacts = this.db.prepare(
+      'UPDATE calibre_arrival_files SET facts_json = ? WHERE id = ?',
+    );
+    const slice = async <T>(fn: () => Promise<T>) => this.withDisk(p, fn, shouldStop);
+
+    if (x.stage === 'library') {
+      p.waiting = `Reading the books of ${name} that stages 1 and 3 have not read yet`;
+      const ok = await slice(() => this.ensureLibraryFacts(cd, pd, books, srcPacer, shouldStop));
+      if (ok === null || ok === false) return 'wait';
+      x.stage = 'identical';
+      x.cursor = 0;
+      return 'more';
+    }
+
+    if (x.stage === 'identical') {
+      const part = still(x.cursor, 200);
+      if (!part.length) {
+        x.stage = 'text';
+        x.cursor = 0;
+        return 'more';
+      }
+      p.waiting = `Looking for identical copies in ${name}`;
+      const libPacer = new Pacer(settings.pacing.readMbPerSecond * 1024 * 1024);
+      const set = this.db.prepare(
+        `UPDATE calibre_arrival_files SET outcome = 'identical', detail = ?, calibre_id = ?,
+           calibre_uuid = ?, calibre_library_id = ?, decided_at = ?, run_id = ? WHERE id = ?`,
+      );
+      const setSha = this.db.prepare(
+        'UPDATE calibre_arrival_files SET sha256 = ?, hashed_at = ? WHERE id = ?',
+      );
+      const ok = await slice(async () => {
+        for (const r of part) {
+          if (shouldStop()) return false;
+          const same = await libraryHashesOfSize(pd, books, r.size, libPacer, shouldStop);
+          let sha = r.sha256;
+          if (!sha && same.length) {
+            const file = this.sourcePath(r.pair_key, r.rel_path);
+            const st = await lstatSource(file);
+            const h =
+              st && st.size === r.size ? await hashSource(file, srcPacer, shouldStop) : null;
+            if (!h && shouldStop()) return false;
+            if (h) {
+              sha = h.sha256;
+              setSha.run(sha, Date.now(), r.id);
+            }
+          }
+          const hit = sha ? same.find((s) => s.sha256 === sha) : undefined;
+          if (hit)
+            set.run(
+              `The same file as ${name} book ${hit.calibreId}`,
+              hit.calibreId,
+              books.get(hit.calibreId)!.uuid,
+              lib,
+              Date.now(),
+              run.id,
+              r.id,
+            );
+          x.cursor = r.id;
+        }
+        return true;
+      });
+      if (ok === null || ok === false) return 'wait';
+      return 'more';
+    }
+
+    const newText = (r: Row): NewText => {
+      const t = facts(r).text!;
+      return {
+        key: -r.id,
+        file: this.sourcePath(r.pair_key, r.rel_path),
+        chars: t.chars,
+        importChars: t.importChars,
+        kind: t.kind,
+        marker: t.marker,
+        imageOnly: t.imageOnly,
+        ruby: t.ruby,
+        toc: t.toc,
+        vertical: t.vertical,
+        imageEntries: [],
+        fileTitle: t.fileTitle,
+        samples: t.samples,
+        error: t.error,
+      };
+    };
+
+    if (x.stage === 'text') {
+      p.waiting = `Finding the books of ${name} with the same text`;
+      const all = still(0, 1_000_000).filter((r) => facts(r).text && !facts(r).text!.error);
+      const news = all.map(newText);
+      // The new books' sketches are under the run's own library; the other library's index
+      // compares them once they are under it too (dropped again when the run finishes).
+      copyNewSketches(
+        cd,
+        p.libraryId ?? '',
+        news.map((n) => n.key),
+      );
+      const pairs = news.length ? await candidatePairsOf(cd, news) : [];
+      // Only a new book with a book of that library: two new books were compared already.
+      x.pairs = pairs.filter((pr) => pr.a < 0 !== pr.b < 0);
+      x.stage = 'measure';
+      x.cursor = 0;
+      return 'more';
+    }
+
+    if (x.stage === 'measure') {
+      const pairs = x.pairs ?? [];
+      if (x.cursor >= pairs.length) {
+        x.stage = 'decide';
+        x.cursor = 0;
+        return 'more';
+      }
+      p.waiting = `Measuring the pairs with the same text in ${name} (${x.cursor} of ${pairs.length})`;
+      const chunk = pairs.slice(x.cursor, x.cursor + 20);
+      const byId = this.db.prepare(
+        'SELECT id, pair_key, rel_path, size, sha256, facts_json FROM calibre_arrival_files WHERE id = ?',
+      );
+      const ok = await slice(async () => {
+        const news = new Map<number, NewText>();
+        for (const pr of chunk)
+          for (const k of [pr.a, pr.b])
+            if (k < 0 && !news.has(k)) {
+              const r = byId.get(-k) as Row | undefined;
+              if (r && facts(r).text) news.set(k, newText(r));
+            }
+        const measured = await measurePairs(
+          cd,
+          news,
+          chunk.filter((pr) => news.has(pr.a < 0 ? pr.a : pr.b)),
+        );
+        const quality = this.qualityOf(cd, news, new Map(), srcPacer);
+        const add = new Map<number, (MeasuredPair & { library: string })[]>();
+        for (const m of measured) {
+          if (!m.m) continue;
+          const k = m.pair.a < 0 ? m.pair.a : m.pair.b;
+          const other = k === m.pair.a ? m.pair.b : m.pair.a;
+          const v = await judgePair(cd, k, other, m.m, news, quality);
+          add.set(k, [...(add.get(k) ?? []), { ...v, library: lib }]);
+        }
+        this.db.transaction(() => {
+          for (const [k, vs] of add) {
+            const r = byId.get(-k) as Row;
+            const fx = facts(r);
+            fx.crossVerdicts = [...(fx.crossVerdicts ?? []), ...vs];
+            setFacts.run(JSON.stringify(fx), r.id);
+          }
+        })();
+        return true;
+      });
+      if (ok === null || ok === false) return 'wait';
+      x.cursor += chunk.length;
+      this.save(run.id, p);
+      return 'more';
+    }
+
+    // decide: each file still new, by its verdicts against this library.
+    const part = still(x.cursor, 500);
+    if (!part.length) {
+      nextLibrary();
+      return 'more';
+    }
+    p.waiting = `Deciding each new book against ${name}`;
+    const set = this.db.prepare(
+      `UPDATE calibre_arrival_files SET outcome = ?, detail = ?, calibre_id = ?, calibre_uuid = ?,
+         calibre_library_id = ?, facts_json = ?, decided_at = ?, run_id = ? WHERE id = ?`,
+    );
+    this.db.transaction(() => {
+      for (const r of part) {
+        const fx = facts(r);
+        const vs = (fx.crossVerdicts ?? []).filter((v) => v.library === lib);
+        fx.crossChecked = [...(fx.crossChecked ?? []), lib];
+        const json = JSON.stringify(fx);
+        const lostTo = vs.find((v) => v.keep === 'other');
+        const tie = lostTo ? undefined : sameTextNoWinner(vs, r.id);
+        const beat = vs.find((v) => v.keep === 'new' && books.get(v.otherKey));
+        const named = lostTo ?? tie;
+        if (named && books.get(named.otherKey)) {
+          set.run(
+            'duplicate',
+            lostTo
+              ? `The same text as ${name} book ${lostTo.otherKey}, which is as good or better (${lostTo.reason})`
+              : `The same text as ${name} book ${named.otherKey}; neither copy is better on every measure`,
+            named.otherKey,
+            books.get(named.otherKey)!.uuid,
+            lib,
+            json,
+            Date.now(),
+            run.id,
+            r.id,
+          );
+        } else if (beat) {
+          const b = books.get(beat.otherKey)!;
+          set.run(
+            'better_review',
+            `Better than ${name} book ${beat.otherKey} (${beat.reason}): a copy in the other library is never replaced by itself`,
+            beat.otherKey,
+            b.uuid,
+            lib,
+            json,
+            Date.now(),
+            run.id,
+            r.id,
+          );
+          this.addReview(
+            run.id,
+            `cross:${r.id}:${b.uuid}`,
+            'cross_copy',
+            r.id,
+            beat.otherKey,
+            b.uuid,
+            {
+              pair: {
+                aInB: beat.aInB,
+                bInA: beat.bInA,
+                cls: beat.cls,
+                rule: beat.rule,
+                reason: beat.reason,
+                best: beat.best,
+              },
+              title: b.title,
+              library: lib,
+              libraryName: name,
+            },
+            lib,
+          );
+        } else setFacts.run(json, r.id);
+        x.cursor = r.id;
+      }
+    })();
+    return 'more';
+  }
+
+  /**
    * The library's books without stage 1's file facts or stage 3's text facts (books added since
    * those stages' analyses) are stated and read now, so a new file is compared with every book.
    * At most 2,000 a run (the rest the next run); false when stopped.
@@ -2313,7 +2756,11 @@ export class BookArrivals {
 
   private planStep(run: RunRow & { p: RunProgress }, p: RunProgress): void {
     const now = Date.now();
-    this.reapplySameText(run.id);
+    this.reapplySameText(
+      run.id,
+      p.pairs.map((x) => x.key),
+      p.libraryId,
+    );
     for (const pair of p.pairs) {
       // A folder's first run (its Preview) is done once every file in it was looked at; from
       // then on it stays done (files a later download leaves waiting don't undo it). Runs that
@@ -2357,9 +2804,9 @@ export class BookArrivals {
    * Whether some file of a folder set up now, waiting to settle, has settled (a follow-up run
    * looks at it; a folder no longer set up never starts one).
    */
-  private settledWaiting(now: number): boolean {
+  private settledWaiting(libraryId: string, now: number): boolean {
     const a = getSettings(this.db).arrivals;
-    const keys = a.pairs.map((x) => `${x.id}|${x.source}`);
+    const keys = a.pairs.filter((x) => x.libraryId === libraryId).map((x) => `${x.id}|${x.source}`);
     if (!keys.length) return false;
     const settleMs = a.settleMinutes * 60_000;
     return !!this.db
@@ -2401,7 +2848,7 @@ export class BookArrivals {
 
   /** Why a write (an add, a removal, a field write) must wait: the safety checks. */
   private checksWait(p: RunProgress): boolean {
-    const c = this.deps.checksPass?.();
+    const c = this.deps.checksPass?.(p.libraryId ?? this.deps.targetLibrary() ?? '');
     if (c && !c.ok) {
       p.waiting = `Waiting for the safety checks: ${c.failing.join('; ')}`;
       return true;
@@ -2678,7 +3125,7 @@ export class BookArrivals {
     }
     const ins = this.db.prepare(
       `INSERT INTO calibre_arrival_books (run_id, library_id, calibre_id, calibre_uuid, origin, file_id)
-       VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(run_id, calibre_id) DO NOTHING`,
+       VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(run_id, library_id, calibre_id) DO NOTHING`,
     );
     for (const id of p.scope.import) {
       const b = books.get(id);
@@ -2884,6 +3331,11 @@ export class BookArrivals {
           const kk = await withFile(kept);
           if (a && kk) proposeStage3Removal(pd, a, kk, pair);
         }
+        // Manga part B (answer 3): the same books against the other libraries, review only.
+        for (const other of p.otherLibraries ?? []) {
+          if (shouldStop()) return false;
+          await this.crossHand(run.id, libraryId, other, hand, news, pacer, shouldStop);
+        }
         return true;
       },
       shouldStop,
@@ -2891,6 +3343,103 @@ export class BookArrivals {
     if (ok === null || ok === false) return 'wait';
     this.next(run.id, p, 'removals');
     return 'more';
+  }
+
+  /**
+   * Manga part B (answer 3 at stop 0): books added by hand to this library, checked against
+   * another library: the same file (stage 1's hashes there) or the same text (that library's
+   * candidate index, stage 3's measure and rules). A match is a 'cross_copy' review item, never a
+   * removal (nothing leaves one library because of a book in another).
+   */
+  private async crossHand(
+    runId: number,
+    libraryId: string,
+    other: string,
+    hand: SnapshotBook[],
+    own: Map<number, NewText>,
+    pacer: SourcePacer,
+    shouldStop: () => boolean,
+  ): Promise<void> {
+    const row = getLibrary(this.deps.main, other);
+    if (!row || !this.deps.calibreDir || !fs.existsSync(snapshotFile(this.deps.cacheDir, other)))
+      return;
+    const name = row.name || row.folder;
+    const libDir = path.join(this.deps.calibreDir, row.folder);
+    const ownDir = path.join(this.deps.calibreDir, getLibrary(this.deps.main, libraryId)!.folder);
+    const books = this.snapshotBooks(other);
+    const cd = this.compareDeps(other, libDir, books);
+    const pd = this.passDeps(runId, other, libDir);
+    const review = (b: SnapshotBook, there: SnapshotBook, detail: Record<string, unknown>) =>
+      this.addReview(
+        runId,
+        `cross:${b.uuid}:${there.uuid}`,
+        'cross_copy',
+        null,
+        there.calibreId,
+        there.uuid,
+        { ...detail, title: there.title, newId: b.calibreId, library: other, libraryName: name },
+        other,
+      );
+    const found = new Set<number>();
+    // The same file.
+    const libPacer = new Pacer(getSettings(this.db).pacing.readMbPerSecond * 1024 * 1024);
+    for (const b of hand) {
+      if (shouldStop()) return;
+      const file = resolveInside(ownDir, b.filePath) as string;
+      const st = await statFile(file);
+      if (!st) continue;
+      const same = await libraryHashesOfSize(pd, books, st.size, libPacer, shouldStop);
+      if (!same.length) continue;
+      const h = await hashSource(file, pacer, shouldStop);
+      const hit = h ? same.find((s) => s.sha256 === h.sha256) : undefined;
+      if (hit && books.get(hit.calibreId)) {
+        review(b, books.get(hit.calibreId)!, {
+          reason: `The same file as ${name} book ${hit.calibreId}`,
+        });
+        found.add(b.calibreId);
+      }
+    }
+    // The same text: the hand books' sketches under the other library, at keys of their own.
+    const keyOf = (calibreId: number) => -(HAND_CROSS_KEY + calibreId);
+    const news = new Map<number, NewText>();
+    for (const b of hand) {
+      const t = own.get(b.calibreId);
+      if (!t || t.error || t.imageOnly || found.has(b.calibreId)) continue;
+      copySketchAs(cd, libraryId, b.calibreId, keyOf(b.calibreId));
+      news.set(keyOf(b.calibreId), { ...t, key: keyOf(b.calibreId) });
+    }
+    if (!news.size) return;
+    try {
+      const pairs = (await candidatePairsOf(cd, [...news.values()])).filter(
+        (pr) => pr.a < 0 !== pr.b < 0,
+      );
+      if (!pairs.length) return;
+      const measured = await measurePairs(cd, news, pairs);
+      const quality = this.qualityOf(cd, news, new Map(), pacer);
+      for (const m of measured) {
+        if (!m.m || shouldStop()) continue;
+        const k = m.pair.a < 0 ? m.pair.a : m.pair.b;
+        const otherKey = k === m.pair.a ? m.pair.b : m.pair.a;
+        const v = await judgePair(cd, k, otherKey, m.m, news, quality);
+        if (v.cls !== 'duplicate' && v.cls !== 'superset') continue;
+        const b = hand.find((x) => keyOf(x.calibreId) === k);
+        const there = books.get(otherKey);
+        if (!b || !there) continue;
+        review(b, there, {
+          reason: `The same text as ${name} book ${otherKey} (${v.reason})`,
+          pair: {
+            aInB: v.aInB,
+            bInA: v.bInA,
+            cls: v.cls,
+            rule: v.rule,
+            reason: v.reason,
+            best: v.best,
+          },
+        });
+      }
+    } finally {
+      dropCrossSketches(cd);
+    }
   }
 
   // ---------------------------------------------------------------- stage 4
@@ -2912,7 +3461,7 @@ export class BookArrivals {
     libraryId: string,
     shouldStop: () => boolean,
   ): Promise<'more' | 'wait'> {
-    const a4 = this.deps.analysis4;
+    const a4 = this.a4(libraryId);
     const lib4 = a4?.progress() ?? null;
     if (!a4 || !lib4 || lib4.phase !== 'done') {
       if (a4 && lib4 && lib4.phase !== 'done') {
@@ -2973,11 +3522,12 @@ export class BookArrivals {
   private async aiStep(
     run: RunRow & { p: RunProgress },
     p: RunProgress,
-    _libraryId: string,
+    libraryId: string,
     shouldStop: () => boolean,
   ): Promise<'more' | 'wait'> {
-    const a4 = this.deps.analysis4;
-    if (!this.ai4 || !a4 || !p.stage4) {
+    const a4 = this.a4(libraryId);
+    const ai4 = this.ai4Of(libraryId);
+    if (!ai4 || !a4 || !p.stage4) {
       this.next(run.id, p, 'write4');
       return 'more';
     }
@@ -2985,7 +3535,7 @@ export class BookArrivals {
     if (design !== 'E' && !p.jGate) {
       const lib4 = a4.progress();
       if (lib4) {
-        const g = await this.ai4.jGate(lib4, design, shouldStop);
+        const g = await ai4.jGate(lib4, design, shouldStop);
         if (!g.gate) {
           p.waiting =
             g.wait ?? `Asking the stronger pair about the labeled books (the ${design} gate)`;
@@ -2999,7 +3549,7 @@ export class BookArrivals {
     }
     p.ai ??= emptyArrivalAi(design);
     const uuids = this.stage4Uuids(p);
-    const r = await this.ai4.step(p.stage4, p.ai, uuids, p.jGate, shouldStop);
+    const r = await ai4.step(p.stage4, p.ai, uuids, p.jGate, shouldStop);
     p.cost = p.ai.cost;
     p.waiting = p.ai.wait;
     const c = this.count(p, 'ai');
@@ -3087,9 +3637,10 @@ export class BookArrivals {
     // (they had waited for the next rules deploy; the user, 2026-11-25).
     const so = stage === 4 ? p.ai?.series : null;
     if (so?.existing?.length && (so.existingDone ?? 0) < so.existing.length) {
-      const lib4 = this.deps.analysis4?.progress();
-      if (lib4 && this.ai4) {
-        const all = await this.ai4.proposeExisting(lib4, so, () => false);
+      const lib4 = this.a4(libraryId)?.progress();
+      const ai4 = this.ai4Of(libraryId);
+      if (lib4 && ai4) {
+        const all = await ai4.proposeExisting(lib4, so, () => false);
         this.save(run.id, p);
         if (!all) {
           p.waiting = `Proposing the series changes of books already in the library (${so.existingDone} of ${so.existing.length})`;
@@ -3208,7 +3759,9 @@ export class BookArrivals {
     const mode = mv ? getMoveState(this.db).mode : 'off';
     const uuids = new Set(this.scopeUuids(p, libraryId));
     const target = mv?.pass.targetLibrary() ?? null;
-    if (!mv || mode === 'off' || !target || uuids.size === 0) {
+    // Manga part B: only a run of the move's source library moves its manga (never the manga
+    // library's own run into itself).
+    if (!mv || mode === 'off' || !target || uuids.size === 0 || libraryId === target) {
       p.move =
         mv && uuids.size > 0
           ? {
@@ -3219,9 +3772,11 @@ export class BookArrivals {
               moved: 0,
               note: !target
                 ? 'The manga library is not in the reader'
-                : mode === 'off'
-                  ? 'The move is Off'
-                  : null,
+                : libraryId === target
+                  ? null
+                  : mode === 'off'
+                    ? 'The move is Off'
+                    : null,
             }
           : (p.move ?? null);
       this.next(run.id, p, 'report');
@@ -3332,18 +3887,30 @@ export class BookArrivals {
   private addReview(
     runId: number,
     key: string,
-    kind: 'better_copy' | 'archive' | 'add_failed' | 'too_long',
+    kind: 'better_copy' | 'archive' | 'add_failed' | 'too_long' | 'cross_copy',
     fileId: number | null,
     calibreId: number | null,
     uuid: string | null,
     detail: Record<string, unknown>,
+    /** Manga part B: the library of the Calibre book named (another than the file's own). */
+    libraryId: string | null = null,
   ): void {
     this.db
       .prepare(
-        `INSERT INTO calibre_arrival_reviews (review_key, kind, file_id, calibre_id, calibre_uuid, detail_json, run_id, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(review_key) DO NOTHING`,
+        `INSERT INTO calibre_arrival_reviews (review_key, kind, file_id, calibre_id, calibre_uuid, detail_json, run_id, created_at, calibre_library_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(review_key) DO NOTHING`,
       )
-      .run(key, kind, fileId, calibreId, uuid, JSON.stringify(detail), runId, Date.now());
+      .run(
+        key,
+        kind,
+        fileId,
+        calibreId,
+        uuid,
+        JSON.stringify(detail),
+        runId,
+        Date.now(),
+        libraryId,
+      );
   }
 
   private addReviews(runId: number, reviews: PassReview[]): void {
@@ -3371,6 +3938,9 @@ export class BookArrivals {
     if (!r) throw new Error('No such review item');
     const allowed: Record<string, string[]> = {
       better_copy: ['keep_library', 'add_new', 'keep_both', 'clear'],
+      // Manga part B: a copy of another library's book: recorded only (nothing is removed from
+      // one library because of another; you act in Calibre).
+      cross_copy: ['keep_library', 'keep_both', 'seen', 'clear'],
       archive: ['seen', 'clear'],
       add_failed: ['retry', 'seen', 'clear'],
       too_long: ['seen', 'clear'],
@@ -3424,6 +3994,13 @@ export class BookArrivals {
           { cleanup: this.db, cacheDir: this.deps.cacheDir, libraryId: p.libraryId } as CompareDeps,
           decided,
         );
+      // Manga part B: the copies under the other libraries (the check across them) go too.
+      for (const lib of p.otherLibraries ?? [])
+        dropCrossSketches({
+          cleanup: this.db,
+          cacheDir: this.deps.cacheDir,
+          libraryId: lib,
+        } as CompareDeps);
     } catch (err) {
       this.log(`New arrivals: the cache's sketches were not tidied: ${(err as Error).message}`);
     }
@@ -3435,7 +4012,11 @@ export class BookArrivals {
          WHERE id = ?`,
       )
       .run(state, t, JSON.stringify(p), JSON.stringify(report), error, runId);
-    this.setState({ current_run: null });
+    // The run's own library (its row: a run made before manga part B is the primary library's).
+    const owner = this.db
+      .prepare('SELECT library_id FROM calibre_arrivals_state WHERE current_run = ?')
+      .get(runId) as { library_id: string } | undefined;
+    if (owner) this.setState({ current_run: null }, owner.library_id);
     this.log(
       `New arrivals: run ${runId} ${state}: ${report.added} added, ${report.outcomes.identical ?? 0} identical, ${report.outcomes.duplicate ?? 0} same text, ${report.outcomes.not_imported ?? 0} not imported, ${report.newReview} new to review`,
     );
@@ -3446,19 +4027,33 @@ export class BookArrivals {
    * with it, before anything is planned or added: a new book with the same text as another copy
    * and no clear winner is a duplicate. Only books still 'new'; once per plan step.
    */
-  reapplySameText(runId: number): number {
-    const rows = this.db
-      .prepare(
-        `SELECT id, facts_json FROM calibre_arrival_files INDEXED BY calibre_arrival_files_outcome
-         WHERE outcome = 'new' AND gone_at IS NULL AND json_extract(facts_json, '$.compared') = 1`,
-      )
-      .all() as { id: number; facts_json: string }[];
+  reapplySameText(runId: number, pairKeys?: string[], libraryId?: string | null): number {
+    // Manga part B: the run's own folders (each library's runs decide their own files).
+    const keys = pairKeys ?? [];
+    const rows = (
+      pairKeys
+        ? keys.length
+          ? this.db
+              .prepare(
+                `SELECT id, facts_json FROM calibre_arrival_files INDEXED BY calibre_arrival_files_outcome
+                 WHERE outcome = 'new' AND pair_key IN (${keys.map(() => '?').join(', ')})
+                   AND gone_at IS NULL AND json_extract(facts_json, '$.compared') = 1`,
+              )
+              .all(...keys)
+          : []
+        : this.db
+            .prepare(
+              `SELECT id, facts_json FROM calibre_arrival_files INDEXED BY calibre_arrival_files_outcome
+               WHERE outcome = 'new' AND gone_at IS NULL AND json_extract(facts_json, '$.compared') = 1`,
+            )
+            .all()
+    ) as { id: number; facts_json: string }[];
     const set = this.db.prepare(
       `UPDATE calibre_arrival_files SET outcome = 'duplicate', detail = ?, calibre_id = ?,
          calibre_uuid = ?, decided_at = ?, run_id = ? WHERE id = ? AND outcome = 'new'`,
     );
     let n = 0;
-    const lib = this.libraryOfRuns();
+    const lib = this.libraryOfRuns(libraryId);
     this.db.transaction(() => {
       for (const r of rows) {
         const tie = sameTextNoWinner(
@@ -3483,8 +4078,8 @@ export class BookArrivals {
     return n;
   }
 
-  private libraryOfRuns(): Map<number, SnapshotBook> | null {
-    const libraryId = this.deps.targetLibrary();
+  private libraryOfRuns(of?: string | null): Map<number, SnapshotBook> | null {
+    const libraryId = of ?? this.deps.targetLibrary();
     return libraryId ? this.snapshotBooks(libraryId) : null;
   }
 
