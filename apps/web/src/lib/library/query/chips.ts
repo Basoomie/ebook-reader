@@ -43,6 +43,23 @@ export function activeChips(text: string): Set<ChipId> {
   return active;
 }
 
+/**
+ * Whether the search lists only Completed books (a status term whose values are all
+ * `completed`, not negated): the Library opens such a list newest completed first.
+ */
+export function listsOnlyCompleted(text: string | null | undefined): boolean {
+  if (!text) return false;
+  const parsed = parseQuery(text);
+  if (!parsed.ok) return false;
+  return parsed.query.terms.some(
+    (t) =>
+      t.type === 'status' &&
+      !t.negated &&
+      t.values.length > 0 &&
+      t.values.every((v) => v === 'completed')
+  );
+}
+
 /** Replaces text[start, end) and tidies the spaces around the cut. */
 function splice(text: string, start: number, end: number, insert: string): string {
   const before = text.slice(0, start);

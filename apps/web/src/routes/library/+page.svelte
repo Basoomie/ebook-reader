@@ -116,6 +116,7 @@
   import {
     activeChips,
     chipOnlyQuery,
+    listsOnlyCompleted,
     CHIPS,
     toggleChip,
     type ChipId
@@ -1304,13 +1305,18 @@
     const by = TABS.find((t) => t.id === tab)?.by ?? null;
     if (by && group === null) return 'groups';
     if (group?.by === 'series' && group.name !== null) return 'series';
-    if (group) return 'books';
+    // Every list of Completed books (the collection, the chip, a typed search, a saved search)
+    // opens newest completed first; a series keeps its own order.
+    const completed = () =>
+      listsOnlyCompleted(appliedQuery) ||
+      (collectionId !== null &&
+        listsOnlyCompleted(builtinCollection(collectionId)?.query ?? smartQuery()));
+    if (group) return completed() ? 'completed' : 'books';
     if (collectionId !== null) {
       const c = collectionList.find((x) => x.id === collectionId);
       if (c?.type === 'manual') return 'list';
-      return collectionId === 'completed' ? 'completed' : 'books';
     }
-    return 'books';
+    return completed() ? 'completed' : 'books';
   }
 
   /** WP19a: a new sort from the Sort menu (remembered per device outside a series or list). */
