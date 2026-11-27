@@ -522,6 +522,59 @@ describe('the pass through the real sidecar', () => {
     await runUntil(w, 'spot');
     await pass().step();
     const lib = env.libraryId();
+    // One bar for converting and checking (the server checks each EPUB as it arrives).
+    const bars = pass().bars(lib);
+    expect(
+      bars.filter((b) => b.phase === 'convert' || b.phase === 'check').map((b) => b.phase),
+    ).toEqual(['convert']);
+    const convertBar = bars.find((b) => b.phase === 'convert')!;
+    expect(convertBar.label).toBe('Converted and checked');
+    expect(convertBar.done).toBe(convertBar.total);
+    expect(convertBar.leftMs).toBe(0);
+    // The time left is scaled by the run's pace on the clock: one book opened again, its
+    // format's books spread 4 times their measured time apart, is 4 times its measured mean.
+    const conv = env.cleanupDb
+      .prepare(
+        `SELECT id, source_format AS f, run FROM calibre_format_books WHERE converted_at IS NOT NULL ORDER BY id`,
+      )
+      .all() as { id: number; f: string; run: number }[];
+    const saved = env.cleanupDb
+      .prepare('SELECT id, state, converted_at, result_json FROM calibre_format_books')
+      .all() as {
+      id: number;
+      state: string;
+      converted_at: number | null;
+      result_json: string | null;
+    }[];
+    const one = conv.find((c) => conv.filter((d) => d.f === c.f).length >= 4)!;
+    const same = conv.filter((c) => c.f === one.f);
+    same.forEach((c, i) => {
+      env.cleanupDb
+        .prepare(
+          `UPDATE calibre_format_books SET converted_at = ?, result_json = json_set(result_json, '$.ms', 1000) WHERE id = ?`,
+        )
+        .run(1_000_000 + i * 4000, c.id);
+    });
+    env.cleanupDb
+      .prepare(
+        'UPDATE calibre_format_books SET converted_at = NULL WHERE run = ? AND id NOT IN (' +
+          same.map((c) => c.id).join(',') +
+          ')',
+      )
+      .run(one.run);
+    env.cleanupDb
+      .prepare("UPDATE calibre_format_books SET state = 'waiting' WHERE id = ?")
+      .run(one.id);
+    const reopened = pass()
+      .bars(lib)
+      .find((b) => b.phase === 'convert')!;
+    expect(reopened.leftMs).toBe(4000);
+    for (const r of saved)
+      env.cleanupDb
+        .prepare(
+          'UPDATE calibre_format_books SET state = ?, converted_at = ?, result_json = ? WHERE id = ?',
+        )
+        .run(r.state, r.converted_at, r.result_json, r.id);
     const rows = Object.fromEntries(
       (
         env.cleanupDb

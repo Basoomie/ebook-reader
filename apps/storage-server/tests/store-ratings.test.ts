@@ -477,9 +477,61 @@ describe('the refresher (the cleanup fetch queue)', () => {
     });
     const day = 86_400_000;
     e.db.prepare('UPDATE store_ratings SET checked_at = ?').run(Date.now() - 2 * day);
+    await s.refreshDue();
     expect(s.dueIds('bookwalker', 10)).toEqual([]);
     e.db.prepare('UPDATE store_ratings SET checked_at = ?').run(Date.now() - 91 * day);
+    await s.refreshDue();
     expect(s.dueIds('bookwalker', 10)).toEqual([BW_JAPAN_ONLY]);
+  });
+
+  it('reads saved searches again only for an id not looked for before', async () => {
+    const { e, link } = await env();
+    link('Beta', 'bookmeter', '6826860');
+    // No search lists Gamma's id: it stays without a figure, and every fill looks for it.
+    link('Gamma', 'bookmeter', '999');
+    const { q } = fetchQueue();
+    q.enqueue(
+      {
+        site: 'bookmeter',
+        key: 'search-jp-au:x y',
+        url: 'https://bookmeter.com/search?author=x&keyword=y&partial=true&sort=recommended&type=japanese',
+        priority: 0,
+      },
+      null,
+      Date.now(),
+    );
+    for (let got = 0; got < 1; ) {
+      for (const r of q.claim().requests) {
+        q.report(
+          r.id,
+          r.leaseToken,
+          answer(
+            '<ul><li class="group__book"><div class="detail__title"><a href="/books/6826860">本</a></div>' +
+              '<dl><dt class="options__title">登録</dt><dd class="options__item">1,234</dd></dl></li></ul>',
+          ),
+        );
+        got += 1;
+      }
+      if (got < 1) await new Promise((res) => setTimeout(res, 300));
+    }
+    let reads = 0;
+    const read = q.readAnswerAsync.bind(q);
+    q.readAnswerAsync = (id: number) => {
+      reads += 1;
+      return read(id);
+    };
+    const s = ratingsService(e.db, null, q);
+    await s.firstFill();
+    expect(savedRating(e.db, 'bookmeter', '6826860')).toMatchObject({ count: 1234 });
+    expect(reads).toBe(1);
+    // The same ids, no new search: nothing is read again.
+    await s.firstFill();
+    expect(reads).toBe(1);
+    // A new id: the saved searches are read again for it.
+    link('Delta', 'bookmeter', '1000');
+    await s.firstFill();
+    expect(reads).toBe(2);
+    expect(savedRating(e.db, 'bookmeter', '999')).toBeNull();
   });
 
   it("takes 読書メーター's 登録数 from a saved search, then asks the book page for its reviews", async () => {
@@ -526,6 +578,7 @@ describe('the refresher (the cleanup fetch queue)', () => {
       checkedAt: finished,
     });
     // Fresh from the search: no book page is asked (its 感想 count is not shown).
+    await s.refreshDue();
     expect(s.dueIds('bookmeter', 10)).toEqual([]);
   });
 
@@ -536,8 +589,10 @@ describe('the refresher (the cleanup fetch queue)', () => {
     saveRatingSettings(e.db, { refresh: true });
     let now = Date.now();
     const s = ratingsService(e.db, null, q, () => now);
+    await s.refreshDue();
     expect(s.dueIds('bookmeter', 10)).toEqual([]);
     now += 49 * 3_600_000;
+    await s.refreshDue();
     expect(s.dueIds('bookmeter', 10)).toEqual(['6826860']);
   });
 
@@ -550,6 +605,7 @@ describe('the refresher (the cleanup fetch queue)', () => {
     let now = Date.now();
     const s = ratingsService(e.db, null, q, () => now);
     // Books new to the reader wait (48 h by default) for the new arrivals' stage 4.
+    await s.refreshDue();
     expect(s.dueIds('amazon_jp', 10)).toEqual([]);
     // Stage 4's own request for Beta's page is still open: Beta waits on, Alpha is asked.
     q.enqueue(
@@ -563,6 +619,7 @@ describe('the refresher (the cleanup fetch queue)', () => {
       now,
     );
     now += 49 * 3_600_000;
+    await s.refreshDue();
     expect(s.dueIds('amazon_jp', 10)).toEqual(['B07DXV5BP2']);
   });
 

@@ -16,7 +16,7 @@ import { judgeBookmeter } from '../cleanup/stage4/store-links';
 import { titleSimilarity } from '../cleanup/stage4/bookmeter-rules';
 import { clean } from '../cleanup/stage4/rules-v3';
 import { N, NA } from '../cleanup/title-rules';
-import { catalogVersion } from '../catalog/catalog-version';
+import { bookListVersion } from '../catalog/catalog-version';
 
 export interface IndexedBook {
   id: string;
@@ -48,37 +48,55 @@ const push = <T>(m: Map<string, T[]>, k: string, v: T) => {
 export const titleKey = (t: string): string => N(clean(t)) ?? '';
 
 let cached: { db: Database.Database; index: LibraryIndex } | null = null;
+/** Titles' keys from the last build (titleKey is the slow part: 0.5 s for 60,000 books). */
+let keys = new Map<string, string>();
 
-/** The books in the library now, indexed for matching; rebuilt when the catalog changed. */
-export function libraryIndex(db: Database.Database): LibraryIndex {
-  const version = catalogVersion(db);
-  if (cached && cached.db === db && cached.index.version === version) return cached.index;
+/** Book rowids per slice of an index build: about 15 ms on the PC (the NAS is ~2.5x slower). */
+const ROWS_PER_SLICE = 500;
+
+type BookRow = Omit<IndexedBook, 'authors' | 'key'>;
+
+/**
+ * Builds the index in slices of book rowids (the order of a plain scan of books), each slice a
+ * short synchronous step; `between` runs after each slice (the async build yields there).
+ * The version is the one read before the first slice: a change during the build builds again.
+ */
+function* buildSlices(db: Database.Database): Generator<void, LibraryIndex> {
+  const version = bookListVersion(db);
+  const maxRow =
+    (db.prepare('SELECT MAX(rowid) AS m FROM books').get() as { m: number | null }).m ?? 0;
+  const slice = db.prepare(
+    `SELECT b.id, b.library_id AS libraryId, b.title, s.name AS series, b.created_at AS createdAt,
+            bi.value AS savedId
+     FROM books b
+     LEFT JOIN series s ON s.id = b.series_id
+     LEFT JOIN book_identifiers bi ON bi.book_id = b.id AND bi.type = 'bookmeter'
+     WHERE b.rowid > ? AND b.rowid <= ?
+       AND EXISTS (SELECT 1 FROM book_sources src WHERE src.book_id = b.id AND src.missing_at IS NULL)
+     ORDER BY b.rowid`,
+  );
+  const authorsOf = db.prepare(
+    `SELECT a.name FROM book_authors ba JOIN authors a ON a.id = ba.author_id
+     WHERE ba.book_id = ? ORDER BY ba.position`,
+  );
+  authorsOf.pluck();
   const books = new Map<string, IndexedBook>();
-  for (const r of db
-    .prepare(
-      `SELECT b.id, b.library_id AS libraryId, b.title, s.name AS series, b.created_at AS createdAt,
-              bi.value AS savedId
-       FROM books b
-       LEFT JOIN series s ON s.id = b.series_id
-       LEFT JOIN book_identifiers bi ON bi.book_id = b.id AND bi.type = 'bookmeter'
-       WHERE EXISTS (SELECT 1 FROM book_sources src WHERE src.book_id = b.id AND src.missing_at IS NULL)`,
-    )
-    .all() as Omit<IndexedBook, 'authors' | 'key'>[]) {
-    books.set(r.id, {
-      ...r,
-      savedId: r.savedId?.trim() || null,
-      authors: [],
-      key: titleKey(r.title),
-    });
+  const nextKeys = new Map<string, string>();
+  for (let from = 0; from < maxRow; from += ROWS_PER_SLICE) {
+    for (const r of slice.all(from, from + ROWS_PER_SLICE) as BookRow[]) {
+      let key = nextKeys.get(r.title) ?? keys.get(r.title);
+      if (key === undefined) key = titleKey(r.title);
+      nextKeys.set(r.title, key);
+      books.set(r.id, {
+        ...r,
+        savedId: r.savedId?.trim() || null,
+        authors: authorsOf.all(r.id) as string[],
+        key,
+      });
+    }
+    yield;
   }
-  for (const r of db
-    .prepare(
-      `SELECT ba.book_id, a.name FROM book_authors ba JOIN authors a ON a.id = ba.author_id
-       ORDER BY ba.book_id, ba.position`,
-    )
-    .all() as { book_id: string; name: string }[]) {
-    books.get(r.book_id)?.authors.push(r.name);
-  }
+  keys = nextKeys;
   const index: LibraryIndex = {
     version,
     books,
@@ -86,13 +104,46 @@ export function libraryIndex(db: Database.Database): LibraryIndex {
     byAuthor: new Map(),
     byTitle: new Map(),
   };
+  let n = 0;
   for (const b of books.values()) {
     if (b.savedId) push(index.bySavedId, b.savedId, b);
     for (const a of b.authors) push(index.byAuthor, NA(a), b);
     push(index.byTitle, b.key, b);
+    if (++n % (ROWS_PER_SLICE * 10) === 0) yield;
   }
-  cached = { db, index };
   return index;
+}
+
+const isFresh = (db: Database.Database) =>
+  !!cached && cached.db === db && cached.index.version === bookListVersion(db);
+
+/**
+ * The books in the library now, indexed for matching; rebuilt when the book list changed (not
+ * when only figures such as ratings did). Synchronous: the loop builds it ahead with
+ * libraryIndexAsync, so a route finds it built.
+ */
+export function libraryIndex(db: Database.Database): LibraryIndex {
+  if (isFresh(db)) return cached!.index;
+  const it = buildSlices(db);
+  let r = it.next();
+  while (!r.done) r = it.next();
+  cached = { db, index: r.value };
+  return r.value;
+}
+
+/** The same index, built in slices with a turn of the event loop between them. */
+export async function libraryIndexAsync(db: Database.Database): Promise<LibraryIndex> {
+  if (isFresh(db)) return cached!.index;
+  const it = buildSlices(db);
+  let r = it.next();
+  while (!r.done) {
+    await new Promise<void>((res) => setImmediate(res));
+    // A synchronous build finished meanwhile (a route): use it.
+    if (isFresh(db)) return cached!.index;
+    r = it.next();
+  }
+  cached = { db, index: r.value };
+  return r.value;
 }
 
 export interface EntryToMatch {

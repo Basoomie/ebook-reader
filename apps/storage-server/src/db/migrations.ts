@@ -1656,6 +1656,17 @@ export const MIGRATIONS: { version: number; name: string; sql: string }[] = [
   },
   {
     version: 36,
+    name: 'Present books counted from an index',
+    // The server's stalls (2026-11-26): the cleanup's count of a library's present Calibre
+    // books (cleanup/handoff.ts presentBookCount, on the page's polls and every batch) read
+    // every row of the library (0.45 s on the PC, over 1 s on the NAS); from this index it
+    // reads only the index (2 ms).
+    sql: `
+      CREATE INDEX book_sources_present ON book_sources (library_id, kind, missing_at);
+    `,
+  },
+  {
+    version: 37,
     name: 'The Calibre index: behind since, checked at',
     // 2026-11-26 (the japanese-library index stall): indexed_at only moves when an index runs,
     // so a library that was up to date and one whose copies kept failing looked the same.
