@@ -59,6 +59,7 @@ import { MovePass } from './move/pass';
 import { recentPaceLeftMs } from './move/pace';
 import { moveAnalysisId } from './move/state';
 import {
+  FORMATS_CONVERT_SIDECAR_VERSION,
   FORMATS_SIDECAR_VERSION,
   FORMATS_STAGE,
   MOVE_SIDECAR_VERSION,
@@ -1459,9 +1460,10 @@ export class CleanupService {
       listedText: LISTED_TEXT,
       spot: pass.spotCounts(),
       spotPassed: pass.spotPassed(),
+      // Conversions need the sidecar of rules 2 (1.8.1); it also writes (1.8.0).
       sidecar: {
-        ready: this.batches.sidecarAtLeast(FORMATS_SIDECAR_VERSION),
-        need: FORMATS_SIDECAR_VERSION,
+        ready: this.batches.sidecarAtLeast(FORMATS_CONVERT_SIDECAR_VERSION),
+        need: FORMATS_CONVERT_SIDECAR_VERSION,
       },
       batches: pass.batchesOf(20).map((b) => ({
         id: b.id,

@@ -73,7 +73,7 @@ import { FORMATS_STAGE, FormatWorker, type FormatPrograms } from './formats';
  * EPUB to its own book, or a proven copy folded into its EPUB twin (its file added there, the
  * copy removed the stage-1 way); Undo by remove_format (only a format the pass added).
  */
-export const SIDECAR_VERSION = '1.8.0';
+export const SIDECAR_VERSION = '1.8.1';
 
 /** The wait after a batch before asking for the next one (WP20g: the full poll after every batch cost ~1 h of run 7). */
 export const AFTER_BATCH_MS = 1000;

@@ -46,6 +46,8 @@ export interface FormatsProgress {
   };
   error: string | null;
   times?: Record<string, { n: number; maxMs: number; totalMs: number }>;
+  /** The rules the run's books were decided under (absent: 1). See FORMATS_RULES_VERSION. */
+  rulesVersion?: number;
 }
 
 export function emptyFormatsProgress(run = 1, libraryId: string | null = null): FormatsProgress {

@@ -46,6 +46,8 @@ export type ListedReason =
   | 'unknown'
   | 'failed'
   | 'check_failed'
+  | 'too_little'
+  | 'ocr_only'
   | 'gone';
 
 /** The card's words for each reason a book is listed and left. */
@@ -64,6 +66,8 @@ export const LISTED_TEXT: Record<ListedReason, string> = {
   unknown: 'Nothing readable in the archive',
   failed: 'The conversion failed',
   check_failed: 'The EPUB did not pass the check',
+  too_little: 'Too little to be a book (a few lines, no pictures)',
+  ocr_only: 'Only mokuro’s text, without the pages’ pictures',
   gone: 'No longer in Calibre as selected',
 };
 

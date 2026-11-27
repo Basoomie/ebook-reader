@@ -4,11 +4,16 @@
  *     vendor/epub-count.cjs: the very code a device runs);
  *   - a text book keeps its text: calibre's text of the EPUB holds at least `textKeptMin` of
  *     calibre's text of the source, both counted by the reader's rule (the sidecar measured both);
- *   - a picture book keeps every page: the EPUB has at least as many pictures as the archive;
- *   - an extracted or rebuilt EPUB has something to read (text or pictures).
+ *   - a picture book keeps every page: the EPUB's pages show at least as many pictures as the
+ *     archive holds (pictures packed in the EPUB but on no page are not pages: the spot check,
+ *     2026-11-27, found a rebuilt mokuro EPUB with 216 pictures and none shown);
+ *   - an extracted or rebuilt EPUB has something to read (text or pictures);
+ *   - a book with fewer than `minBookChars` characters and no picture on its pages beyond a cover
+ *     is no book (listed and left: an 86-character note, a download advert).
  */
 import fs from 'fs/promises';
 import type { Stage3Reader } from '../../counts/book-text-worker';
+import path from 'path';
 import { ZipFile } from '../../migration/zip-read';
 import type { FormatSettings } from '../settings';
 
@@ -41,16 +46,84 @@ export interface CheckResult {
   textShare: number | null;
   /** What kind of book it is for the spot check: text, picture, extracted, rebuilt. */
   group: 'text' | 'picture' | 'extracted' | 'rebuilt';
+  /** Set when the book is listed for a reason of its own rather than a failed check. */
+  listedAs?: 'too_little';
   ms: number;
 }
 
 const IMAGE = /\.(jpe?g|png|gif|webp|bmp|avif|jxl|tiff?|svg)$/i;
+/** Pages larger than this are not read for their pictures (a page is small; a book is not). */
+const MAX_PAGE_BYTES = 32 * 1024 * 1024;
 
-/** Pictures inside an EPUB (every image entry). */
-export async function epubImageCount(file: string): Promise<number> {
+/** Every picture the markup of a page points at (src, href, xlink:href, url()). Pure. */
+export function pictureRefs(markup: string): string[] {
+  const out: string[] = [];
+  const re =
+    /(?:\b(?:src|href|xlink:href)\s*=\s*["']([^"']+)["']|url\(\s*["']?([^"')]+)["']?\s*\))/gi;
+  for (let m = re.exec(markup); m; m = re.exec(markup)) {
+    const ref = (m[1] ?? m[2] ?? '').trim();
+    const bare = ref.split('#')[0].split('?')[0];
+    if (IMAGE.test(bare)) out.push(bare);
+  }
+  return out;
+}
+
+/** A link inside the EPUB resolved against the file it is in ("a/b.xhtml" + "../i.jpg" = "i.jpg"). */
+function resolveRef(from: string, ref: string): string {
+  let r = ref;
+  try {
+    r = decodeURIComponent(ref);
+  } catch {
+    // Kept as written.
+  }
+  return path.posix.normalize(path.posix.join(path.posix.dirname(from), r)).replace(/^\.\//, '');
+}
+
+/**
+ * Pictures inside an EPUB: every image entry, and the distinct ones its pages show (a picture
+ * linked from a document in the spine, or from a stylesheet such a document links).
+ */
+export async function epubPictures(file: string): Promise<{ entries: number; shown: number }> {
   const zip = await ZipFile.open(file, (f) => fs.open(f, 'r'));
   try {
-    return zip.entries.filter((e) => IMAGE.test(e.name)).length;
+    const images = new Set(zip.entries.filter((e) => IMAGE.test(e.name)).map((e) => e.name));
+    const container = zip.get('META-INF/container.xml');
+    if (!container) return { entries: images.size, shown: 0 };
+    const opfPath = /full-path\s*=\s*["']([^"']+)["']/i.exec(await zip.readText(container))?.[1];
+    const opfEntry = opfPath ? zip.get(opfPath) : undefined;
+    if (!opfPath || !opfEntry) return { entries: images.size, shown: 0 };
+    const opf = await zip.readText(opfEntry);
+    const items = new Map<string, string>();
+    for (const m of opf.matchAll(/<item\b[^>]*>/gi)) {
+      const id = /\bid\s*=\s*["']([^"']+)["']/i.exec(m[0])?.[1];
+      const href = /\bhref\s*=\s*["']([^"']+)["']/i.exec(m[0])?.[1];
+      if (id && href) items.set(id, resolveRef(opfPath, href));
+    }
+    const spine = [...opf.matchAll(/<itemref\b[^>]*\bidref\s*=\s*["']([^"']+)["']/gi)]
+      .map((m) => items.get(m[1]))
+      .filter((x): x is string => !!x);
+    const shown = new Set<string>();
+    const sheets = new Set<string>();
+    const look = (from: string, markup: string, isPage: boolean) => {
+      for (const ref of pictureRefs(markup)) {
+        const name = resolveRef(from, ref);
+        if (images.has(name)) shown.add(name);
+      }
+      if (!isPage) return;
+      for (const m of markup.matchAll(/<link\b[^>]*href\s*=\s*["']([^"']+\.css)["']/gi))
+        sheets.add(resolveRef(from, m[1]));
+    };
+    for (const name of spine) {
+      const e = zip.get(name);
+      if (!e || e.size > MAX_PAGE_BYTES) continue;
+      look(name, (await zip.readBytes(e, MAX_PAGE_BYTES)).toString('utf8'), true);
+    }
+    for (const name of sheets) {
+      const e = zip.get(name);
+      if (!e || e.size > MAX_PAGE_BYTES) continue;
+      look(name, (await zip.readBytes(e, MAX_PAGE_BYTES)).toString('utf8'), false);
+    }
+    return { entries: images.size, shown: shown.size };
   } finally {
     await zip.close();
   }
@@ -68,8 +141,8 @@ export function groupOf(facts: Pick<JobFacts, 'method' | 'kind'>): CheckResult['
 export function judge(
   facts: JobFacts,
   m: { opened: boolean; openError: string | null; readerChars: number | null; epubImages: number },
-  s: Pick<FormatSettings, 'textKeptMin' | 'pictureMaxChars'>,
-): Pick<CheckResult, 'ok' | 'reason' | 'textShare'> {
+  s: Pick<FormatSettings, 'textKeptMin' | 'pictureMaxChars' | 'minBookChars'>,
+): Pick<CheckResult, 'ok' | 'reason' | 'textShare' | 'listedAs'> {
   if (!m.opened)
     return {
       ok: false,
@@ -80,15 +153,36 @@ export function judge(
   const reader = m.readerChars ?? 0;
   if (group === 'picture') {
     if (m.epubImages === 0)
-      return { ok: false, reason: 'The EPUB has no pictures', textShare: null };
+      return { ok: false, reason: 'The EPUB has no pictures on its pages', textShare: null };
     if (facts.sourceImages !== null && m.epubImages < facts.sourceImages)
       return {
         ok: false,
-        reason: `Pages missing: ${m.epubImages} pictures in the EPUB, ${facts.sourceImages} in the archive`,
+        reason: `Pages missing: ${m.epubImages} pictures on the EPUB's pages, ${facts.sourceImages} in the archive`,
         textShare: null,
       };
     return { ok: true, reason: null, textShare: null };
   }
+  // A cover alone is no book: a few lines of text beside it are a note, not a book.
+  if (reader < s.minBookChars && m.epubImages <= 1)
+    return {
+      ok: false,
+      reason: `${reader.toLocaleString('en-US')} characters and no pictures on its pages`,
+      textShare: null,
+      listedAs: 'too_little',
+    };
+  // Pictures packed in a rebuilt archive must still be on the EPUB's pages (mokuro's pages are
+  // pictures that calibre's rebuild can drop from the markup).
+  if (
+    group === 'rebuilt' &&
+    facts.sourceImages !== null &&
+    facts.sourceImages >= 10 &&
+    m.epubImages < facts.sourceImages * 0.9
+  )
+    return {
+      ok: false,
+      reason: `Pictures not on the pages: ${m.epubImages} shown, ${facts.sourceImages} in the archive`,
+      textShare: null,
+    };
   if (group === 'text') {
     const src = facts.sourceChars ?? 0;
     const out = facts.epubChars ?? 0;
@@ -119,12 +213,12 @@ export async function checkEpub(
   file: string,
   facts: JobFacts,
   reader: Stage3Reader,
-  s: Pick<FormatSettings, 'textKeptMin' | 'pictureMaxChars'>,
+  s: Pick<FormatSettings, 'textKeptMin' | 'pictureMaxChars' | 'minBookChars'>,
 ): Promise<CheckResult> {
   const t0 = Date.now();
   let epubImages = 0;
   try {
-    epubImages = await epubImageCount(file);
+    epubImages = (await epubPictures(file)).shown;
   } catch (err) {
     return {
       ok: false,

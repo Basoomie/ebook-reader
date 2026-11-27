@@ -58,6 +58,7 @@ export type FileKind =
   | 'archive-inside'
   | 'text-archive'
   | 'not-book'
+  | 'ocr-only'
   | 'unknown';
 
 export interface ArchiveDecision {
@@ -139,8 +140,14 @@ export function decideArchive(all: ArchiveEntry[], title: string): ArchiveDecisi
     [...folders.keys()].map(volumeOfFolder).filter((v): v is number => v !== null)
   );
   if (volumes.size >= 2) return say('series', `${volumes.size} volume folders of pictures`);
-  if (names.some((n) => n.toLowerCase() === 'meta-inf/container.xml'))
-    return say('epub-shaped', mokuro ? 'An EPUB-shaped mokuro archive' : 'An EPUB-shaped archive');
+  if (names.some((n) => n.toLowerCase() === 'meta-inf/container.xml')) {
+    // mokuro's pages are its pictures with the OCR text laid over them; calibre's rebuild keeps
+    // the text and drops the pictures from the pages (the spot check, 2026-11-27). So a mokuro
+    // archive is a picture book, and one without its pictures (only the OCR text) is no book.
+    if (mokuro && images === 0) return say('ocr-only', 'mokuro’s text without the pages’ pictures');
+    if (mokuro) return say('images', `${images} pictures (mokuro)`);
+    return say('epub-shaped', 'An EPUB-shaped archive');
+  }
   // HTML: calibre's HTMLZ (index.html + metadata.opf at the root), or one page of text.
   const rootHtml = names.filter((n) => !n.includes('/') && HTML.test(n));
   const html = names.filter((n) => HTML.test(n) && !/_files\//i.test(n));
@@ -268,6 +275,7 @@ const KINDS_LISTED: FileKind[] = [
   'archive-inside',
   'text-archive',
   'not-book',
+  'ocr-only',
   'unknown'
 ];
 
