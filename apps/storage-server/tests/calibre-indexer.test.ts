@@ -277,9 +277,10 @@ describe('change detection and snapshots', () => {
     s = getIndexState(e.db, id);
     expect(s).toMatchObject({ status: 'idle', behindSince: null, failures: 0, lastProblem: null });
     expect(s.checkedAt).toBe(s.indexedAt);
-    expect(e.logs.some((l) => /indexed library "a" in [\d.]+ s \(copy [\d.]+ s\)/.test(l))).toBe(
-      true,
-    );
+    // The copy says whether it locked metadata.db (2026-11-27): nobody writes here, so no lock.
+    expect(
+      e.logs.some((l) => /indexed library "a" in [\d.]+ s \(copy [\d.]+ s, no lock\)/.test(l)),
+    ).toBe(true);
 
     // Nothing changed since: up to date, and checked_at says when that was last seen.
     const checked = s.checkedAt!;

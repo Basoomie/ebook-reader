@@ -7,6 +7,17 @@
  * their own, so they take as long as the disk needs, never as long as the server is busy.
  *
  * Reads the source read-only (source-fs.ts); writes only the temporary copy it was given.
+ *
+ * Calibre's lock (2026-11-27). SQLite's backup holds a read lock on metadata.db while each
+ * step runs, and Calibre waits at most 10 s for its database (BUSY_TIMEOUT, calibre 9.18): on
+ * the busy NAS a one-step copy read cold pages for 17-35 s under that lock, Calibre's start
+ * failed with "database is locked" (shown as "appears to be corrupted") and two of its writes
+ * were refused. So the file is first read with plain reads, which take no lock at all, and
+ * that copy is kept when Calibre committed nothing meanwhile: in rollback-journal mode every
+ * commit changes the header's file change counter (offset 24), and a journal file exists from
+ * before Calibre's first page write until its commit. Only when Calibre wrote during every try
+ * does SQLite's backup make the copy, from pages the plain reads just brought into memory, so
+ * its lock is short; the longest time one step held it is reported (`lockMs`).
  */
 import Database from 'better-sqlite3';
 import { createHash } from 'crypto';
@@ -25,6 +36,8 @@ export interface SnapshotJob {
   maxRestarts: number;
   /** Also return the copy's SHA-256 (a cleanup batch's copy). */
   hash: boolean;
+  /** Lock-free reads of the whole file tried before SQLite's backup (0 = the backup only). */
+  lockFreeTries: number;
 }
 
 export type SnapshotJobResult =
@@ -36,6 +49,14 @@ export type SnapshotJobResult =
       restarts: number;
       copyMs: number;
       checkMs: number;
+      /** The copy came from a plain read: metadata.db was never locked. */
+      lockFree: boolean;
+      /** Lock-free reads made (the last one kept when `lockFree`). */
+      lockFreeTries: number;
+      /** Time spent on the lock-free reads (part of copyMs). */
+      readMs: number;
+      /** Longest time one backup step held metadata.db's read lock; 0 when lock-free. */
+      lockMs: number;
     }
   | { ok: false; kind: 'skipped' | 'failed' | 'error'; message: string };
 
@@ -65,26 +86,115 @@ function sha256Sync(file: string): string {
   return hash.digest('hex');
 }
 
+/** The SQLite header: its file change counter is at offset 24. */
+const HEADER_BYTES = 100;
+
+/** True when Calibre has a journal (or WAL) file next to metadata.db: it is mid-write. */
+function journalPresent(source: string): boolean {
+  return fs.existsSync(`${source}-journal`) || fs.existsSync(`${source}-wal`);
+}
+
+function readAt(fd: number, length: number, position: number): Buffer {
+  const buf = Buffer.alloc(length);
+  const n = fs.readSync(fd, buf, 0, length, position);
+  return buf.subarray(0, n);
+}
+
+function removeCopy(tmp: string): void {
+  for (const suffix of ['', '-journal']) {
+    try {
+      fs.unlinkSync(`${tmp}${suffix}`);
+    } catch {
+      // not there
+    }
+  }
+}
+
+/**
+ * One read of the whole file without any lock. True when the copy is a state Calibre
+ * committed: no journal before or after, and the header (with its change counter) and the
+ * size unchanged from before the first byte to after the last. A commit in between changes the
+ * counter; a write still going on at the end has its journal there; a write that began before
+ * the start had its journal there then.
+ */
+export function copyWithoutLock(source: string, tmp: string): boolean {
+  if (journalPresent(source)) return false;
+  const fd = fs.openSync(source, 'r');
+  let out = -1;
+  try {
+    const before = readAt(fd, HEADER_BYTES, 0);
+    const sizeBefore = fs.fstatSync(fd).size;
+    if (before.length < HEADER_BYTES) return false;
+    out = fs.openSync(tmp, 'w');
+    const buf = Buffer.allocUnsafe(CHUNK);
+    let pos = 0;
+    for (;;) {
+      const n = fs.readSync(fd, buf, 0, CHUNK, pos);
+      if (n === 0) break;
+      fs.writeSync(out, buf, 0, n);
+      pos += n;
+    }
+    fs.closeSync(out);
+    out = -1;
+    const after = readAt(fd, HEADER_BYTES, 0);
+    const sizeAfter = fs.fstatSync(fd).size;
+    if (journalPresent(source)) return false;
+    if (!before.equals(after) || sizeBefore !== sizeAfter || pos !== sizeBefore) return false;
+    // The copy's own first page is the state read before (not one read part-way through).
+    const copied = fs.openSync(tmp, 'r');
+    try {
+      return readAt(copied, HEADER_BYTES, 0).equals(before);
+    } finally {
+      fs.closeSync(copied);
+    }
+  } finally {
+    if (out >= 0) fs.closeSync(out);
+    fs.closeSync(fd);
+  }
+}
+
 export async function runSnapshotJob(job: SnapshotJob): Promise<SnapshotJobResult> {
   const started = Date.now();
   let steps = 0;
   let restarts = 0;
   let last = Infinity;
-  const src = openSourceDatabase(job.source);
-  try {
-    await src.backup(job.tmp, {
-      progress: ({ remainingPages }) => {
-        steps += 1;
-        if (remainingPages > last) restarts += 1;
-        last = remainingPages;
-        if (job.oneStep || restarts >= job.maxRestarts) return ALL_PAGES;
-        return job.stepPages;
-      },
-    });
-  } catch (err) {
-    return { ok: false, kind: 'error', message: (err as Error).message ?? String(err) };
-  } finally {
-    src.close();
+  let lockFree = false;
+  let lockFreeTries = 0;
+  while (!lockFree && lockFreeTries < job.lockFreeTries) {
+    lockFreeTries += 1;
+    try {
+      lockFree = copyWithoutLock(job.source, job.tmp);
+    } catch {
+      // An unreadable file: SQLite's backup below reports it properly.
+      lockFree = false;
+    }
+    if (!lockFree) removeCopy(job.tmp);
+  }
+  const readMs = Date.now() - started;
+  let lockMs = 0;
+  if (!lockFree) {
+    const src = openSourceDatabase(job.source);
+    // Each backup step holds the read lock only while it runs (SQLite releases it before the
+    // step returns); the time from the end of one progress call to the next is that step.
+    let stepFrom = Date.now();
+    try {
+      await src.backup(job.tmp, {
+        progress: ({ remainingPages }) => {
+          lockMs = Math.max(lockMs, Date.now() - stepFrom);
+          steps += 1;
+          if (remainingPages > last) restarts += 1;
+          last = remainingPages;
+          stepFrom = Date.now();
+          if (job.oneStep || restarts >= job.maxRestarts) return ALL_PAGES;
+          return job.stepPages;
+        },
+      });
+      lockMs = Math.max(lockMs, Date.now() - stepFrom);
+    } catch (err) {
+      return { ok: false, kind: 'error', message: (err as Error).message ?? String(err) };
+    } finally {
+      src.close();
+    }
   }
   const copyMs = Date.now() - started;
 
@@ -124,6 +234,10 @@ export async function runSnapshotJob(job: SnapshotJob): Promise<SnapshotJobResul
     restarts,
     copyMs,
     checkMs: Date.now() - started - copyMs,
+    lockFree,
+    lockFreeTries,
+    readMs,
+    lockMs,
   };
 }
 

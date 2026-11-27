@@ -341,6 +341,11 @@ export interface CalibreConfig {
   /** A snapshot copy that takes longer than this is abandoned and retried on a later poll. */
   snapshotTimeoutSeconds: number;
   /**
+   * A metadata.db copy that held the database's read lock longer than this is logged as a
+   * warning (2026-11-27: Calibre gives up after 10 s, and showed "appears to be corrupted").
+   */
+  lockWarnSeconds: number;
+  /**
    * Covers of changed books the ingest reads (one stat each) at the same time (2026-11-26: one
    * at a time, each waited for a turn of the busy server's event loop).
    */
@@ -366,6 +371,7 @@ export const DEFAULT_CALIBRE: Omit<CalibreConfig, 'dir' | 'cacheDir'> = {
   settleSeconds: 30,
   maxSettleWaitSeconds: 600,
   snapshotTimeoutSeconds: 600,
+  lockWarnSeconds: 5,
   coverReadsAtOnce: 4,
   maxMissingPercent: 20,
   requireReadonly: true,
@@ -520,6 +526,7 @@ export function parseCalibreConfig(env: Env, warnings: string[]): CalibreConfig 
       10,
       86_400,
     ),
+    lockWarnSeconds: num('CALIBRE_LOCK_WARN_SECONDS', d.lockWarnSeconds, 0.1, 600),
     coverReadsAtOnce: num('CALIBRE_COVER_READS_AT_ONCE', d.coverReadsAtOnce, 1, 32, true),
     maxMissingPercent: num('CALIBRE_MAX_MISSING_PERCENT', d.maxMissingPercent, 0, 100),
     requireReadonly: bool('CALIBRE_REQUIRE_READONLY', d.requireReadonly),
