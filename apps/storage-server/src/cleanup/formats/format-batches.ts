@@ -44,6 +44,12 @@ import { sameEpubContents } from '../move/epub-same';
 import { pauseFormats } from './state';
 import { EpubStore } from './epub-store';
 
+/**
+ * A stored check's note before rules 2 for a book Calibre had without the written EPUB (a write
+ * Calibre never saved): such books are looked at again (verifyStored).
+ */
+const NOT_SAVED = 'Calibre lists no EPUB for the book';
+
 /** What a stage-12 proposal keeps as its evidence. */
 export interface FormatEvidence {
   kind: 'convert' | 'fold';
@@ -579,7 +585,8 @@ export class FormatBatches {
       .prepare(
         `SELECT w.change_id, w.library_id, w.calibre_uuid, w.calibre_id, w.epub_sha256
          FROM calibre_format_writes w LEFT JOIN calibre_format_store s ON s.change_id = w.change_id
-         WHERE w.kind = 'convert' AND w.state = 'written' AND s.change_id IS NULL
+         WHERE w.kind = 'convert' AND w.state = 'written'
+           AND (s.change_id IS NULL OR (s.state = 'missing' AND s.detail = '${NOT_SAVED}'))
          ORDER BY w.written_at LIMIT 1`,
       )
       .get() as
@@ -607,8 +614,32 @@ export class FormatBatches {
            VALUES (?, ?, ?, ?, ?, ?)`,
         )
         .run(w.change_id, state, size, mtime, detail, now);
+    if (dir && live && !epub) {
+      // The book is there without the EPUB the write reported: Calibre refused add_format
+      // ("database is locked") while its content server, asked right after, listed the EPUB from
+      // its memory (2026-11-27, books 69555 and 69556). The write never happened: it is taken back
+      // and the book goes back to be written, after the user restarts calibre (its content server
+      // keeps listing the EPUB until then, and the write's check would skip the book).
+      this.db.transaction(() => {
+        this.db.prepare('DELETE FROM calibre_format_store WHERE change_id = ?').run(w.change_id);
+        this.db.prepare('DELETE FROM calibre_format_writes WHERE change_id = ?').run(w.change_id);
+        this.db
+          .prepare(
+            `UPDATE proposed_changes SET state = 'proposed', batch_id = NULL, review_reason = NULL,
+               updated_at = ? WHERE id = ?`,
+          )
+          .run(now, w.change_id);
+      })();
+      pauseFormats(
+        this.db,
+        w.library_id,
+        'stored_missing',
+        `Calibre's database has no EPUB for book ${w.calibre_id}, though the write reported one (Calibre's content server listed it from memory after refusing the write). Restart the calibre container, then resume: the book is written again.`,
+      );
+      return true;
+    }
     if (!dir || !live || !epub) {
-      record('missing', 0, 0, 'Calibre lists no EPUB for the book');
+      record('missing', 0, 0, 'Calibre no longer has the book');
       return true;
     }
     const file = resolveInside(dir, epub);

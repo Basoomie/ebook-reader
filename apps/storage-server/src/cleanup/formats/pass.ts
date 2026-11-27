@@ -179,8 +179,44 @@ export class FormatsPass {
     this.deps.log?.(`Books without an EPUB: ${mode === 'analyse' ? 'Preview' : mode}`);
   }
 
-  resume(): void {
+  /**
+   * Resume after a pause ("check the batch, then resume"): the writes that failed (Calibre out of
+   * disk space, a broken connection: 2026-11-27) go back to be written. A book skipped on purpose
+   * (changed in Calibre, gone, an EPUB of its own now) stays skipped.
+   */
+  resume(now = Date.now()): number {
+    const again = this.db
+      .prepare(
+        `UPDATE proposed_changes SET state = 'proposed', batch_id = NULL, review_reason = NULL, updated_at = ?
+         WHERE stage = ${FORMATS_STAGE} AND library_id = ? AND state = 'skipped'
+           AND id IN (SELECT i.change_id FROM batch_items i JOIN batches b ON b.id = i.batch_id
+                      WHERE b.stage = ${FORMATS_STAGE} AND b.kind = 'apply' AND i.state = 'failed')
+           AND id NOT IN (SELECT i.change_id FROM batch_items i JOIN batches b ON b.id = i.batch_id
+                          WHERE b.stage = ${FORMATS_STAGE} AND b.kind = 'apply'
+                            AND i.state IN ('written', 'removed', 'skipped'))`,
+      )
+      .run(now, this.lib).changes;
+    if (again > 0)
+      this.deps.log?.(`Books without an EPUB: ${again} failed writes go back to be written`);
+    // Books to write again (these, or a write Calibre never saved: verifyStored) after the run
+    // finished: the run writes again.
+    const p = this.state().progress;
+    const open = (
+      this.db
+        .prepare(
+          `SELECT COUNT(*) AS n FROM proposed_changes INDEXED BY proposed_changes_formats
+           WHERE stage = ${FORMATS_STAGE} AND library_id = ? AND analysis_id = ? AND state = 'proposed'
+             AND class = 'auto'`,
+        )
+        .get(this.lib, formatsAnalysisId(p.run)) as { n: number }
+    ).n;
+    if (open > 0 && p.phase === 'done') {
+      this.next(p, 'write');
+      p.finishedAt = null;
+      saveFormatsProgress(this.db, this.lib, p);
+    }
     resumeFormats(this.db, this.lib);
+    return again;
   }
 
   private releaseDisk(): void {
