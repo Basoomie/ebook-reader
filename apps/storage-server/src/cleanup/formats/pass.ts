@@ -1220,6 +1220,21 @@ export class FormatsPass {
         all += r.ms * r.c;
         allN += r.c;
       }
+      // The sidecar's time for a book (export and conversion) leaves out the upload, the server's
+      // answers and the wait for the next claim (live: 18 s measured, 74 s a book on the clock).
+      // So the means are scaled by this run's own pace on the clock: the last 30 conversions.
+      const recent = this.db
+        .prepare(
+          `SELECT converted_at AS t, json_extract(result_json, '$.ms') AS ms FROM calibre_format_books
+           WHERE library_id = ? AND run = ? AND converted_at IS NOT NULL ORDER BY converted_at DESC LIMIT 30`,
+        )
+        .all(lib, run) as { t: number; ms: number | null }[];
+      let pace = 1;
+      if (recent.length >= 3) {
+        const wall = recent[0].t - recent[recent.length - 1].t;
+        const measured = recent.slice(0, -1).reduce((a, r) => a + (r.ms ?? 0), 0);
+        if (measured > 0) pace = Math.max(1, wall / measured);
+      }
       let left: number | null = 0;
       for (const r of this.db
         .prepare(
@@ -1229,23 +1244,13 @@ export class FormatsPass {
         .all(lib) as { f: string; c: number }[]) {
         const m = means.get(r.f) ?? (allN ? all / allN : null);
         if (m === null || left === null) left = null;
-        else left += m * r.c;
+        else left += m * pace * r.c;
       }
-      out.push({
-        phase: 'convert',
-        label: 'Converted',
-        done: selected - open,
-        total: selected,
-        leftMs: open === 0 ? 0 : left,
-        note: this.state().mode === 'off' ? 'Off: nothing is converted' : null,
-      });
+      // One bar for converting and checking: the server checks each EPUB as soon as it arrives,
+      // so the two move together and end together (a second bar only said the same, with a time
+      // that ignored the wait for the conversions). A book counts once it is checked.
       const toCheck = n(
         `SELECT COUNT(*) AS n FROM calibre_format_books WHERE library_id = ? AND run = ? AND state = 'converted'`,
-        lib,
-        run,
-      );
-      const checked = n(
-        `SELECT COUNT(*) AS n FROM calibre_format_books WHERE library_id = ? AND run = ? AND check_json IS NOT NULL`,
         lib,
         run,
       );
@@ -1253,13 +1258,20 @@ export class FormatsPass {
         `SELECT AVG(json_extract(check_json, '$.ms')) AS n FROM calibre_format_books WHERE library_id = ? AND check_json IS NOT NULL`,
         lib,
       );
+      const checksLeft = checkMs ? checkMs * toCheck : toCheck > 0 ? null : 0;
       out.push({
-        phase: 'check',
-        label: 'Checked',
-        done: checked,
-        total: checked + toCheck + open,
-        leftMs: checkMs ? checkMs * (toCheck + open) : null,
-        note: null,
+        phase: 'convert',
+        label: 'Converted and checked',
+        done: selected - open - toCheck,
+        total: selected,
+        leftMs:
+          open === 0 ? checksLeft : left === null || checksLeft === null ? null : left + checksLeft,
+        note:
+          this.state().mode === 'off'
+            ? 'Off: nothing is converted'
+            : toCheck > 1
+              ? `${toCheck} converted, waiting for their check`
+              : null,
       });
       const toCompare = n(
         `SELECT COUNT(*) AS n FROM calibre_format_books WHERE library_id = ? AND run = ? AND state = 'checked'`,
