@@ -5,8 +5,14 @@
  */
 import { randomUUID } from 'crypto';
 import request from 'supertest';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { noteCatalogWrite } from '../src/catalog/catalog-version';
+import {
+  computeFigures,
+  DEFAULT_KEPT_RULES,
+  FIGURES_BOOK_FROM,
+} from '../src/catalog/series-figures';
+import { SQL_BOOK_FROM } from '../src/catalog/queries';
 import { listUsers } from '../src/db/users';
 import { calibreDate, CalibreRoot, FixtureBook } from './helpers/calibre-fixture';
 import { enableLibrary, IndexerEnv, makeIndexerEnv } from './helpers/indexer-env';
@@ -282,6 +288,34 @@ describe('the Authors tab', () => {
     expect(cards.map((g) => [g.name, g.figures?.rating?.count, g.figures?.readers])).toEqual([
       ['Amy', 50, 300],
     ]);
+  });
+});
+
+describe('the search worker', () => {
+  it('reads the books as the catalog does (its copy of SQL_BOOK_FROM)', () => {
+    const flat = (s: string) => s.replace(/\s+/g, ' ').trim();
+    expect(flat(FIGURES_BOOK_FROM)).toBe(flat(SQL_BOOK_FROM));
+  });
+
+  it('works the figures out on its own connection, the same as the main thread', async () => {
+    const c = await env();
+    const job = { rules: DEFAULT_KEPT_RULES, now: Date.now(), authors: {} };
+    const fromWorker = await c.e.search.figures(job);
+    const here = computeFigures(c.e.db, job);
+    expect([...fromWorker.index.byKey]).toEqual([...here.index.byKey]);
+    expect([...fromWorker.authors!]).toEqual([...here.authors!]);
+    expect(fromWorker.index.byKey.size).toBe(7);
+  });
+
+  it('answers a figure sort without falling back to the main thread', async () => {
+    const c = await env();
+    const errors = vi.spyOn(console, 'error');
+    try {
+      expect((await c.names({ by: 'author', sort: 'rating', dir: 'desc' }))[0]).toBe('Amy');
+      expect(errors.mock.calls.filter((a) => String(a[0]).includes('Series figures'))).toEqual([]);
+    } finally {
+      errors.mockRestore();
+    }
   });
 });
 

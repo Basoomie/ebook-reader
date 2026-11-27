@@ -35,6 +35,7 @@ import { catalogVersion } from '../catalog/catalog-version';
 import { BOOK_SORT_KEYS, GROUP_SORT_KEYS, parseBookSort, parseGroupSort } from '../catalog/sort';
 import { InvalidQueryError } from '../catalog/query-parser';
 import { RegexTimeoutError, SearchRunner } from '../catalog/search-runner';
+import { figureNeeds, prepareFigures } from '../catalog/series-figures';
 import { UUID_RE } from '../sync/kinds';
 import type { CharCountService } from '../counts/count-service';
 import type { IllustrationService } from '../catalog/illustrations';
@@ -115,6 +116,25 @@ export function createCatalogRouter(db: Database.Database, catalog: CatalogOptio
     return plan.finish(await (catalog.search ?? fallbackRunner).all(plan.sql, plan.params));
   }
 
+  /**
+   * The series and author figures a request needs (series-figures.ts), worked out by the search
+   * worker before planning, so planning only reads them (a read of the library stays off the
+   * main thread).
+   */
+  async function figuresFor(
+    userId: string,
+    req: Parameters<typeof figureNeeds>[0] & { libraryId?: string; includeMissing?: boolean },
+  ): Promise<void> {
+    const needs = figureNeeds(req);
+    if (!needs.index) return;
+    await prepareFigures(
+      db,
+      userId,
+      needs.authors ? { libraryId: req.libraryId, includeMissing: req.includeMissing } : null,
+      catalog.search ?? fallbackRunner,
+    );
+  }
+
   function listLimit(req: express.Request): number | undefined {
     const limitRaw = queryString(req.query.limit);
     const limit = limitRaw === undefined ? undefined : Number(limitRaw);
@@ -182,6 +202,7 @@ export function createCatalogRouter(db: Database.Database, catalog: CatalogOptio
       const user = askingUser(res);
       const limit = listLimit(req);
       const filter = listFilter(req);
+      await figuresFor(user.id, filter);
       const sort = parseBookSort(queryString(req.query.sort), queryString(req.query.dir));
       if (sort === null) {
         throw new ApiError(
@@ -215,6 +236,7 @@ export function createCatalogRouter(db: Database.Database, catalog: CatalogOptio
     asyncHandler(async (req, res) => {
       const user = askingUser(res);
       const filter = listFilter(req);
+      await figuresFor(user.id, filter);
       const version = `${catalogVersion(db)}:${userRevision(db, user.id)}`;
       const key = JSON.stringify([user.id, user.deviceId ?? null, filter]);
       const hit = countCache.get(key);
@@ -242,6 +264,7 @@ export function createCatalogRouter(db: Database.Database, catalog: CatalogOptio
     asyncHandler(async (req, res) => {
       const user = askingUser(res);
       const filter = listFilter(req);
+      await figuresFor(user.id, filter);
       try {
         res.json(await run(planIds(db, user, filter)));
       } catch (err) {
@@ -264,6 +287,15 @@ export function createCatalogRouter(db: Database.Database, catalog: CatalogOptio
           `sort must be one of ${GROUP_SORT_KEYS.join(', ')}; dir asc or desc`,
         );
       }
+      await figuresFor(user.id, {
+        by,
+        sortKey: sort?.key,
+        query: queryString(req.query.q),
+        scope: queryString(req.query.scope),
+        collection: collectionId(req),
+        libraryId: queryString(req.query.library),
+        includeMissing: queryBool(req.query.includeMissing),
+      });
       try {
         res.json(
           await run(
@@ -344,6 +376,7 @@ export function createCatalogRouter(db: Database.Database, catalog: CatalogOptio
       if (body.q !== undefined && typeof body.q !== 'string') {
         throw new ApiError(400, 'invalid_query', 'q must be text', { start: 0, end: 0 });
       }
+      await figuresFor(user.id, { query: typeof body.q === 'string' ? body.q : undefined });
       try {
         res.json(
           await run(
@@ -394,6 +427,13 @@ export function createCatalogRouter(db: Database.Database, catalog: CatalogOptio
     asyncHandler(async (_req, res) => {
       const user = askingUser(res);
       const runner = catalog.search ?? fallbackRunner;
+      // A smart collection searching kept: (series-figures.ts): its figures off the main thread.
+      const kept = db
+        .prepare(
+          "SELECT 1 FROM sync_records WHERE user_id = ? AND kind = 'collection' AND deleted_at IS NULL AND data LIKE '%kept%' LIMIT 1",
+        )
+        .get(user.id);
+      if (kept) await prepareFigures(db, user.id, null, runner);
       const cards = await collectionCards(
         db,
         user,

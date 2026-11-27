@@ -794,7 +794,7 @@ function figureLookup(
   let authors: Map<number, SeriesFigure> | null = null;
   return (r) => {
     if (r.gid === null) return null;
-    authors ??= authorFigures(db, idx(), opts, books);
+    authors ??= authorFigures(db, user.id, opts, books);
     return authors.get(r.gid) ?? null;
   };
 }

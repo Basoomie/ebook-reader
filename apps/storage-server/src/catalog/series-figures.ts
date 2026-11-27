@@ -4,17 +4,18 @@
  * app's own (`apps/web/src/lib/library/series-figures.ts`), run from the query bundle, so the
  * offline Library works out the same figures.
  *
- * Worked out live, never stored: one read of the books numbered 1-3 in a series (and, for the
- * Authors tab, of the author links), kept until the book list (bookListVersion), the store
- * ratings (at most once per 10 minutes), the score's pull, your thresholds or the day change.
- * Only a figure sort or a figure search works them out (a read of the library: 0.2-0.4 s on the
- * PC), never a plain page of the tabs. A search term on a figure becomes the list of
- * series that match, bound as one JSON value, so it runs the same in the search worker.
+ * Worked out live, never stored, and never on the main thread when it can be helped: working
+ * them out reads the library (on the NAS about 1 s for the series, 2 s for the authors), so the
+ * routes call `prepareFigures` first, which has the search worker (search-runner.ts) do it on its
+ * own connection and keeps the answer; planning then only reads the cache. The cache holds until
+ * the book list (bookListVersion), the store ratings (at most once per 10 minutes), the score's
+ * pull, your thresholds or the day change. Only a figure sort or a figure search needs them,
+ * never a plain page of the tabs. A search term on a figure becomes the list of series that
+ * match, bound as one JSON value, so it runs the same in the search worker.
  */
 import type Database from 'better-sqlite3';
 import { bookListVersion } from './catalog-version';
-import { QUERY_BUNDLE, type QueryTerm } from './query-parser';
-import { SQL_BOOK_FROM } from './queries';
+import { parseQuery, QUERY_BUNDLE, type ParsedQuery, type QueryTerm } from './query-parser';
 import type { FigureTermSql, SqlCondition } from './search-sql';
 import { globalSetting } from '../sync/global-setting';
 
@@ -75,6 +76,15 @@ interface FiguresBundle {
   DEFAULT_SCORE_PARAMS: { m: number; c: number };
 }
 
+/**
+ * queries.ts SQL_BOOK_FROM, copied: the search worker loads this module, and importing queries.ts
+ * would load most of the catalog into it (a slower worker start). A test keeps the two equal.
+ */
+export const FIGURES_BOOK_FROM = `
+  FROM books b
+  CROSS JOIN book_sources s ON s.book_id = b.id AND s.kind IN ('calibre', 'upload')
+  JOIN libraries l ON l.id = b.library_id AND l.enabled = 1`;
+
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const bundle = require(QUERY_BUNDLE) as FiguresBundle;
 
@@ -108,6 +118,10 @@ function scoreParams(db: Database.Database): { m: number; c: number } {
   return row ?? bundle.DEFAULT_SCORE_PARAMS;
 }
 
+const DAY = 24 * 60 * 60 * 1000;
+/** How long a store page read may wait before the figures include it (ratingsStamp). */
+const RATINGS_WINDOW_MS = 10 * 60 * 1000;
+
 /**
  * Changes when a book's ratings may have: a store page read (the triggers write books then),
  * or the score's pull. Each site's newest check comes from the store_ratings_due index.
@@ -122,15 +136,10 @@ function ratingsStamp(db: Database.Database): string {
     .get() as { a: number | null; w: number | null; m: number | null };
   const p = scoreParams(db);
   // The refresher reads a store page every few seconds while it runs: a page read moves the
-  // figures at most once per window (catalog changes still count at once), so the Series and
-  // Authors tabs aren't worked out again on every request (measured: 170-650 ms each).
+  // figures at most once per window (book list changes still count at once).
   const w = (t: number | null) => Math.floor((t ?? 0) / RATINGS_WINDOW_MS);
   return `${w(row.a)}:${w(row.w)}:${w(row.m)}:${p.m}:${p.c}`;
 }
-
-const DAY = 24 * 60 * 60 * 1000;
-/** How long a store page read may wait before the figures include it (ratingsStamp). */
-const RATINGS_WINDOW_MS = 10 * 60 * 1000;
 
 export interface FigureIndex {
   /** figureKey(library, series id) → that library's series figures. */
@@ -139,29 +148,25 @@ export interface FigureIndex {
   bySeries: Map<number, Map<string, SeriesFigure>>;
 }
 
-const indexCache = new WeakMap<Database.Database, Map<string, FigureIndex>>();
-
-function stamp(db: Database.Database): string {
-  return `${bookListVersion(db)}|${ratingsStamp(db)}|${Math.floor(Date.now() / DAY)}`;
+export interface AuthorOpts {
+  libraryId?: string;
+  includeMissing?: boolean;
 }
 
+// ---- Working them out (on any connection: the search worker's, or the main one) ----------------
+
 /** Every series' figures (the books the Library shows: not missing, enabled libraries). */
-export function figureIndex(db: Database.Database, userId: string, now = Date.now()): FigureIndex {
-  const rules = keptRules(db, userId);
-  const key = `${stamp(db)}|${JSON.stringify(rules)}`;
-  let cache = indexCache.get(db);
-  if (!cache) {
-    cache = new Map();
-    indexCache.set(db, cache);
-  }
-  const hit = cache.get(key);
-  if (hit) return hit;
+export function computeFigureIndex(
+  db: Database.Database,
+  rules: KeptRules,
+  now: number,
+): FigureIndex {
   const volumes: FigureVolume[] = [];
   for (const r of db
     .prepare(
       `SELECT b.id, b.library_id, b.series_id, b.series_index, b.rating_x10, b.rating_count,
               b.rating_score, b.readers, b.published_at
-         ${SQL_BOOK_FROM}
+         ${FIGURES_BOOK_FROM}
         WHERE s.missing_at IS NULL AND b.series_id IS NOT NULL AND b.series_index IN (1, 2, 3)`,
     )
     .raw()
@@ -202,54 +207,20 @@ export function figureIndex(db: Database.Database, userId: string, now = Date.no
     const f = byKey.get(bundle.figureKey(v.library, v.series));
     if (f) libs.set(v.library, f);
   }
-  const index = { byKey, bySeries };
-  // Older stamps are of no use again: keep only the newest per database.
-  cache.clear();
-  cache.set(key, index);
-  return index;
+  return { byKey, bySeries };
 }
 
-/** A series group's figures: the library asked for, else the one whose volume 1 has the most readers. */
-export function groupFigure(
-  index: FigureIndex,
-  seriesId: number | null,
-  libraryId?: string,
-): SeriesFigure | null {
-  if (seriesId === null) return null;
-  const libs = index.bySeries.get(seriesId);
-  if (!libs) return null;
-  if (libraryId) return libs.get(libraryId) ?? null;
-  return bundle.pickFigure([...libs.values()]);
-}
-
-/** An author's book, as the works figures read it. */
-type AuthorRow = [
-  authorId: number,
-  bookId: string,
-  library: string,
-  seriesId: number | null,
-  ratingX10: number | null,
-  ratingCount: number | null,
-  ratingScore: number | null,
-  readers: number | null,
-];
-
-const authorRowsCache = new WeakMap<
-  Database.Database,
-  { base: string; key: string; rows: AuthorRow[] }[]
->();
-
-function authorRows(
+/**
+ * Every author's figures over their works: each series once (its figures in that library),
+ * each book without a series on its own. With `bookIds`, only those books are read (a
+ * collection).
+ */
+export function computeAuthorFigures(
   db: Database.Database,
-  opts: { libraryId?: string; includeMissing?: boolean },
-): AuthorRow[] {
-  const base = `${bookListVersion(db)}|${ratingsStamp(db)}`;
-  const key = `${opts.libraryId ?? ''}|${!!opts.includeMissing}`;
-  // Only the current catalog's rows are kept (a few library/missing variants of it).
-  const list = (authorRowsCache.get(db) ?? []).filter((e) => e.base === base);
-  authorRowsCache.set(db, list);
-  const hit = list.find((e) => e.key === key);
-  if (hit) return hit.rows;
+  index: FigureIndex,
+  opts: AuthorOpts,
+  bookIds?: readonly string[],
+): Map<number, SeriesFigure> {
   const conds: string[] = [];
   const params: unknown[] = [];
   if (opts.libraryId) {
@@ -257,71 +228,35 @@ function authorRows(
     params.push(opts.libraryId);
   }
   if (!opts.includeMissing) conds.push('s.missing_at IS NULL');
-  const rows = db
-    .prepare(
-      `SELECT ba.author_id, b.id, b.library_id, b.series_id, b.rating_x10, b.rating_count,
-              b.rating_score, b.readers
-         ${SQL_BOOK_FROM}
-         JOIN book_authors ba ON ba.book_id = b.id
-         ${conds.length ? `WHERE ${conds.join(' AND ')}` : ''}`,
-    )
-    .raw()
-    .all(...params) as AuthorRow[];
-  list.push({ base, key, rows });
-  while (list.length > 4) list.shift();
-  return rows;
-}
-
-/**
- * Every author's figures over their works: each series once (its figures in that library),
- * each book without a series on its own. With `books`, only those books count (a collection).
- */
-export function authorFigures(
-  db: Database.Database,
-  index: FigureIndex,
-  opts: { libraryId?: string; includeMissing?: boolean },
-  books?: ReadonlySet<string>,
-): Map<number, SeriesFigure> {
-  // The whole library's (not a collection's) are kept with the index they were made from.
-  if (books) return worksOf(db, index, opts, books);
-  const key = `${opts.libraryId ?? ''}|${!!opts.includeMissing}|${scoreStamp(db)}`;
-  let byOpts = authorCache.get(index);
-  if (!byOpts) {
-    byOpts = new Map();
-    authorCache.set(index, byOpts);
+  if (bookIds) {
+    conds.push('b.id IN (SELECT value FROM json_each(?))');
+    params.push(JSON.stringify(bookIds));
   }
-  const hit = byOpts.get(key);
-  if (hit && hit.rows === authorRows(db, opts)) return hit.figures;
-  const figures = worksOf(db, index, opts);
-  byOpts.set(key, { rows: authorRows(db, opts), figures });
-  return figures;
-}
-
-const authorCache = new WeakMap<
-  FigureIndex,
-  Map<string, { rows: AuthorRow[]; figures: Map<number, SeriesFigure> }>
->();
-
-function scoreStamp(db: Database.Database): string {
-  const p = scoreParams(db);
-  return `${p.m}:${p.c}`;
-}
-
-function worksOf(
-  db: Database.Database,
-  index: FigureIndex,
-  opts: { libraryId?: string; includeMissing?: boolean },
-  books?: ReadonlySet<string>,
-): Map<number, SeriesFigure> {
   const works = new Map<
     number,
     Map<string, { rating: FigureRating | null; readers: number | null }>
   >();
-  for (const [authorId, bookId, library, seriesId, x10, count, score, readers] of authorRows(
-    db,
-    opts,
-  )) {
-    if (books && !books.has(bookId)) continue;
+  for (const [authorId, bookId, library, seriesId, x10, count, score, readers] of db
+    .prepare(
+      `SELECT ba.author_id, b.id, b.library_id, b.series_id, b.rating_x10, b.rating_count,
+              b.rating_score, b.readers
+         ${FIGURES_BOOK_FROM}
+         JOIN book_authors ba ON ba.book_id = b.id
+         ${conds.length ? `WHERE ${conds.join(' AND ')}` : ''}`,
+    )
+    .raw()
+    .iterate(...params) as IterableIterator<
+    [
+      number,
+      string,
+      string,
+      number | null,
+      number | null,
+      number | null,
+      number | null,
+      number | null,
+    ]
+  >) {
     let mine = works.get(authorId);
     if (!mine) {
       mine = new Map();
@@ -340,14 +275,183 @@ function worksOf(
       });
     }
   }
-  const params = scoreParams(db);
+  const pull = scoreParams(db);
   const out = new Map<number, SeriesFigure>();
-  for (const [authorId, mine] of works)
-    out.set(authorId, bundle.worksFigure(mine.values(), params));
+  for (const [authorId, mine] of works) out.set(authorId, bundle.worksFigure(mine.values(), pull));
   return out;
 }
 
+/** What the search worker is asked to work out (search-worker.ts). */
+export interface FiguresJob {
+  rules: KeptRules;
+  now: number;
+  /** Also every author's figures, with these filters. */
+  authors: AuthorOpts | null;
+}
+
+export interface FiguresAnswer {
+  index: FigureIndex;
+  authors: Map<number, SeriesFigure> | null;
+}
+
+export function computeFigures(db: Database.Database, job: FiguresJob): FiguresAnswer {
+  const index = computeFigureIndex(db, job.rules, job.now);
+  return {
+    index,
+    authors: job.authors ? computeAuthorFigures(db, index, job.authors) : null,
+  };
+}
+
+/** Runs a FiguresJob off the main thread (SearchRunner.figures). */
+export interface FiguresWorker {
+  figures(job: FiguresJob): Promise<FiguresAnswer>;
+}
+
+// ---- The cache (main thread) ---------------------------------------------------------------------
+
+interface Cached {
+  key: string;
+  index: FigureIndex;
+  /** authorKey(opts) → figures. */
+  authors: Map<string, Map<number, SeriesFigure>>;
+}
+
+const cache = new WeakMap<Database.Database, Cached>();
+
+function cacheKey(db: Database.Database, rules: KeptRules): string {
+  return `${bookListVersion(db)}|${ratingsStamp(db)}|${Math.floor(Date.now() / DAY)}|${JSON.stringify(rules)}`;
+}
+
+const authorKey = (opts: AuthorOpts) => `${opts.libraryId ?? ''}|${!!opts.includeMissing}`;
+
+function current(
+  db: Database.Database,
+  userId: string,
+): { key: string; rules: KeptRules; hit: Cached | null } {
+  const rules = keptRules(db, userId);
+  const key = cacheKey(db, rules);
+  const hit = cache.get(db);
+  return { key, rules, hit: hit && hit.key === key ? hit : null };
+}
+
+/**
+ * Has the search worker work out what a request will need (`authors`: every author's figures
+ * too) unless it is kept already. A worker that fails or isn't there: worked out here.
+ */
+export async function prepareFigures(
+  db: Database.Database,
+  userId: string,
+  authors: AuthorOpts | null,
+  worker: FiguresWorker | null,
+): Promise<void> {
+  const { key, rules, hit } = current(db, userId);
+  if (hit && (!authors || hit.authors.has(authorKey(authors)))) return;
+  if (!worker) return;
+  let answer: FiguresAnswer;
+  try {
+    answer = await worker.figures({
+      rules,
+      now: Date.now(),
+      // The index is worked out again with them (a few hundred ms in the worker), so the two agree.
+      authors: authors ?? null,
+    });
+  } catch (err) {
+    console.error('Series figures: the search worker failed; worked out on the main thread:', err);
+    return;
+  }
+  const entry: Cached = { key, index: answer.index, authors: new Map() };
+  if (authors && answer.authors) entry.authors.set(authorKey(authors), answer.authors);
+  // Keep what was there for this key (other author filters) when only the index was asked for.
+  const before = cache.get(db);
+  if (before && before.key === key) {
+    for (const [k, v] of before.authors) if (!entry.authors.has(k)) entry.authors.set(k, v);
+  }
+  cache.set(db, entry);
+}
+
+/** Every series' figures: from the cache, else worked out here (a path that didn't prepare). */
+export function figureIndex(db: Database.Database, userId: string): FigureIndex {
+  const { key, rules, hit } = current(db, userId);
+  if (hit) return hit.index;
+  const entry: Cached = {
+    key,
+    index: computeFigureIndex(db, rules, Date.now()),
+    authors: new Map(),
+  };
+  cache.set(db, entry);
+  return entry.index;
+}
+
+/**
+ * Every author's figures (the cache, else worked out here). With `books`, only those books
+ * count (a collection): read for those books only, never kept.
+ */
+export function authorFigures(
+  db: Database.Database,
+  userId: string,
+  opts: AuthorOpts,
+  books?: ReadonlySet<string>,
+): Map<number, SeriesFigure> {
+  const index = figureIndex(db, userId);
+  if (books) return computeAuthorFigures(db, index, opts, [...books]);
+  const entry = cache.get(db)!;
+  const k = authorKey(opts);
+  let figures = entry.authors.get(k);
+  if (!figures) {
+    figures = computeAuthorFigures(db, index, opts);
+    entry.authors.set(k, figures);
+  }
+  return figures;
+}
+
+/** A series group's figures: the library asked for, else the one whose volume 1 has the most readers. */
+export function groupFigure(
+  index: FigureIndex,
+  seriesId: number | null,
+  libraryId?: string,
+): SeriesFigure | null {
+  if (seriesId === null) return null;
+  const libs = index.bySeries.get(seriesId);
+  if (!libs) return null;
+  if (libraryId) return libs.get(libraryId) ?? null;
+  return bundle.pickFigure([...libs.values()]);
+}
+
+// ---- What a request needs ------------------------------------------------------------------------
+
 const FIGURE_TERMS = new Set(['rating', 'ratings', 'readers']);
+const FIGURE_SORTS = new Set(['rating', 'ratings', 'readers', 'kept']);
+
+function parsed(text: string | undefined): ParsedQuery | null {
+  if (!text) return null;
+  const r = parseQuery(text);
+  return r.ok ? r.query : null;
+}
+
+/**
+ * Whether a request needs the figures (`index`) and every author's (`authors`): a figure sort
+ * on the Series or Authors tab, kept: anywhere, rating:/ratings:/readers: on the Series tab. A
+ * query that doesn't parse needs nothing (planning reports it).
+ */
+export function figureNeeds(req: {
+  by?: 'series' | 'author' | 'tag';
+  sortKey?: string;
+  query?: string;
+  scope?: string;
+  /** A collection's groups: its authors are worked out for its books only. */
+  collection?: string;
+}): { index: boolean; authors: boolean } {
+  const terms = [...(parsed(req.query)?.terms ?? []), ...(parsed(req.scope)?.terms ?? [])];
+  const kept = terms.some((t) => t.type === 'kept');
+  const seriesTerms =
+    req.by === 'series' && (parsed(req.query)?.terms ?? []).some((t) => FIGURE_TERMS.has(t.type));
+  const sorted =
+    (req.by === 'series' || req.by === 'author') && FIGURE_SORTS.has(req.sortKey ?? '');
+  return {
+    index: kept || seriesTerms || sorted,
+    authors: req.by === 'author' && sorted && !req.scope && !req.collection,
+  };
+}
 
 /**
  * Search terms on figures: `kept:` everywhere (a book carries its series' figure in its own
