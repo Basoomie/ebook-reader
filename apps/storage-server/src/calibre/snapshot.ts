@@ -6,13 +6,26 @@
  * copied, no Calibre journal was present, and the copy passes quick_check.
  * This also covers Calibre writing from another machine over SMB, where
  * SQLite's file locks may not reach this process.
+ *
+ * The copy itself runs on a worker thread (snapshot-worker.ts, 2026-11-26): better-sqlite3
+ * runs one backup step per turn of the calling thread's event loop, so on the server's busy
+ * main thread a 165 MB copy took over 600 s while it takes about 2 s on a thread of its own.
+ * The time limit stops the thread, not only the next step.
  */
-import Database from 'better-sqlite3';
 import fs from 'fs/promises';
-import { METADATA_DB, openSourceDatabase, readHeader, SourceStat, statFile } from './source-fs';
+import path from 'path';
+import { Worker } from 'worker_threads';
+import { METADATA_DB, readHeader, SourceStat, statFile } from './source-fs';
+import type { SnapshotJob, SnapshotJobResult } from './snapshot-worker';
 
 /** Pages copied per backup step (4 KiB pages: 400 KiB per read lock). */
 const BACKUP_STEP_PAGES = 100;
+/** Restarts (the source changed between steps) after which the rest is copied in one step. */
+const MAX_STEP_RESTARTS = 3;
+
+// Under ts-node (dev, tests) the worker is TypeScript too.
+const RUNNING_TS = path.extname(__filename) === '.ts';
+const WORKER_FILE = path.join(__dirname, `snapshot-worker${RUNNING_TS ? '.ts' : '.js'}`);
 
 /** A temporary reason not to snapshot now; the next poll retries. */
 export class SnapshotSkipped extends Error {}
@@ -44,6 +57,13 @@ export interface SnapshotResult {
   /** Calibre's library UUID (library_id table). */
   libraryUuid: string;
   file: string;
+  /** The copy's SHA-256, when asked for (`hash`). */
+  sha256: string | null;
+  /** How the copy went (for the log): backup steps, restarts and times in ms. */
+  steps: number;
+  restarts: number;
+  copyMs: number;
+  checkMs: number;
 }
 
 export interface SnapshotOptions {
@@ -57,8 +77,11 @@ export interface SnapshotOptions {
    * Copy everything after the first step in one go: one read lock for the whole copy, so a
    * source Calibre writes every second can't make SQLite restart it again and again (seen on
    * the NAS 2026-11-15). Calibre waits up to 10 s for a lock (BUSY_TIMEOUT in calibre 9.18).
+   * A step-by-step copy also switches to one step after a few restarts.
    */
   oneStep?: boolean;
+  /** Also compute the copy's SHA-256 on the worker thread (a cleanup batch's copy). */
+  hash?: boolean;
 }
 
 async function removeQuietly(file: string): Promise<void> {
@@ -67,10 +90,82 @@ async function removeQuietly(file: string): Promise<void> {
   }
 }
 
+/** Temporary copies left behind (a stopped server) are removed once they are this old. */
+const STALE_TMP_MS = 60 * 60_000;
+let tmpCounter = 0;
+
+/** A temporary name of its own per copy: a stopped copy's thread may still hold its file. */
+function tmpName(dest: string): string {
+  tmpCounter += 1;
+  return `${dest}.${process.pid}-${Date.now().toString(36)}-${tmpCounter}.tmp`;
+}
+
+/** Removes this copy's old temporary files (`<dest>.tmp` from before, or a stopped copy's). */
+async function removeStaleTmps(dest: string): Promise<void> {
+  const dir = path.dirname(dest);
+  const base = path.basename(dest);
+  let names: string[];
+  try {
+    names = await fs.readdir(dir);
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    if (!name.startsWith(`${base}.`) || !/.tmp(-journal|-wal|-shm)?$/.test(name)) continue;
+    const file = path.join(dir, name);
+    const st = await fs.stat(file).catch(() => null);
+    if (name === `${base}.tmp` || (st && Date.now() - st.mtimeMs > STALE_TMP_MS))
+      await fs.unlink(file).catch(() => {});
+  }
+}
+
+/**
+ * Runs one copy on its own worker thread. Past `timeoutMs` the caller gets SnapshotSkipped at
+ * once and the thread is stopped; its temporary file is removed once it has stopped (a native
+ * step in progress finishes first).
+ */
+function runInWorker(job: SnapshotJob, timeoutMs: number): Promise<SnapshotJobResult> {
+  return new Promise((resolve, reject) => {
+    const workerData = { snapshotJob: job };
+    const worker = RUNNING_TS
+      ? new Worker(
+          `require('ts-node/register/transpile-only'); require(${JSON.stringify(WORKER_FILE)});`,
+          { eval: true, workerData },
+        )
+      : new Worker(WORKER_FILE, { workerData });
+    let settled = false;
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      fn();
+    };
+    const timer = setTimeout(
+      () => {
+        finish(() =>
+          reject(
+            new SnapshotSkipped(`the copy took longer than ${Math.round(timeoutMs / 1000)} s`),
+          ),
+        );
+        void worker
+          .terminate()
+          .catch(() => {})
+          .then(() => removeQuietly(job.tmp));
+      },
+      Math.max(timeoutMs, 0),
+    );
+    worker.once('message', (result: SnapshotJobResult) => finish(() => resolve(result)));
+    worker.once('error', (err) => finish(() => reject(err)));
+    worker.once('exit', (code) =>
+      finish(() => reject(new Error(`the copy's worker stopped (exit code ${code})`))),
+    );
+  });
+}
+
 export async function snapshotMetadataDb(
   source: string,
   dest: string,
-  { timeoutMs, allowChanging = false, oneStep = false }: SnapshotOptions,
+  { timeoutMs, allowChanging = false, oneStep = false, hash = false }: SnapshotOptions,
 ): Promise<SnapshotResult> {
   const before = await statFile(source);
   if (!before) throw new SnapshotSkipped(`${METADATA_DB} is not there`);
@@ -88,25 +183,24 @@ export async function snapshotMetadataDb(
     );
   }
 
-  const tmp = `${dest}.tmp`;
-  await removeQuietly(tmp);
+  await removeStaleTmps(dest);
+  const tmp = tmpName(dest);
   try {
-    const deadline = Date.now() + timeoutMs;
-    const src = openSourceDatabase(source);
-    try {
-      await src.backup(tmp, {
-        // Steps of 100 pages: each read lock lasts milliseconds, so
-        // Calibre is never blocked for long. A source that keeps changing makes
-        // SQLite restart the copy; the deadline stops that from running forever.
-        progress: ({ remainingPages }) => {
-          if (Date.now() > deadline) {
-            throw new SnapshotSkipped(`the copy took longer than ${timeoutMs / 1000} s`);
-          }
-          return oneStep ? Math.max(remainingPages, 1) : BACKUP_STEP_PAGES;
-        },
-      });
-    } finally {
-      src.close();
+    const result = await runInWorker(
+      {
+        source,
+        tmp,
+        oneStep,
+        stepPages: BACKUP_STEP_PAGES,
+        maxRestarts: MAX_STEP_RESTARTS,
+        hash,
+      },
+      timeoutMs,
+    );
+    if (!result.ok) {
+      if (result.kind === 'skipped') throw new SnapshotSkipped(result.message);
+      if (result.kind === 'failed') throw new SnapshotFailed(result.message);
+      throw new Error(result.message);
     }
 
     const after = await statFile(source);
@@ -114,28 +208,17 @@ export async function snapshotMetadataDb(
       throw new SnapshotSkipped(`${METADATA_DB} changed during the copy`);
     }
 
-    let libraryUuid: string;
-    const copy = new Database(tmp, { readonly: true, fileMustExist: true });
-    try {
-      const check = copy.pragma('quick_check', { simple: true });
-      if (check !== 'ok')
-        throw new SnapshotSkipped(`the copy failed quick_check: ${String(check)}`);
-      const row = copy.prepare('SELECT uuid FROM library_id LIMIT 1').get() as
-        | { uuid: string }
-        | undefined;
-      if (!row?.uuid) throw new SnapshotFailed(`${METADATA_DB} has no library_id`);
-      libraryUuid = row.uuid;
-    } catch (err) {
-      if (err instanceof SnapshotSkipped || err instanceof SnapshotFailed) throw err;
-      throw new SnapshotFailed(
-        `${METADATA_DB} does not look like a Calibre library: ${(err as Error).message}`,
-      );
-    } finally {
-      copy.close();
-    }
-
     await fs.rename(tmp, dest);
-    return { sourceStat: before, libraryUuid, file: dest };
+    return {
+      sourceStat: before,
+      libraryUuid: result.libraryUuid,
+      file: dest,
+      sha256: result.sha256,
+      steps: result.steps,
+      restarts: result.restarts,
+      copyMs: result.copyMs,
+      checkMs: result.checkMs,
+    };
   } catch (err) {
     await removeQuietly(tmp);
     throw err;

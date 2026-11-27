@@ -218,6 +218,7 @@ describe('settings', () => {
       fetchHelperMinutes: 30,
       refusalQuietHours: 24,
       seriesArrivalWaitHours: 24,
+      indexBehindMinutes: 60,
     });
     // N2 added Stats, off by default.
     expect(d.sections).toEqual({ jobs: true, cleanup: true, data: true, stats: false });
@@ -469,6 +470,63 @@ describe('the PC', () => {
     heartbeat(e);
     await e.round();
     expect(e.svc.store.getProblem('pc_waiting')?.resolved_at).toBe(e.clock.t);
+  });
+});
+
+describe('the Calibre index behind (2026-11-26)', () => {
+  it('alerts once a library has been behind longer than the wait, with why, and resolves when caught up', async () => {
+    const e = await makeEnv();
+    seedBook(e.db);
+    e.db
+      .prepare("UPDATE libraries SET language = 'ja', enabled = 1, available = 1 WHERE id = 'lib1'")
+      .run();
+    await withDiscord(e);
+    e.db
+      .prepare(
+        `INSERT INTO library_index_state (library_id, behind_since, failures, last_problem)
+         VALUES ('lib1', ?, 3, ?)`,
+      )
+      .run(
+        e.clock.t - 30 * MIN,
+        'the copy of metadata.db was postponed: the copy took longer than 600 s',
+      );
+    await e.round();
+    await e.svc.sendDue();
+    expect(e.discord.messages).toEqual([]);
+
+    e.clock.t += 31 * MIN;
+    await e.round();
+    await e.svc.sendDue();
+    expect(e.discord.messages).toEqual([
+      '**Calibre changes in "ja" haven\'t reached the reader for 1 h**\n' +
+        'Why: the copy of metadata.db was postponed: the copy took longer than 600 s (3 tries in a row failed)\n' +
+        '-# [Open](http://192.168.1.5:3080/settings?tab=diagnostics)',
+    ]);
+    expect(e.svc.diagnostics().openProblems.map((p) => p.event)).toEqual(['index_behind']);
+
+    // Still behind: no second message.
+    e.clock.t += 10 * MIN;
+    await e.round();
+    await e.svc.sendDue();
+    expect(e.discord.messages).toHaveLength(1);
+
+    // Caught up.
+    e.db.prepare('UPDATE library_index_state SET behind_since = NULL, failures = 0').run();
+    await e.round();
+    expect(e.svc.store.getProblem('index_behind:lib1')?.resolved_at).toBe(e.clock.t);
+  });
+
+  it('leaves a switched-off library alone', async () => {
+    const e = await makeEnv();
+    seedBook(e.db);
+    e.db.prepare("UPDATE libraries SET enabled = 0 WHERE id = 'lib1'").run();
+    await withDiscord(e);
+    e.db
+      .prepare(`INSERT INTO library_index_state (library_id, behind_since) VALUES ('lib1', ?)`)
+      .run(e.clock.t - 5 * HOUR);
+    await e.round();
+    await e.svc.sendDue();
+    expect(e.discord.messages).toEqual([]);
   });
 });
 

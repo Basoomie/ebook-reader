@@ -41,6 +41,14 @@ export interface LibraryIndexState {
   booksSkipped: number;
   reindexRequestedAt: number | null;
   allowMassMissing: boolean;
+  /** Last time the copy was found matching Calibre, or an index finished (migration 36). */
+  checkedAt: number | null;
+  /** First time a change of metadata.db was seen that isn't taken in yet; null = caught up. */
+  behindSince: number | null;
+  /** Copies or indexes failed in a row since the last success. */
+  failures: number;
+  /** Why it isn't caught up: a wait, or the last failure. */
+  lastProblem: string | null;
 }
 
 interface LibraryRow {
@@ -73,6 +81,10 @@ interface StateRow {
   books_skipped: number;
   reindex_requested_at: number | null;
   allow_mass_missing: number;
+  checked_at: number | null;
+  behind_since: number | null;
+  failures: number;
+  last_problem: string | null;
 }
 
 function toLibrary(r: LibraryRow): Library {
@@ -108,6 +120,10 @@ function toState(r: StateRow): LibraryIndexState {
     booksSkipped: r.books_skipped,
     reindexRequestedAt: r.reindex_requested_at,
     allowMassMissing: r.allow_mass_missing === 1,
+    checkedAt: r.checked_at ?? null,
+    behindSince: r.behind_since ?? null,
+    failures: r.failures ?? 0,
+    lastProblem: r.last_problem ?? null,
   };
 }
 
@@ -358,6 +374,10 @@ const STATE_COLUMNS: Record<keyof Omit<LibraryIndexState, 'libraryId'>, string> 
   booksSkipped: 'books_skipped',
   reindexRequestedAt: 'reindex_requested_at',
   allowMassMissing: 'allow_mass_missing',
+  checkedAt: 'checked_at',
+  behindSince: 'behind_since',
+  failures: 'failures',
+  lastProblem: 'last_problem',
 };
 
 export function updateIndexState(

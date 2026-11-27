@@ -1046,12 +1046,14 @@ export class BatchService {
     await fs.mkdir(path.dirname(dest), { recursive: true });
     // Calibre keeps writing metadata.db during a run (its own background writes): a consistent
     // copy in one step (SQLite's backup), not one that must find metadata.db unchanged.
-    await snapshotMetadataDb(path.join(this.deps.calibreDir, lib.folder, METADATA_DB), dest, {
-      timeoutMs: 600_000,
-      allowChanging: true,
-      oneStep: true,
-    });
-    const sha = await sha256File(dest);
+    // The copy and its checksum run on a worker thread (2026-11-26): on the busy main thread the
+    // checksum's reads each waited for a turn of the event loop.
+    const snap = await snapshotMetadataDb(
+      path.join(this.deps.calibreDir, lib.folder, METADATA_DB),
+      dest,
+      { timeoutMs: 600_000, allowChanging: true, oneStep: true, hash: true },
+    );
+    const sha = snap.sha256 ?? (await sha256File(dest));
     this.db
       .prepare('UPDATE batches SET snapshot_sha256 = ?, updated_at = ? WHERE id = ?')
       .run(sha, Date.now(), batch.id);

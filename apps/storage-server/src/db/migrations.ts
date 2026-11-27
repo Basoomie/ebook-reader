@@ -1654,6 +1654,22 @@ export const MIGRATIONS: { version: number; name: string; sql: string }[] = [
       CREATE INDEX books_created ON books (created_at);
     `,
   },
+  {
+    version: 36,
+    name: 'The Calibre index: behind since, checked at',
+    // 2026-11-26 (the japanese-library index stall): indexed_at only moves when an index runs,
+    // so a library that was up to date and one whose copies kept failing looked the same.
+    // checked_at: the last time the indexer found the reader's copy matching Calibre (or
+    // finished an index). behind_since: the first time it saw a change of metadata.db it has
+    // not taken in yet (NULL when caught up). failures: copies or indexes failed in a row since
+    // the last success; last_problem: why it isn't caught up (a wait or the last failure).
+    sql: `
+      ALTER TABLE library_index_state ADD COLUMN checked_at INTEGER;
+      ALTER TABLE library_index_state ADD COLUMN behind_since INTEGER;
+      ALTER TABLE library_index_state ADD COLUMN failures INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE library_index_state ADD COLUMN last_problem TEXT;
+    `,
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

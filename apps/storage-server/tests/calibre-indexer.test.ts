@@ -242,6 +242,55 @@ describe('change detection and snapshots', () => {
     expect(books(e.db)).toHaveLength(1);
   });
 
+  it('records behind since, why, failures in a row and checked at (NAS 2026-11-26)', async () => {
+    const root = new CalibreRoot();
+    const lib = root.library('a');
+    await lib.addBook({ title: 'One' });
+    const e = env(root.dir, { settleSeconds: 600 });
+    await e.indexer.start({ timer: false });
+    const id = enableLibrary(e.db, 'a');
+
+    // A change not taken in yet: behind, and why.
+    const t0 = Date.now();
+    await e.indexer.tick();
+    let s = getIndexState(e.db, id);
+    expect(s.behindSince).toBeGreaterThanOrEqual(t0);
+    expect(s.lastProblem).toMatch(/waiting for metadata.db to stay unchanged for 600 s/);
+    const since = s.behindSince;
+
+    // Copies that fail: counted, each one logged with its count, still behind since the start.
+    lib.age(3600);
+    e.calibre.snapshotTimeoutSeconds = 0.001;
+    await e.indexer.tick();
+    await e.indexer.tick();
+    s = getIndexState(e.db, id);
+    expect(s.behindSince).toBe(since);
+    expect(s.failures).toBe(2);
+    expect(s.lastProblem).toMatch(/postponed: the copy took longer than/);
+    const postponed = e.logs.filter((l) => l.includes('snapshot postponed'));
+    expect(postponed).toHaveLength(2);
+    expect(postponed[1]).toMatch(/\(2 in a row, behind since \d\d:\d\dZ\)/);
+
+    // Indexed: caught up.
+    e.calibre.snapshotTimeoutSeconds = 600;
+    await e.indexer.tick();
+    s = getIndexState(e.db, id);
+    expect(s).toMatchObject({ status: 'idle', behindSince: null, failures: 0, lastProblem: null });
+    expect(s.checkedAt).toBe(s.indexedAt);
+    expect(e.logs.some((l) => /indexed library "a" in [\d.]+ s \(copy [\d.]+ s\)/.test(l))).toBe(
+      true,
+    );
+
+    // Nothing changed since: up to date, and checked_at says when that was last seen.
+    const checked = s.checkedAt!;
+    e.db
+      .prepare('UPDATE library_index_state SET checked_at = ? WHERE library_id = ?')
+      .run(checked - 10 * 60_000, id);
+    await e.indexer.tick();
+    expect(getIndexState(e.db, id).checkedAt).toBeGreaterThanOrEqual(checked);
+    expect(getIndexState(e.db, id).indexedAt).toBe(s.indexedAt);
+  });
+
   it('indexes a metadata.db that never stays unchanged once the longest wait is over', async () => {
     // Calibre's own background writes (one metadata.opf per changed book) can keep touching
     // metadata.db for hours; seen on the NAS 2026-11-15, the index waited 18 h.
@@ -457,6 +506,42 @@ describe('upserts and missing books', () => {
       batchSize: 4,
     });
     expect(result).toMatchObject({ total: 25, added: 0, unchanged: 25, present: 25 });
+  });
+
+  it("reads a batch's changed covers a few at a time, not one per turn (NAS 2026-11-26)", async () => {
+    const root = new CalibreRoot();
+    const lib = root.library('a');
+    for (let i = 0; i < 12; i++) await lib.addBook({ title: `C${i}` });
+    const e = env(root.dir);
+    await e.indexer.start({ timer: false });
+    enableLibrary(e.db, 'a');
+    await e.indexer.tick();
+    const [libRow] = listLibraries(e.db);
+    const { ingestSnapshot } = await import('../src/calibre/ingest');
+    const read = async (coverReadsAtOnce: number) => {
+      // Every book counts as new to this catalog, so each one's cover is read.
+      e.db.prepare('UPDATE book_sources SET meta_hash = NULL').run();
+      let inFlight = 0;
+      let most = 0;
+      const seen: string[] = [];
+      await ingestSnapshot(e.db, snapshotFile(e.calibre.cacheDir, libRow.id), {
+        libraryId: libRow.id,
+        maxMissingPercent: 20,
+        allowMassMissing: false,
+        coverReadsAtOnce,
+        coverSig: async (bookPath) => {
+          inFlight += 1;
+          most = Math.max(most, inFlight);
+          await new Promise((r) => setTimeout(r, 20));
+          inFlight -= 1;
+          seen.push(bookPath);
+          return '1:1';
+        },
+      });
+      return { most, read: seen.length };
+    };
+    expect(await read(4)).toEqual({ most: 4, read: 12 });
+    expect(await read(1)).toEqual({ most: 1, read: 12 });
   });
 });
 
