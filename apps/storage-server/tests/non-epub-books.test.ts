@@ -782,7 +782,6 @@ describe('the pass through the real sidecar', () => {
     expect(again.map((r) => r.calibre_id)).not.toContain(ids.U1);
     expect(again.map((r) => r.calibre_id)).not.toContain(ids.C1);
     expect(again.map((r) => r.calibre_id)).toContain(ids.F1);
-    void lib;
   }, 300_000);
 
   it('a run decided under older rules reopens only the books the new rules can change', async () => {
@@ -883,5 +882,98 @@ describe('the pass through the real sidecar', () => {
       .split('\n')
       .filter((l) => l.includes('"add_format"') && l.includes(`"${ids.U1}"`));
     expect(adds).toHaveLength(1);
+  }, 300_000);
+
+  it('a write Calibre never saved, and a failed write, are written again', async () => {
+    const w = worker();
+    await request(env.app)
+      .put('/api/v1/cleanup/formats/mode')
+      .set(auth(user))
+      .send({ mode: 'analyse' })
+      .expect(200);
+    await runUntil(w, 'spot');
+    await pass().step();
+    for (const b of pass().spotList()) pass().setVerdict(b.uuid, 'right');
+    pass().setMode('on');
+    await runUntil(w, 'done');
+    for (let i = 0; i < 10 && (await env.service.batches.formats.verifyStored()); i++);
+    const lib = env.libraryId();
+    const change = (k: string) =>
+      env.cleanupDb
+        .prepare(
+          `SELECT c.id, c.state FROM calibre_format_books b JOIN proposed_changes c ON c.id = b.change_id
+           WHERE b.calibre_id = ?`,
+        )
+        .get(ids[k]) as { id: number; state: string };
+    // Live, the server still holds the checked EPUB of a write it never confirmed: put it back.
+    const store = (pass() as unknown as { deps: { store: { file(l: string, u: string): string } } })
+      .deps.store;
+    const dropEpub = (id: number) => {
+      const uuid = (
+        env.cleanupDb
+          .prepare('SELECT calibre_uuid FROM calibre_format_books WHERE calibre_id = ?')
+          .get(id) as { calibre_uuid: string }
+      ).calibre_uuid;
+      const dir = env.lib.bookDir(id);
+      const epub = fs.readdirSync(dir).find((f) => f.toLowerCase().endsWith('.epub'))!;
+      fs.copyFileSync(path.join(dir, epub), store.file(lib, uuid));
+      fs.rmSync(path.join(dir, epub));
+      env.lib.exec((db) =>
+        db.prepare(`DELETE FROM data WHERE book = ? AND format = 'EPUB'`).run(id),
+      );
+      // A write Calibre refused leaves the book as it was (69555's last_modified is still 11-22).
+      const ev = JSON.parse(
+        (
+          env.cleanupDb
+            .prepare(
+              `SELECT c.evidence_json FROM calibre_format_books b JOIN proposed_changes c ON c.id = b.change_id
+               WHERE b.calibre_id = ?`,
+            )
+            .get(id) as { evidence_json: string }
+        ).evidence_json,
+      ) as { lastModified: string };
+      env.lib.exec((db) =>
+        db.prepare('UPDATE books SET last_modified = ? WHERE id = ?').run(ev.lastModified, id),
+      );
+    };
+    // As live (69555): Calibre refused add_format ("database is locked") but its content server
+    // listed the EPUB from memory, so the write was recorded; the stored check found no EPUB.
+    dropEpub(ids.U1);
+    env.cleanupDb
+      .prepare(
+        `UPDATE calibre_format_store SET state = 'missing', detail = 'Calibre lists no EPUB for the book'
+         WHERE change_id = ?`,
+      )
+      .run(change('U1').id);
+    // As live (13388): the write failed (Calibre out of disk space) and the book was skipped.
+    const d1 = change('D1').id;
+    dropEpub(ids.D1);
+    env.cleanupDb.prepare('DELETE FROM calibre_format_store WHERE change_id = ?').run(d1);
+    env.cleanupDb.prepare('DELETE FROM calibre_format_writes WHERE change_id = ?').run(d1);
+    env.cleanupDb
+      .prepare(
+        `UPDATE proposed_changes SET state = 'skipped', review_reason = 'No space' WHERE id = ?`,
+      )
+      .run(d1);
+    env.cleanupDb.prepare(`UPDATE batch_items SET state = 'failed' WHERE change_id = ?`).run(d1);
+    expect(await env.service.batches.formats.verifyStored()).toBe(true);
+    expect(pass().state().pausedReason).toBe('stored_missing');
+    expect(change('U1').state).toBe('proposed');
+    expect(
+      env.cleanupDb
+        .prepare('SELECT COUNT(*) AS n FROM calibre_format_writes WHERE change_id = ?')
+        .get(change('U1').id),
+    ).toEqual({ n: 0 });
+    // Resume: both are written again; a book skipped on purpose would stay skipped.
+    expect(pass().resume()).toBe(1);
+    expect(change('D1').state).toBe('proposed');
+    expect(pass().state().progress.phase).toBe('write');
+    await runUntil(w, 'done');
+    expect(formatsOf(ids.U1)).toEqual(['AZW3', 'EPUB']);
+    expect(formatsOf(ids.D1)).toEqual(['AZW3', 'EPUB']);
+    expect(change('U1').state).toBe('applied');
+    expect(change('D1').state).toBe('applied');
+    expect(pass().state().pausedReason).toBeNull();
+    void lib;
   }, 300_000);
 });
