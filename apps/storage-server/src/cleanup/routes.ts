@@ -28,7 +28,7 @@ import { isSecretName } from './secrets';
 import { ArrivalBatchError } from './arrivals/add-batches';
 import { streamSource } from './arrivals/sources-fs';
 import { FormatsError } from './formats/pass';
-import { FORMATS_STAGE } from './field-stages';
+import { FORMATS_CONVERT_SIDECAR_VERSION, FORMATS_STAGE } from './field-stages';
 import type { JobFacts } from './formats/check';
 import { arrivalsList, arrivalsStatus, notImportedCsv } from './arrivals/views';
 import { ImportError, importQuarantineCover, quarantineCovers } from './edits/cover-import';
@@ -492,7 +492,11 @@ export function createCleanupApplyRouter(options: CleanupOptions): Router {
     const service = serviceOr503(options);
     const login = service.sidecarConfig();
     // A cleanup batch goes first; a conversion never runs beside one.
-    if (!login?.libraryId || service.batches.open()) {
+    if (
+      !login?.libraryId ||
+      service.batches.open() ||
+      !service.batches.sidecarAtLeast(FORMATS_CONVERT_SIDECAR_VERSION)
+    ) {
       res.json({ job: null });
       return;
     }

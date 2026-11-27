@@ -32,3 +32,10 @@ export const FORMATS_STAGE = 12;
 
 /** The sidecar version that converts books and runs add_format / remove_format (1.8.0). */
 export const FORMATS_SIDECAR_VERSION = '1.8.0';
+
+/**
+ * The sidecar version whose conversions follow the pass's rules 2 (formats/pass.ts
+ * FORMATS_RULES_VERSION: mokuro archives made as picture books, or listed without pictures).
+ * An older sidecar is handed no conversion job.
+ */
+export const FORMATS_CONVERT_SIDECAR_VERSION = '1.8.1';

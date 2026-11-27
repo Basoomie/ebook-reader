@@ -495,6 +495,17 @@ export interface FormatSettings {
   textKeptMin: number;
   /** A source with fewer counted characters than this is a picture book (its pages are checked). */
   pictureMaxChars: number;
+  /**
+   * A converted book with fewer characters than this (the reader's count) and no pictures on its
+   * pages beyond a cover is no book: listed and left (the spot check, 2026-11-27: an 86-character
+   * note and a download advert in TXT files).
+   */
+  minBookChars: number;
+  /**
+   * A mokuro archive is converted only when it holds at least this share of the pictures its page
+   * lists (the spot check: archives with 3 or 8 of a volume's pictures); else listed and left.
+   */
+  mokuroPagesMin: number;
   /** One conversion may take this long (s) before the sidecar stops it. */
   convertTimeoutSeconds: number;
   /** A conversion job not heard of for this long (minutes) is handed out again. */
@@ -673,6 +684,8 @@ export const DEFAULT_SETTINGS: CleanupSettings = {
   formats: {
     textKeptMin: 0.97,
     pictureMaxChars: 1000,
+    minBookChars: 2000,
+    mokuroPagesMin: 0.9,
     convertTimeoutSeconds: 1800,
     jobLeaseMinutes: 45,
     maxAttempts: 2,
@@ -1246,6 +1259,19 @@ function validate(key: Key, value: unknown, current: CleanupSettings): unknown {
           0,
           1_000_000,
           true,
+        ),
+        minBookChars: num(
+          'A book with fewer characters and no pictures is no book',
+          v.minBookChars,
+          0,
+          1_000_000,
+          true,
+        ),
+        mokuroPagesMin: num(
+          'A mokuro archive needs at least this share of its pages’ pictures (0-1)',
+          v.mokuroPagesMin,
+          0,
+          1,
         ),
         convertTimeoutSeconds: num(
           'One conversion may take at most (s)',

@@ -22,14 +22,16 @@ import {
   convertArgs,
   countedChars,
   decideArchive,
+  mokuroPagesHeld,
   volumeOfFolder,
 } from '../../cleanup-apply/src/formats';
 import { Worker } from '../../cleanup-apply/src/worker';
 import { COUNTER_BUNDLE } from '../src/counts/counter-bundle';
 import { InProcessReader } from '../src/counts/book-text-worker';
-import { judge } from '../src/cleanup/formats/check';
+import { epubPictures, judge, pictureRefs } from '../src/cleanup/formats/check';
 import { decideCopy } from '../src/cleanup/formats/copies';
-import { drawSpot } from '../src/cleanup/formats/pass';
+import { drawSpot, FORMATS_RULES_VERSION } from '../src/cleanup/formats/pass';
+import { getFormatsState, saveFormatsProgress } from '../src/cleanup/formats/state';
 import { chooseFile, titleKey, titleNamesSeveralVolumes } from '../src/cleanup/formats/select';
 import { DEFAULT_DUPLICATE_SETTINGS } from '../src/cleanup/stage3-rules';
 import type { BookTextModule } from '../src/cleanup/stage3-work';
@@ -61,12 +63,40 @@ describe('what a book file is (the sidecar, pure)', () => {
     expect(
       decideArchive(e('vol1/001.jpg', 'vol1/002.jpg', 'vol2/001.jpg', 'vol2/002.jpg'), 'x').kind,
     ).toBe('series');
-    // mokuro: an EPUB-shaped ZIP of its OCR page (stop 1: よつばと!, Kyo no kioku)
+    // mokuro: an EPUB-shaped ZIP of its OCR page alone (よつばと!: a 50 KB file whose name
+    // still says 132 MiB) is no book: its pages' pictures are not in it (the spot check)
     const mok = decideArchive(
       e('mimetype', 'META-INF/container.xml', '_14 - yotubato!(14).html'),
       '_14 - よつばと!(14) | mokuro',
     );
-    expect(mok).toMatchObject({ kind: 'epub-shaped', mokuro: true });
+    expect(mok).toMatchObject({ kind: 'ocr-only', mokuro: true });
+    // mokuro's EPUB-shaped ZIP with its pictures (溺愛シークレットラバー): a picture book, since
+    // calibre's rebuild drops the pictures from the pages
+    expect(
+      decideArchive(
+        e('mimetype', 'META-INF/container.xml', 'page.html', '019.jpg', '043.jpg', '075.jpg'),
+        '溺愛シークレットラバー | mokuro',
+      ),
+    ).toMatchObject({ kind: 'images', images: 3, mokuro: true, entry: 'page.html' });
+    // The page lists its pictures: an archive missing most of them is no book (巻5: 8 of ~200)
+    const listed = Array.from({ length: 200 }, (_, i) => `0${i + 1}.jpg`);
+    const page = listed.map((n) => `<div style="background-image:url(&quot;${n}&quot;)"></div>`);
+    expect(mokuroPagesHeld(page.join(''), e(...listed.slice(0, 8)))).toEqual({
+      listed: 200,
+      held: 8,
+    });
+    // ... and one missing page of 216 (溺愛シークレットラバー's 036) is still the book
+    expect(
+      mokuroPagesHeld(
+        page.join(''),
+        e(...listed.filter((n) => n !== '036.jpg').map((n) => `x/${n}`)),
+      ),
+    ).toEqual({ listed: 200, held: 199 });
+    // An EPUB named .zip (no mokuro) is still rebuilt
+    expect(
+      decideArchive(e('mimetype', 'META-INF/container.xml', 'OEBPS/a.xhtml', 'OEBPS/c.jpg'), '小説')
+        .kind,
+    ).toBe('epub-shaped');
     // mokuro's pictures with their OCR beside them: a picture book
     expect(
       decideArchive(
@@ -214,7 +244,7 @@ describe('the pass rules (server, pure)', () => {
       ms: 1,
       entries: null,
     };
-    const s = { textKeptMin: 0.97, pictureMaxChars: 1000 };
+    const s = { textKeptMin: 0.97, pictureMaxChars: 1000, minBookChars: 2000 };
     const m = { opened: true, openError: null, readerChars: 90_000, epubImages: 3 };
     expect(judge(facts, m, s).ok).toBe(true);
     expect(judge({ ...facts, epubChars: 90_000 }, m, s)).toMatchObject({
@@ -228,8 +258,60 @@ describe('the pass rules (server, pure)', () => {
     expect(judge(pic, { ...m, epubImages: 7 }, s).ok).toBe(true);
     expect(judge(pic, { ...m, epubImages: 4 }, s)).toMatchObject({
       ok: false,
-      reason: 'Pages missing: 4 pictures in the EPUB, 6 in the archive',
+      reason: "Pages missing: 4 pictures on the EPUB's pages, 6 in the archive",
     });
+    // A few lines and a cover are no book (The Missing README: an 86-character note in a TXT)
+    const txt = { ...facts, kind: 'txt-inside', sourceChars: 82, epubChars: 82 };
+    expect(judge(txt, { ...m, readerChars: 86, epubImages: 1 }, s)).toMatchObject({
+      ok: false,
+      listedAs: 'too_little',
+    });
+    // ... but a Kindle comic has little text and many pictures on its pages
+    expect(judge(txt, { ...m, readerChars: 107, epubImages: 194 }, s).ok).toBe(true);
+    // A rebuilt archive whose pictures are on no page (溺愛シークレットラバー: 216 packed, 0 shown)
+    const reb = { ...facts, method: 'rebuild', kind: 'epub-shaped', sourceImages: 215 };
+    expect(judge(reb, { ...m, readerChars: 18_436, epubImages: 1 }, s)).toMatchObject({
+      ok: false,
+      reason: 'Pictures not on the pages: 1 shown, 215 in the archive',
+    });
+    expect(judge(reb, { ...m, readerChars: 18_436, epubImages: 216 }, s).ok).toBe(true);
+  });
+
+  it('counts only the pictures a page shows', async () => {
+    expect(
+      pictureRefs(
+        '<img alt="" src="../i/1.jpg"/><svg><image width="1" xlink:href="2.png?x"/></svg><a href="p.xhtml">x</a><a href="4.jpg">x</a><div style="background:url(\'3.webp\')">',
+      ),
+    ).toEqual(['../i/1.jpg', '2.png']);
+    const dir = makeTempDir('pics');
+    const file = path.join(dir, 'b.epub');
+    const page = (body: string) =>
+      `<?xml version="1.0"?><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" href="../s.css"/></head><body>${body}</body></html>`;
+    fs.writeFileSync(
+      file,
+      makeZip([
+        { name: 'mimetype', data: 'application/epub+zip' },
+        {
+          name: 'META-INF/container.xml',
+          data: '<container><rootfiles><rootfile full-path="OEBPS/content.opf"/></rootfiles></container>',
+        },
+        {
+          name: 'OEBPS/content.opf',
+          data: `<package><manifest><item id="p1" href="t/p1.xhtml"/><item id="p2" href="t/p2.xhtml"/><item id="n" href="nav.xhtml"/></manifest><spine><itemref idref="p1"/><itemref idref="p2"/></spine></package>`,
+        },
+        { name: 'OEBPS/t/p1.xhtml', data: page('<img src="../i/1.jpg"/>') },
+        { name: 'OEBPS/t/p2.xhtml', data: page('<p>テキスト</p>') },
+        { name: 'OEBPS/nav.xhtml', data: page('<img src="i/4.jpg"/>') },
+        { name: 'OEBPS/s.css', data: 'body { background: url("i/2.jpg") }' },
+        { name: 'OEBPS/i/1.jpg', data: 'a' },
+        { name: 'OEBPS/i/2.jpg', data: 'b' },
+        { name: 'OEBPS/i/3.jpg', data: 'c' },
+        { name: 'OEBPS/i/4.jpg', data: 'd' },
+      ]),
+    );
+    // Only 1 is shown: 2 is a stylesheet background (never loaded by the reader), 3 is on no
+    // page, 4 only on a page not in the spine
+    expect(await epubPictures(file)).toEqual({ entries: 4, shown: 1 });
   });
 
   it('folds only a proven copy (same text both ways at 95 %, or wholly inside)', () => {
@@ -702,6 +784,86 @@ describe('the pass through the real sidecar', () => {
     expect(again.map((r) => r.calibre_id)).toContain(ids.F1);
     void lib;
   }, 300_000);
+
+  it('a run decided under older rules reopens only the books the new rules can change', async () => {
+    const w = worker();
+    await request(env.app)
+      .put('/api/v1/cleanup/formats/mode')
+      .set(auth(user))
+      .send({ mode: 'analyse' })
+      .expect(200);
+    await runUntil(w, 'spot');
+    await pass().step();
+    const lib = env.libraryId();
+    expect(pass().state().progress.rulesVersion).toBe(FORMATS_RULES_VERSION);
+    // The spot check's marks come back as marks (the book's own verdict is "convert").
+    const first = pass().spotList();
+    expect(first.map((b) => b.mark)).toEqual(first.map(() => null));
+    pass().setVerdict(first[0].uuid, 'wrong');
+    expect(pass().spotList()[0].mark).toBe('wrong');
+    // As if decided by rules 1: U1 was a rebuilt archive, D1 a book of a few lines.
+    const row = (k: string) =>
+      env.cleanupDb
+        .prepare(
+          'SELECT state, change_id, result_json, check_json FROM calibre_format_books WHERE calibre_id = ?',
+        )
+        .get(ids[k]) as {
+        state: string;
+        change_id: number | null;
+        result_json: string | null;
+        check_json: string | null;
+      };
+    const before = { U1: row('U1'), D1: row('D1'), P1: row('P1'), Z1: row('Z1') };
+    env.cleanupDb
+      .prepare(
+        `UPDATE calibre_format_books SET result_json = json_set(result_json, '$.method', 'rebuild')
+         WHERE calibre_id = ?`,
+      )
+      .run(ids.U1);
+    env.cleanupDb
+      .prepare(
+        `UPDATE calibre_format_books SET check_json = json_set(check_json, '$.readerChars', 10)
+         WHERE calibre_id = ?`,
+      )
+      .run(ids.D1);
+    const p = getFormatsState(env.cleanupDb, lib).progress;
+    delete p.rulesVersion;
+    saveFormatsProgress(env.cleanupDb, lib, p);
+    await pass().step();
+    expect(pass().state().progress).toMatchObject({
+      phase: 'convert',
+      rulesVersion: FORMATS_RULES_VERSION,
+    });
+    expect(row('U1')).toMatchObject({ state: 'waiting', change_id: null, result_json: null });
+    expect(row('D1')).toMatchObject({ state: 'converted', change_id: null, check_json: null });
+    // Everything else stays as found, the spot check is drawn again.
+    expect(row('P1')).toEqual(before.P1);
+    expect(row('Z1')).toEqual(before.Z1);
+    const changes = (id: number | null) =>
+      (
+        env.cleanupDb
+          .prepare('SELECT COUNT(*) AS n FROM proposed_changes WHERE id = ?')
+          .get(id) as {
+          n: number;
+        }
+      ).n;
+    expect(changes(before.U1.change_id)).toBe(0);
+    expect(changes(before.D1.change_id)).toBe(0);
+    expect(changes(before.P1.change_id)).toBe(1);
+    expect(pass().spotCounts().total).toBe(0);
+    await runUntil(w, 'spot');
+    await pass().step();
+    // U1 converted again by the sidecar, D1 checked again from its stored EPUB (its real count).
+    expect(row('U1')).toMatchObject({ state: 'proposed' });
+    expect(row('D1')).toMatchObject({ state: 'proposed' });
+    expect(JSON.parse(row('U1').result_json!).method).toBe('convert');
+    expect(
+      pass()
+        .spotList()
+        .every((b) => b.mark === null),
+    ).toBe(true);
+    expect(pass().spotCounts().total).toBeGreaterThan(0);
+  });
 
   it('an add_format that times out but happened is never sent twice', async () => {
     const w = worker({ addFormatTimeout: 'after' });

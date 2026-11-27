@@ -61,6 +61,13 @@ import {
 } from './state';
 
 export const FORMATS_SPOT_SIZE = 30;
+/**
+ * The rules the pass decides books by. 2 (the spot check, 2026-11-27): mokuro archives are made as
+ * picture books (or listed when they hold no pictures), pictures count only when a page shows them,
+ * and a book needs `minBookChars` or pictures. A run decided under older rules reopens, once, only
+ * the books the new rules can change (see reopenForRules); everything else it found stays.
+ */
+export const FORMATS_RULES_VERSION = 2;
 export const FORMATS_SPOT_MAX_WRONG = 0;
 /** Proposals inserted per step (the server answers between steps). */
 const PROPOSE_CHUNK = 200;
@@ -75,6 +82,7 @@ const KIND_REASON: Record<string, ListedReason> = {
   'archive-inside': 'archive_inside',
   'text-archive': 'text_archive',
   'not-book': 'not_book',
+  'ocr-only': 'ocr_only',
   unknown: 'unknown',
 };
 
@@ -86,6 +94,7 @@ export interface FormatJobView {
   format: string;
   timeoutSeconds: number;
   calibreLibrary: string | null;
+  mokuroPagesMin: number;
 }
 
 export interface FormatsPassDeps {
@@ -241,6 +250,11 @@ export class FormatsPass {
       saveFormatsProgress(this.db, this.lib, p);
     }
     if (st.pausedReason) return 'idle';
+    if ((p.rulesVersion ?? 1) < FORMATS_RULES_VERSION) {
+      this.reopenForRules(p, lib);
+      saveFormatsProgress(this.db, this.lib, p);
+      return 'more';
+    }
     if (p.phase === 'done') {
       const mtime = this.snapshotMtime(lib);
       if (mtime === null || mtime === p.snapshotMtimeMs) {
@@ -283,6 +297,88 @@ export class FormatsPass {
       saveFormatsProgress(this.db, this.lib, p);
     }
     return r;
+  }
+
+  /**
+   * Once per rules change: the books the new rules can decide differently go back, and nothing
+   * else. Only books not written (no proposal, or one still proposed and in no batch):
+   *   - rebuilt archives (method 'rebuild'): converted again by the sidecar (waiting);
+   *   - books with fewer than `minBookChars` characters that are not picture books: checked again
+   *     from the EPUB already stored (converted).
+   * Their proposals go, the spot check is drawn again, and the run goes back to converting.
+   */
+  reopenForRules(
+    p: FormatsProgress,
+    lib: string,
+    now = Date.now(),
+  ): { converted: number; checked: number } {
+    const min = getSettings(this.db).formats.minBookChars;
+    const rows = this.db
+      .prepare(
+        `SELECT b.* FROM calibre_format_books b
+         LEFT JOIN proposed_changes c ON c.id = b.change_id
+         WHERE b.library_id = ? AND b.state IN ('checked', 'compared', 'proposed', 'listed')
+           AND b.result_json IS NOT NULL
+           AND (b.change_id IS NULL OR (c.state = 'proposed' AND c.batch_id IS NULL))`,
+      )
+      .all(lib) as BookRow[];
+    const again: BookRow[] = [];
+    const recheck: BookRow[] = [];
+    for (const r of rows) {
+      const facts = JSON.parse(r.result_json!) as JobFacts;
+      const check = r.check_json ? (JSON.parse(r.check_json) as CheckResult) : null;
+      if (
+        facts.method === 'rebuild' &&
+        (r.state !== 'listed' || r.listed_reason === 'check_failed')
+      )
+        again.push(r);
+      else if (
+        r.state !== 'listed' &&
+        check &&
+        check.group !== 'picture' &&
+        (check.readerChars ?? 0) < min &&
+        this.deps.store.has(lib, r.calibre_uuid)
+      )
+        recheck.push(r);
+    }
+    this.db.transaction(() => {
+      const dropChange = this.db.prepare(
+        `DELETE FROM proposed_changes WHERE id = ? AND state = 'proposed' AND batch_id IS NULL`,
+      );
+      const toWaiting = this.db.prepare(
+        `UPDATE calibre_format_books SET state = 'waiting', listed_reason = NULL, detail = NULL,
+           lease_until = NULL, attempts = 0, result_json = NULL, epub_sha256 = NULL, epub_size = NULL,
+           check_json = NULL, compare_json = NULL, verdict = NULL, change_id = NULL,
+           converted_at = NULL, updated_at = ? WHERE id = ?`,
+      );
+      const toConverted = this.db.prepare(
+        `UPDATE calibre_format_books SET state = 'converted', check_json = NULL, compare_json = NULL,
+           verdict = NULL, change_id = NULL, updated_at = ? WHERE id = ?`,
+      );
+      for (const r of again) {
+        if (r.change_id !== null) dropChange.run(r.change_id);
+        toWaiting.run(now, r.id);
+      }
+      for (const r of recheck) {
+        if (r.change_id !== null) dropChange.run(r.change_id);
+        toConverted.run(now, r.id);
+      }
+      if (again.length + recheck.length > 0)
+        this.db.prepare('DELETE FROM calibre_formats_spot WHERE library_id = ?').run(lib);
+    })();
+    for (const r of again)
+      void this.deps.store.remove(lib, r.calibre_uuid).catch(() => {
+        // Gone already.
+      });
+    if (again.length + recheck.length > 0 && p.phase !== 'select' && p.phase !== 'convert') {
+      this.next(p, 'convert');
+      p.finishedAt = null;
+    }
+    p.rulesVersion = FORMATS_RULES_VERSION;
+    this.deps.log?.(
+      `Books without an EPUB: rules ${FORMATS_RULES_VERSION}: ${again.length} to convert again, ${recheck.length} to check again`,
+    );
+    return { converted: again.length, checked: recheck.length };
   }
 
   // ------------------------------------------------------------------- select
@@ -462,6 +558,7 @@ export class FormatsPass {
       format: row.source_format!,
       timeoutSeconds: settings.convertTimeoutSeconds,
       calibreLibrary: this.deps.calibreLibraryOf(lib),
+      mokuroPagesMin: settings.mokuroPagesMin,
     };
   }
 
@@ -604,12 +701,13 @@ export class FormatsPass {
         .run(JSON.stringify(result), now, row.id);
       return;
     }
+    const reason: ListedReason = result.listedAs ?? 'check_failed';
     this.db
       .prepare(
-        `UPDATE calibre_format_books SET state = 'listed', listed_reason = 'check_failed', detail = ?,
+        `UPDATE calibre_format_books SET state = 'listed', listed_reason = ?, detail = ?,
            check_json = ?, updated_at = ? WHERE id = ?`,
       )
-      .run(`${LISTED_TEXT.check_failed}: ${result.reason}`, JSON.stringify(result), now, row.id);
+      .run(reason, `${LISTED_TEXT[reason]}: ${result.reason}`, JSON.stringify(result), now, row.id);
     await this.deps.store.remove(row.library_id, row.calibre_uuid);
   }
 
@@ -924,12 +1022,13 @@ export class FormatsPass {
   spotList(): FormatBookView[] {
     const rows = this.db
       .prepare(
-        `SELECT s.verdict, s.kind AS spot_kind, b.* FROM calibre_formats_spot s
+        `SELECT b.*, s.verdict AS spot_verdict, s.kind AS spot_kind FROM calibre_formats_spot s
          JOIN calibre_format_books b ON b.library_id = s.library_id AND b.calibre_uuid = s.calibre_uuid
          WHERE s.library_id = ? ORDER BY s.position`,
       )
-      .all(this.lib) as (BookRow & { verdict: 'right' | 'wrong' | null })[];
-    return rows.map((r) => ({ ...this.view(r), mark: r.verdict }));
+      .all(this.lib) as (BookRow & { spot_verdict: 'right' | 'wrong' | null })[];
+    // The book row has a `verdict` of its own (convert / fold / near): the mark is the spot's.
+    return rows.map((r) => ({ ...this.view(r), mark: r.spot_verdict }));
   }
 
   /** The checked EPUB of a book on the card (spot check and review), for the user to open. */
