@@ -19,7 +19,9 @@
  *   finished" comes first, newest first, and is the default there: the Home row's order.
  * - wish: the search bookmeter:wish alone (the 読みたい本 collection); "読書メーター order" comes
  *   first, newest added first, and is the default there: the order of Bookmeter's wish list.
- * - groups: the Series, Authors and Tags tabs.
+ * - groups: the Tags tab; series-groups and author-groups: the Series and Authors tabs, which
+ *   also sort by their figures (series-figures.ts): a series' volume 1 and "Went on to vol 2",
+ *   an author's works.
  * - notes-books, notes-highlights: the Notes page's two views (sorted on the device; the
  *   last pick per view is remembered there, `notesBookSort` / `notesHighlightSort`).
  *
@@ -44,7 +46,10 @@ export type BookSortKey =
 
 /** The store ratings' sorts (the cards show their figure only under these). */
 export const RATING_SORT_KEYS: readonly BookSortKey[] = ['rating', 'ratings', 'readers'];
-export type GroupSortKey = 'newest' | 'name' | 'count';
+export type GroupSortKey = 'newest' | 'name' | 'count' | 'rating' | 'ratings' | 'readers' | 'kept';
+
+/** The group sorts by a figure (the cards show the figure only under these). */
+export const GROUP_FIGURE_SORT_KEYS: readonly string[] = ['rating', 'ratings', 'readers', 'kept'];
 export type SortDir = 'asc' | 'desc';
 
 /** A sort as the server takes it. */
@@ -61,6 +66,8 @@ export type SortContext =
   | 'series'
   | 'list'
   | 'groups'
+  | 'series-groups'
+  | 'author-groups'
   | 'notes-books'
   | 'notes-highlights';
 
@@ -170,6 +177,40 @@ const GROUP_CHOICES: SortChoice[] = [
   }
 ];
 
+/** The figure sorts of the Series and Authors tabs (series-figures.ts). */
+const RATING_GROUP_CHOICES: SortChoice[] = [
+  {
+    key: 'rating',
+    label: 'Rating',
+    dirLabels: { asc: 'Lowest first', desc: 'Highest first' },
+    defaultDir: 'desc'
+  },
+  {
+    key: 'ratings',
+    label: 'Most rated',
+    dirLabels: { asc: 'Fewest first', desc: 'Most first' },
+    defaultDir: 'desc'
+  },
+  {
+    key: 'readers',
+    label: 'Most read',
+    dirLabels: { asc: 'Fewest first', desc: 'Most first' },
+    defaultDir: 'desc'
+  }
+];
+
+const KEPT_CHOICE: SortChoice = {
+  key: 'kept',
+  label: 'Went on to vol 2',
+  dirLabels: { asc: 'Lowest first', desc: 'Highest first' },
+  defaultDir: 'desc'
+};
+
+/** Whether a context is one of the group tabs (Series, Authors, Tags). */
+export function isGroupContext(context: SortContext): boolean {
+  return context === 'groups' || context === 'series-groups' || context === 'author-groups';
+}
+
 /** The Notes page's Books view (lib/notes/notes-view.ts sorts by these keys). */
 const NOTES_BOOK_CHOICES: SortChoice[] = [
   {
@@ -218,6 +259,8 @@ const OWN_LABEL: Record<'series' | 'list', string> = {
 /** What the Sort menu offers in a context. */
 export function sortChoices(context: SortContext): SortChoice[] {
   if (context === 'groups') return GROUP_CHOICES;
+  if (context === 'series-groups') return [...GROUP_CHOICES, ...RATING_GROUP_CHOICES, KEPT_CHOICE];
+  if (context === 'author-groups') return [...GROUP_CHOICES, ...RATING_GROUP_CHOICES];
   if (context === 'books') return BOOK_CHOICES;
   if (context === 'completed') return [COMPLETED_CHOICE, ...BOOK_CHOICES];
   if (context === 'next') return [NEXT_CHOICE, ...BOOK_CHOICES];
@@ -257,7 +300,8 @@ export function defaultSort(
   if (context === 'next') return { key: 'finished', dir: 'desc' };
   // bookmeter:wish always opens in Bookmeter's own order.
   if (context === 'wish') return { key: 'wish', dir: 'desc' };
-  if (context === 'groups') return parseSort(remembered.groups, 'groups') ?? DEFAULT_GROUP_SORT;
+  // One remembered group sort for the three tabs; a figure sort is not one of Tags' sorts.
+  if (isGroupContext(context)) return parseSort(remembered.groups, context) ?? DEFAULT_GROUP_SORT;
   return parseSort(remembered.books, 'books') ?? DEFAULT_BOOK_SORT;
 }
 

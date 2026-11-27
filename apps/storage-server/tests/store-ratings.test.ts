@@ -620,7 +620,11 @@ describe('the routes', () => {
     expect(Object.keys(a.sites).sort()).toEqual(['amazon_jp', 'bookmeter', 'bookwalker']);
     expect(a.sites.bookmeter).toMatchObject({ count: 700, reviews: 20 });
     expect(a.readers).toBe(700);
-    expect((await request(app).get('/api/v1/ratings/features')).body).toEqual({ bookmeter: true });
+    // With the score's pull, for the offline Library's author figures (series-figures).
+    expect((await request(app).get('/api/v1/ratings/features')).body).toEqual({
+      bookmeter: true,
+      score: { m: 4.1, c: 20 },
+    });
     // An older page that still sends the retired switch saves fine; the switch is dropped.
     expect(
       (await request(app).put('/api/v1/ratings/settings').send({ bookmeter: false })).status,

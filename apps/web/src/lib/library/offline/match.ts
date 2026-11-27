@@ -7,6 +7,7 @@
 import type { Matcher, ParsedQuery, QueryTerm, TextField } from '$lib/library/query/parse';
 import type { CatalogBook } from '$lib/library/types';
 import type { BookState } from '$lib/sync/book-state';
+import { figureMatches, type FigureKey } from '$lib/library/series-figures';
 
 /**
  * The library search evaluated on the device (offline Library), term by term the same as
@@ -22,6 +23,9 @@ import type { BookState } from '$lib/sync/book-state';
  *   favorite: no record = not a favorite;
  * - on:device: the books this device stores (offline, every listed book);
  * - "-" negates a term: NOT IFNULL(cond, 0), so `-series:x` keeps books without a series.
+ * - kept: the book's series' "Went on to vol 2"; on the Series tab rating:, ratings: and
+ *   readers: test the series' figures (volume 1), not the book (series-figures.ts). Books
+ *   without the figure never match, negated or not.
  */
 
 /** The server's fold (catalog/fold.ts, foldForSearch). */
@@ -38,6 +42,12 @@ export interface MatchContext {
   isNext?(bookId: string): boolean;
   /** bookmeter: the 読書メーター lists the book is on (Bookmeter sync's records). */
   bookmeterLists?(bookId: string): ReadonlySet<string>;
+  /**
+   * Series figures (series-figures.ts): kept: reads the book's series in its library; with
+   * `seriesTab`, rating:/ratings:/readers: read the book's series group. Null: no figure.
+   */
+  figure?(book: CatalogBook, key: FigureKey): number | null;
+  seriesTab?: boolean;
 }
 
 const regexCache = new Map<string, RegExp>();
@@ -121,6 +131,9 @@ function termMatches(book: CatalogBook, term: QueryTerm, ctx: MatchContext): boo
       );
     case 'favorite':
       return (ctx.states.get(book.id)?.favorite ?? false) === term.value;
+    case 'kept':
+      // Answered in termHolds (series figures).
+      return false;
     case 'device':
       return ctx.onDevice(book.id);
     case 'deviceAudio':
@@ -154,6 +167,14 @@ function rangeValue(
 
 /** Whether one term holds for the book, negation included. */
 export function termHolds(book: CatalogBook, term: QueryTerm, ctx: MatchContext): boolean {
+  if (
+    term.type === 'kept' ||
+    (ctx.seriesTab &&
+      (term.type === 'rating' || term.type === 'ratings' || term.type === 'readers'))
+  ) {
+    const value = ctx.figure?.(book, term.type) ?? null;
+    return figureMatches(value, term.min, term.max, term.negated);
+  }
   if (term.type === 'chars' && term.negated) {
     // A book without a count is never included, negated or not.
     const n = book.charCount;

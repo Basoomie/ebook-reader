@@ -61,8 +61,12 @@ export function createRatingsRouter(ratings: StoreRatings | null): Router {
 
   // What the pages show. 読書メーター had its own switch until its link fix (2026-11-25); it is
   // fetched with the other stores now, so its numbers are always shown when there are any.
+  // `score`: the Rating score's pull, for the offline Library's author figures (series-figures).
   router.get('/ratings/features', (_req, res) => {
-    res.json({ bookmeter: ratings !== null });
+    res.json({
+      bookmeter: ratings !== null,
+      score: ratings ? readScoreParams(ratings.db) : null,
+    });
   });
 
   router.get('/ratings/progress', (_req, res) => {

@@ -22,7 +22,8 @@
 import { writable } from 'svelte/store';
 import { writableArrayLocalStorageSubject } from '$lib/data/internal/writable-object-local-storage-subject';
 import type { BookRatingsAnswer, RatingFigure } from './api';
-import type { CatalogBook } from './types';
+import type { CatalogBook, CatalogGroup } from './types';
+import { DEFAULT_SCORE_PARAMS, type ScoreParams } from './series-figures';
 
 export type RatingPart = 'pooled' | 'amazon_jp' | 'bookwalker' | 'bookmeter' | 'natively';
 export const RATING_PARTS: readonly RatingPart[] = [
@@ -46,14 +47,43 @@ export const PART_LABELS: Record<RatingPart, string> = {
   natively: 'Natively'
 };
 
-/** What the server shows (GET /ratings/features); 読書メーター off until it says so. */
+/**
+ * What the server shows (GET /ratings/features); 読書メーター off until it says so. `score`: the
+ * Rating score's pull (the offline Library's author figures; series-figures.ts), kept on this
+ * device so it is there offline.
+ */
 export const ratingFeatures$ = writable<{ bookmeter: boolean }>({ bookmeter: false });
+
+const SCORE_KEY = 'storeRatingScoreParams';
+
+/** The last pull the server gave (DEFAULT_SCORE_PARAMS before any). */
+export function scoreParamsNow(): ScoreParams {
+  try {
+    const raw = typeof localStorage === 'undefined' ? null : localStorage.getItem(SCORE_KEY);
+    const v = raw ? (JSON.parse(raw) as Partial<ScoreParams>) : null;
+    if (v && Number.isFinite(v.m) && Number.isFinite(v.c)) return { m: v.m!, c: v.c! };
+  } catch {
+    // A bad value: the defaults.
+  }
+  return DEFAULT_SCORE_PARAMS;
+}
 let featuresAsked: Promise<void> | null = null;
 
 /** Asks the server once per page load (a failure keeps the defaults). */
-export function loadRatingFeatures(ask: () => Promise<{ bookmeter: boolean }>): Promise<void> {
+export function loadRatingFeatures(
+  ask: () => Promise<{ bookmeter: boolean; score?: ScoreParams | null }>
+): Promise<void> {
   featuresAsked ??= ask()
-    .then((f) => ratingFeatures$.set({ bookmeter: f.bookmeter === true }))
+    .then((f) => {
+      ratingFeatures$.set({ bookmeter: f.bookmeter === true });
+      if (f.score && Number.isFinite(f.score.m) && Number.isFinite(f.score.c)) {
+        try {
+          localStorage.setItem(SCORE_KEY, JSON.stringify({ m: f.score.m, c: f.score.c }));
+        } catch {
+          // Storage full or off: the defaults offline.
+        }
+      }
+    })
     .catch(() => {
       featuresAsked = null;
     });
@@ -233,6 +263,32 @@ export function cardRatingText(
   }
   if (sortKey === 'readers' && book.readers !== null && book.readers !== undefined) {
     return `${formatCount(book.readers)} read it`;
+  }
+  return null;
+}
+
+/**
+ * A Series or Authors card's figure while the tab is sorted by a figure (series-figures.ts):
+ * a series' volume 1 ("Vol 1: 4.2 · 310"), an author's works ("4.3 · 1,234"), or "Went on to
+ * vol 2: 69 %"; null under any other sort or without a value.
+ */
+export function groupFigureText(
+  group: Pick<CatalogGroup, 'by' | 'figures'>,
+  sortKey: string | null | undefined
+): string | null {
+  const f = group.figures;
+  if (!f || (group.by !== 'series' && group.by !== 'author')) return null;
+  const vol = group.by === 'series' ? 'Vol 1: ' : '';
+  if (sortKey === 'rating' && f.rating) {
+    return `${vol}${formatStars(f.rating.avg)} · ${formatCount(f.rating.count)}`;
+  }
+  if (sortKey === 'ratings' && f.rating) {
+    const n = f.rating.count;
+    return `${vol}${formatCount(n)} ${n === 1 ? 'rating' : 'ratings'}`;
+  }
+  if (sortKey === 'readers' && f.readers !== null) return `${vol}${formatCount(f.readers)} read it`;
+  if (sortKey === 'kept' && group.by === 'series' && f.kept !== null) {
+    return `Went on to vol 2: ${f.kept} %`;
   }
   return null;
 }

@@ -100,6 +100,8 @@ describe('Settings › Library (calibre-metadata-display.md)', () => {
       'Next in your series',
       // Recently viewed (2026-11-24): after Search.
       'Recently viewed',
+      // Series figures (2026-11-26): after Recently viewed.
+      'Went on to vol 2',
       'Book page',
       // Bookmeter sync (2026-11-25): after Book page.
       '読書メーター',

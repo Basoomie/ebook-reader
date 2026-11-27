@@ -863,7 +863,9 @@ export class LibraryApi {
   }
 
   /** What the pages show of store ratings (読書メーター only once switched on). */
-  async ratingFeatures(options?: RequestOptions): Promise<{ bookmeter: boolean }> {
+  async ratingFeatures(
+    options?: RequestOptions
+  ): Promise<{ bookmeter: boolean; score?: { m: number; c: number } | null }> {
     return (await this.get('/ratings/features', options)).json();
   }
 

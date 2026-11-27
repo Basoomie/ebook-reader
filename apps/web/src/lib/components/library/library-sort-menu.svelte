@@ -38,6 +38,7 @@
     rating: '評価',
     ratings: '評価数',
     readers: '読者数',
+    kept: '継続率',
     series: '巻順',
     list: '並べた順',
     newest: '追加日',

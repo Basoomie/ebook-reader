@@ -64,6 +64,7 @@ const FIELD_HELP: Record<(typeof QUERY_FIELDS)[number], string> = {
   rating: "Readers' stars on the stores: >=4, 3.5-4.5",
   ratings: 'How many people rated it: >=100',
   readers: 'People who logged it on 読書メーター: >=1000',
+  kept: 'Readers of vol 1 who went on to vol 2 (its series): >=70',
   myrating: 'Your own rating: >=4, 5',
   status: 'Unread, reading, completed, dropped, or next (the next volume of your series)',
   favorite: 'Your favorites: yes or no',
@@ -72,7 +73,7 @@ const FIELD_HELP: Record<(typeof QUERY_FIELDS)[number], string> = {
 };
 
 const FIELD_AT =
-  /^(author|illustrator|series|tag|chars|level|ratings|rating|readers|myrating|status|favorite|on|bookmeter)[:：]/i;
+  /^(author|illustrator|series|tag|chars|level|ratings|rating|readers|kept|myrating|status|favorite|on|bookmeter)[:：]/i;
 
 /** The same folding as the search itself (full/half width, case). */
 export function foldName(text: string): string {
@@ -206,6 +207,10 @@ const EXAMPLES: Record<string, { value: string; detail: string }[]> = {
   readers: [
     { value: '>=1000', detail: 'At least 1,000 readers on 読書メーター' },
     { value: '<100', detail: 'Fewer than 100 readers' }
+  ],
+  kept: [
+    { value: '>=70', detail: 'At least 70 % went on to vol 2' },
+    { value: '<50', detail: 'Under half went on to vol 2' }
   ],
   myrating: [
     { value: '>=4', detail: 'You rated it 4 stars or higher' },

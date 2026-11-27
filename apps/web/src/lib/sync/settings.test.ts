@@ -46,7 +46,12 @@ const SETTINGS_FILES = [
   'lib/search-history/settings.ts',
   'lib/library/search-settings.ts',
   // Recently viewed (2026-11-24)
-  'lib/recently-viewed/settings.ts'
+  'lib/recently-viewed/settings.ts',
+  // Next in your series and store ratings (2026-11-25)
+  'lib/library/next-in-series-settings.ts',
+  'lib/library/store-ratings.ts',
+  // Series figures: "Went on to vol 2"'s thresholds (2026-11-26)
+  'lib/library/series-figures-settings.ts'
 ];
 
 /** Keys and value types declared with writable*LocalStorageSubject()('key', ...). */
@@ -125,10 +130,10 @@ describe('settings registry', () => {
     ]) {
       expect(settingScope(key), key).toBe('local');
     }
-    expect(keysWithScope('global')).toHaveLength(38); // + 2 next in your series (nextInSeriesOn, nextInSeriesBonus; 2026-11-25) + searchHeaderButton (search palette step 2) + 2 search help (searchSuggestionsOn, searchReadsAsOn; 2026-11-24) + 5 recently viewed (recentlyViewedOn, recentlyViewedDwellSeconds, recentlyViewedKeep, recentlyViewedKeepBooks, recentlyViewedKeepDays; 2026-11-24) + libraryThemes (library themes, 2026-11-24) + 4 search history (searchHistoryOn, searchHistoryLimit, bookSearchHistoryOn, bookSearchHistoryLimit; 2026-11-24) + 15 + ankiAutoEnrich (Phase 8) + ankiAutoEnrichSeconds + ttsDialoguePauseMs (Phase 12 session 4) + speakerUnsureBelow (session 5) + summaryLanguages (book summaries session 3) + summarySpoilerBlur (session 4) + summaryAutoOnFirstCompletion (session 4b) + summaryRecapAuto (book summaries session 5)
+    expect(keysWithScope('global')).toHaveLength(42); // + 4 series figures (seriesKeptMinReaders, seriesKeptNeighbourPercent, seriesKeptMaxPercent, seriesKeptMinMonths; 2026-11-26) + 2 next in your series (nextInSeriesOn, nextInSeriesBonus; 2026-11-25) + searchHeaderButton (search palette step 2) + 2 search help (searchSuggestionsOn, searchReadsAsOn; 2026-11-24) + 5 recently viewed (recentlyViewedOn, recentlyViewedDwellSeconds, recentlyViewedKeep, recentlyViewedKeepBooks, recentlyViewedKeepDays; 2026-11-24) + libraryThemes (library themes, 2026-11-24) + 4 search history (searchHistoryOn, searchHistoryLimit, bookSearchHistoryOn, bookSearchHistoryLimit; 2026-11-24) + 15 + ankiAutoEnrich (Phase 8) + ankiAutoEnrichSeconds + ttsDialoguePauseMs (Phase 12 session 4) + speakerUnsureBelow (session 5) + summaryLanguages (book summaries session 3) + summarySpoilerBlur (session 4) + summaryAutoOnFirstCompletion (session 4b) + summaryRecapAuto (book summaries session 5)
     expect(keysWithScope('device')).toHaveLength(
-      95 + 2 + 77 + 1 + 8 + 1 + 2 + 4 + 2 + 2 + 1 + 2 - 3 + 4 + 3 + 2 + 2 + 2 + 1 + 1
-    ); // + cleanupLibrariesAs (manga part B), + searchPaletteCtrlK (search palette step 2), + 2 library theme picks (libraryLightTheme, libraryDarkTheme; 2026-11-24), + 2 collection views (collectionGroupsAs, collectionSectionsBy), + 2 summary layouts (summaryCharacterLayout, summaryRelationshipLayout; book summaries session 4), + 3 Calibre editing (bookEditAs, seriesEditAs, bookRatingEmpty), + 4 book links (bookLinks, bookLinksPlacement, bookLinksMoreAs, bookLinksSearch), + libraryServerCheckSeconds, + 8 pacer (Phase 10), + bookIllustrationsPosition (Season 2 §6), + 2 on-track dot (Season 2 §9), + 4 read-aloud (Phase 12), + 2 Notes sorts (notesBookSort, notesHighlightSort), + 2 select-mode downloads (libraryBulkDownloadMode, libraryDownloadConfirmGb), + libraryCoverBlur (Hidden covers), + readerToolbar and readerBottomBar - the 3 bottom-bar switches they replace (reader toolbars session 1)
+      95 + 2 + 77 + 1 + 8 + 1 + 2 + 4 + 2 + 2 + 1 + 2 - 3 + 4 + 3 + 2 + 2 + 2 + 1 + 1 + 1
+    ); // + bookRatingParts (store ratings, 2026-11-25), + cleanupLibrariesAs (manga part B), + searchPaletteCtrlK (search palette step 2), + 2 library theme picks (libraryLightTheme, libraryDarkTheme; 2026-11-24), + 2 collection views (collectionGroupsAs, collectionSectionsBy), + 2 summary layouts (summaryCharacterLayout, summaryRelationshipLayout; book summaries session 4), + 3 Calibre editing (bookEditAs, seriesEditAs, bookRatingEmpty), + 4 book links (bookLinks, bookLinksPlacement, bookLinksMoreAs, bookLinksSearch), + libraryServerCheckSeconds, + 8 pacer (Phase 10), + bookIllustrationsPosition (Season 2 §6), + 2 on-track dot (Season 2 §9), + 4 read-aloud (Phase 12), + 2 Notes sorts (notesBookSort, notesHighlightSort), + 2 select-mode downloads (libraryBulkDownloadMode, libraryDownloadConfirmGb), + libraryCoverBlur (Hidden covers), + readerToolbar and readerBottomBar - the 3 bottom-bar switches they replace (reader toolbars session 1)
     expect(keysWithScope('local')).toHaveLength(7); // + summaryViewLang (book summaries session 4) + descriptionViewLang (session 4b)
   });
 

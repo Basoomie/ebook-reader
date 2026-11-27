@@ -29,6 +29,7 @@ import {
 import { InvalidQueryError, parseOrThrow, usesRegex } from '../catalog/query-parser';
 import { RegexTimeoutError } from '../catalog/search-runner';
 import { querySql } from '../catalog/search-sql';
+import { figureTerms } from '../catalog/series-figures';
 import { isPlainObject } from '../sync/kinds';
 
 /** Built-in collections: id -> search. The web app has the same list (builtins.ts). */
@@ -90,7 +91,11 @@ function searchMembers(
   run: RunQuery,
 ): Promise<unknown[]> {
   const parsed = parseOrThrow(query);
-  const conds = [...visibilitySql({}), ...querySql(parsed, user.id, db, user.deviceId ?? null)];
+  const figures = figureTerms(db, user.id, { seriesTab: false });
+  const conds = [
+    ...visibilitySql({}),
+    ...querySql(parsed, user.id, db, user.deviceId ?? null, figures),
+  ];
   const where = conds.length ? `WHERE ${conds.map((c) => c.sql).join(' AND ')}` : '';
   return run(
     `SELECT ${MEMBER_COLUMNS} ${SQL_BOOK_FROM} ${where} ORDER BY b.added_at DESC, b.id DESC`,

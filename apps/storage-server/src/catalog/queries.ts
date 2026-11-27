@@ -14,6 +14,7 @@ import { sourceKey, thumbnailVersion } from '../thumbnails/thumbnails';
 import { parseOrThrow, usesRegex } from './query-parser';
 import { registerRegexp } from './regexp';
 import { querySql, setPrefix, type SqlCondition } from './search-sql';
+import { figureTerms } from './series-figures';
 import {
   type BookSort,
   DEFAULT_BOOK_SORT,
@@ -427,8 +428,9 @@ function listConditions(
   const conds: SqlCondition[] = [...visibilitySql(opts)];
   if (opts.group) conds.push(groupMemberSql(opts.group, db));
   if (opts.collection) conds.push(collectionMemberSql(user.id, opts.collection));
-  if (scoped) conds.push(...querySql(scoped, user.id, db, user.deviceId ?? null));
-  conds.push(...querySql(parsed, user.id, db, user.deviceId ?? null));
+  const figures = figureTerms(db, user.id, { seriesTab: false });
+  if (scoped) conds.push(...querySql(scoped, user.id, db, user.deviceId ?? null, figures));
+  conds.push(...querySql(parsed, user.id, db, user.deviceId ?? null, figures));
   return { conds, regex: usesRegex(parsed) || (scoped !== null && usesRegex(scoped)) };
 }
 
@@ -565,7 +567,13 @@ export function planLookup(
       sql: unique.length ? `b.id IN (${unique.map(() => '?').join(',')})` : '0',
       params: unique,
     },
-    ...querySql(parsed, user.id, db, user.deviceId ?? null),
+    ...querySql(
+      parsed,
+      user.id,
+      db,
+      user.deviceId ?? null,
+      figureTerms(db, user.id, { seriesTab: false }),
+    ),
   ];
   return {
     sql: `${BOOK_SELECT} WHERE ${conds.map((c) => c.sql).join(' AND ')}`,

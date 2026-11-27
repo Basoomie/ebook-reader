@@ -28,6 +28,8 @@ export type QueryTerm =
   | (TermBase & { type: 'level'; min: number | null; max: number | null })
   | (TermBase & { type: 'rating' | 'myrating'; min: number | null; max: number | null })
   | (TermBase & { type: 'ratings' | 'readers'; min: number | null; max: number | null })
+  /** kept: "Went on to vol 2" of the book's series, whole percent (series-figures.ts). */
+  | (TermBase & { type: 'kept'; min: number | null; max: number | null })
   | (TermBase & { type: 'status'; values: QueryStatus[] })
   | (TermBase & { type: 'favorite'; value: boolean })
   | (TermBase & { type: 'device' })
