@@ -585,7 +585,8 @@ export class OfflineCatalog {
         const byId = new Map(r.books.map((b) => [b.id, b]));
         card.tiles = collage(r.books, opened).map((id) => tileOf(byId.get(id) as CatalogBook));
       }
-      const f = figureOf(r.name);
+      // Under a figure sort only, as the server (the only time the cards show them).
+      const f = values.size ? figureOf(r.name) : null;
       if (f && (f.rating || f.readers !== null || f.kept !== null)) card.figures = f;
       return card;
     });

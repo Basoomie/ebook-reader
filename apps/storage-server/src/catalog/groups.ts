@@ -408,7 +408,9 @@ function pageGroups(
         : encodeCursor([last.newest, last.n, last.name])
       : null;
   const groups = describe(page);
-  if (figureOf) {
+  // Only under a figure sort (the only time the cards show them): working the figures out reads
+  // the library, which a plain page of the tabs must not pay for.
+  if (figureOf && byFigure) {
     page.forEach((r, i) => {
       const f = figureOf(r);
       if (f && (f.rating || f.readers !== null || f.kept !== null)) groups[i].figures = f;

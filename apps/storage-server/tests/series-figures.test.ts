@@ -196,9 +196,11 @@ describe('the Series tab', () => {
     expect(seen).toEqual(whole);
   });
 
-  it("carries the series' figures on its card", async () => {
+  it("carries the series' figures on its card under a figure sort only", async () => {
     const c = await env();
-    const cards = (await c.groups({ by: 'series' })).groups;
+    // A plain page of the tab doesn't work the figures out (it reads the library).
+    expect((await c.groups({ by: 'series' })).groups.every((g) => !g.figures)).toBe(true);
+    const cards = (await c.groups({ by: 'series', sort: 'kept' })).groups;
     const alpha = cards.find((g) => g.name === 'Alpha')!;
     expect(alpha.figures).toEqual({
       rating: { avg: 4, count: 100, score: 4000 },

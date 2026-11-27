@@ -5,12 +5,14 @@
  * offline Library works out the same figures.
  *
  * Worked out live, never stored: one read of the books numbered 1-3 in a series (and, for the
- * Authors tab, of the author links), kept until the catalog, the store ratings, the score's
- * pull, your thresholds or the day change. A search term on a figure becomes the list of
+ * Authors tab, of the author links), kept until the book list (bookListVersion), the store
+ * ratings (at most once per 10 minutes), the score's pull, your thresholds or the day change.
+ * Only a figure sort or a figure search works them out (a read of the library: 0.2-0.4 s on the
+ * PC), never a plain page of the tabs. A search term on a figure becomes the list of
  * series that match, bound as one JSON value, so it runs the same in the search worker.
  */
 import type Database from 'better-sqlite3';
-import { catalogVersion } from './catalog-version';
+import { bookListVersion } from './catalog-version';
 import { QUERY_BUNDLE, type QueryTerm } from './query-parser';
 import { SQL_BOOK_FROM } from './queries';
 import type { FigureTermSql, SqlCondition } from './search-sql';
@@ -140,7 +142,7 @@ export interface FigureIndex {
 const indexCache = new WeakMap<Database.Database, Map<string, FigureIndex>>();
 
 function stamp(db: Database.Database): string {
-  return `${catalogVersion(db)}|${ratingsStamp(db)}|${Math.floor(Date.now() / DAY)}`;
+  return `${bookListVersion(db)}|${ratingsStamp(db)}|${Math.floor(Date.now() / DAY)}`;
 }
 
 /** Every series' figures (the books the Library shows: not missing, enabled libraries). */
@@ -241,7 +243,7 @@ function authorRows(
   db: Database.Database,
   opts: { libraryId?: string; includeMissing?: boolean },
 ): AuthorRow[] {
-  const base = `${catalogVersion(db)}|${ratingsStamp(db)}`;
+  const base = `${bookListVersion(db)}|${ratingsStamp(db)}`;
   const key = `${opts.libraryId ?? ''}|${!!opts.includeMissing}`;
   // Only the current catalog's rows are kept (a few library/missing variants of it).
   const list = (authorRowsCache.get(db) ?? []).filter((e) => e.base === base);
