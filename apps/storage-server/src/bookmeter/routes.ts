@@ -17,7 +17,7 @@
  *   DELETE /bookmeter/accounts/:id/choices/:listing  Forget my choice
  *   GET    /bookmeter/finished-here              Completed here, not on 読んだ本
  */
-import express, { Router } from 'express';
+import express, { Router, type NextFunction } from 'express';
 import { ApiError } from '../api/errors';
 import { getAuth } from '../api/auth';
 import { userIdFrom } from './parse';
@@ -102,35 +102,45 @@ export function createBookmeterRouter(service: BookmeterSync | null): Router {
     res.json(s.status());
   });
 
-  router.get('/bookmeter/accounts/:id/unmatched', (req, res) => {
+  // These read the library index: it is built first, in slices (built in one go after the book
+  // list changed, it held the server for seconds; 2026-11-26).
+  const withIndex = (s: BookmeterSync, next: NextFunction, f: () => void) => {
+    s.indexReady().then(f).catch(next);
+  };
+
+  router.get('/bookmeter/accounts/:id/unmatched', (req, res, next) => {
     const s = need();
-    res.json(run(() => s.unmatched(req.params.id)));
+    withIndex(s, next, () => res.json(run(() => s.unmatched(req.params.id))));
   });
 
-  router.get('/bookmeter/accounts/:id/books', (req, res) => {
+  router.get('/bookmeter/accounts/:id/books', (req, res, next) => {
     const s = need();
     const q = typeof req.query.q === 'string' ? req.query.q.slice(0, 200) : '';
-    res.json({ books: run(() => s.searchBooks(req.params.id, q)) });
+    withIndex(s, next, () => res.json({ books: run(() => s.searchBooks(req.params.id, q)) }));
   });
 
-  router.put('/bookmeter/accounts/:id/choices/:listing', (req, res) => {
+  router.put('/bookmeter/accounts/:id/choices/:listing', (req, res, next) => {
     const s = need();
     const bookId = (req.body ?? {}).bookId;
     if (bookId !== null && typeof bookId !== 'string')
       throw new ApiError(400, 'invalid_book', 'bookId must be a book id or null');
-    run(() => s.choose(req.params.id, req.params.listing, bookId));
-    res.json({ ok: true });
+    withIndex(s, next, () => {
+      run(() => s.choose(req.params.id, req.params.listing, bookId));
+      res.json({ ok: true });
+    });
   });
 
-  router.delete('/bookmeter/accounts/:id/choices/:listing', (req, res) => {
+  router.delete('/bookmeter/accounts/:id/choices/:listing', (req, res, next) => {
     const s = need();
-    run(() => s.choose(req.params.id, req.params.listing, undefined));
-    res.json({ ok: true });
+    withIndex(s, next, () => {
+      run(() => s.choose(req.params.id, req.params.listing, undefined));
+      res.json({ ok: true });
+    });
   });
 
-  router.get('/bookmeter/finished-here', (req, res) => {
+  router.get('/bookmeter/finished-here', (req, res, next) => {
     const s = need();
-    res.json({ books: s.finishedHere(getAuth(res).user.id) });
+    withIndex(s, next, () => res.json({ books: s.finishedHere(getAuth(res).user.id) }));
   });
 
   return router;

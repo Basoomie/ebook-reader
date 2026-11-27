@@ -24,7 +24,7 @@ import path from 'path';
 import { fileIdentity, FileIdentity, sameFile } from '../calibre/file-identity';
 import { resolveInside } from '../calibre/source-fs';
 import type { UploadStore } from '../uploads/upload-store';
-import { noteCatalogWrite } from '../catalog/catalog-version';
+import { noteFiguresWrite } from '../catalog/catalog-version';
 import type { CountsConfig } from '../config';
 import {
   COUNTER_BUNDLE,
@@ -263,7 +263,7 @@ export class CharCountService {
             }
           }),
         );
-        if (pass.confirmed > confirmedBefore) noteCatalogWrite(this.db);
+        if (pass.confirmed > confirmedBefore) noteFiguresWrite(this.db);
         // A batch that recorded nothing (every write failed) must not spin.
         if (this.processed === before) break;
       }
@@ -389,7 +389,7 @@ export class CharCountService {
         });
       this.db.prepare('UPDATE books SET char_count = ? WHERE id = ?').run(characters, src.bookId);
     })();
-    noteCatalogWrite(this.db);
+    noteFiguresWrite(this.db);
   }
 }
 

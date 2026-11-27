@@ -125,6 +125,71 @@ export function readSnapshotBooks(file: string): Map<number, SnapshotBook> {
   }
 }
 
+/** Calibre book ids per slice of readSnapshotBooksAsync (about 15 ms on the PC). */
+const SNAPSHOT_IDS_PER_SLICE = 500;
+
+/**
+ * readSnapshotBooks in slices of Calibre book ids, with a turn of the event loop between them:
+ * the same books, formats and tags in the same order (2026-11-26: read whole, a 60,000-book
+ * snapshot held the server for about 2.5 s on the NAS). The indexer replaces a snapshot by
+ * renaming a new file over it, so a read in progress keeps reading the file it opened.
+ */
+export async function readSnapshotBooksAsync(file: string): Promise<Map<number, SnapshotBook>> {
+  const db = new Database(file, { readonly: true, fileMustExist: true });
+  try {
+    const maxId = (db.prepare('SELECT MAX(id) AS m FROM books').get() as { m: number | null }).m;
+    // CROSS JOIN: the slice's books first (joined the other way, every slice read every EPUB).
+    const booksIn = db.prepare(
+      `SELECT b.id, b.uuid, b.title, b.timestamp, b.last_modified, b.path, d.name AS file_name
+       FROM books b CROSS JOIN data d ON d.book = b.id AND d.format = 'EPUB'
+       WHERE b.uuid IS NOT NULL AND b.uuid <> '' AND b.id > ? AND b.id <= ? ORDER BY b.id`,
+    );
+    const formatsIn = db.prepare(
+      'SELECT book, format FROM data WHERE book > ? AND book <= ? ORDER BY format',
+    );
+    const tagsIn = db.prepare(
+      `SELECT l.book, t.name FROM books_tags_link l JOIN tags t ON t.id = l.tag
+       WHERE l.book > ? AND l.book <= ? ORDER BY t.name`,
+    );
+    const books = new Map<number, SnapshotBook>();
+    for (let from = 0; maxId !== null && from < maxId; from += SNAPSHOT_IDS_PER_SLICE) {
+      const to = from + SNAPSHOT_IDS_PER_SLICE;
+      for (const r of booksIn.all(from, to) as {
+        id: number;
+        uuid: string;
+        title: string;
+        timestamp: string | null;
+        last_modified: string | null;
+        path: string;
+        file_name: string;
+      }[]) {
+        books.set(r.id, {
+          calibreId: r.id,
+          uuid: r.uuid,
+          title: r.title,
+          timestamp: parseCalibreDate(r.timestamp),
+          lastModified: r.last_modified,
+          filePath: `${r.path}/${r.file_name}.epub`,
+          formats: [],
+          tags: [],
+        });
+      }
+      // A book's formats and tags are unique by name (Calibre), so each slice's order is the
+      // whole query's order for its books.
+      for (const f of formatsIn.all(from, to) as { book: number; format: string }[]) {
+        books.get(f.book)?.formats.push(f.format.toUpperCase());
+      }
+      for (const t of tagsIn.all(from, to) as { book: number; name: string }[]) {
+        books.get(t.book)?.tags.push(t.name);
+      }
+      await new Promise<void>((res) => setImmediate(res));
+    }
+    return books;
+  } finally {
+    db.close();
+  }
+}
+
 /**
  * Every book of a snapshot by UUID, with or without an EPUB: tells "no longer in Calibre"
  * apart from "still in Calibre, but its EPUB is gone".
