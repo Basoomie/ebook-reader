@@ -94,6 +94,7 @@ export interface FormatJobView {
   format: string;
   timeoutSeconds: number;
   calibreLibrary: string | null;
+  mokuroPagesMin: number;
 }
 
 export interface FormatsPassDeps {
@@ -557,6 +558,7 @@ export class FormatsPass {
       format: row.source_format!,
       timeoutSeconds: settings.convertTimeoutSeconds,
       calibreLibrary: this.deps.calibreLibraryOf(lib),
+      mokuroPagesMin: settings.mokuroPagesMin,
     };
   }
 

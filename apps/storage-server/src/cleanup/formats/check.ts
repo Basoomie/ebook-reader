@@ -55,16 +55,22 @@ const IMAGE = /\.(jpe?g|png|gif|webp|bmp|avif|jxl|tiff?|svg)$/i;
 /** Pages larger than this are not read for their pictures (a page is small; a book is not). */
 const MAX_PAGE_BYTES = 32 * 1024 * 1024;
 
-/** Every picture the markup of a page points at (src, href, xlink:href, url()). Pure. */
+/**
+ * Every picture a page shows the way the reader shows it: an <img src> or an SVG <image href>
+ * (generate-epub-html.ts rewrites only these; a stylesheet's url() never loads in the reader,
+ * which is how calibre's rebuild of a mokuro page hides its 216 pictures). Pure.
+ */
 export function pictureRefs(markup: string): string[] {
   const out: string[] = [];
-  const re =
-    /(?:\b(?:src|href|xlink:href)\s*=\s*["']([^"']+)["']|url\(\s*["']?([^"')]+)["']?\s*\))/gi;
-  for (let m = re.exec(markup); m; m = re.exec(markup)) {
-    const ref = (m[1] ?? m[2] ?? '').trim();
-    const bare = ref.split('#')[0].split('?')[0];
+  const add = (ref: string) => {
+    const bare = ref.trim().split('#')[0].split('?')[0];
     if (IMAGE.test(bare)) out.push(bare);
-  }
+  };
+  for (const m of markup.matchAll(/<img\b[^>]*?\bsrc\s*=\s*["']([^"']+)["']/gi)) add(m[1]);
+  for (const m of markup.matchAll(
+    /<(?:svg:)?image\b[^>]*?\b(?:xlink:)?href\s*=\s*["']([^"']+)["']/gi,
+  ))
+    add(m[1]);
   return out;
 }
 
@@ -81,7 +87,7 @@ function resolveRef(from: string, ref: string): string {
 
 /**
  * Pictures inside an EPUB: every image entry, and the distinct ones its pages show (a picture
- * linked from a document in the spine, or from a stylesheet such a document links).
+ * an <img> or <image> of a document in the spine points at).
  */
 export async function epubPictures(file: string): Promise<{ entries: number; shown: number }> {
   const zip = await ZipFile.open(file, (f) => fs.open(f, 'r'));
@@ -103,25 +109,14 @@ export async function epubPictures(file: string): Promise<{ entries: number; sho
       .map((m) => items.get(m[1]))
       .filter((x): x is string => !!x);
     const shown = new Set<string>();
-    const sheets = new Set<string>();
-    const look = (from: string, markup: string, isPage: boolean) => {
-      for (const ref of pictureRefs(markup)) {
-        const name = resolveRef(from, ref);
-        if (images.has(name)) shown.add(name);
-      }
-      if (!isPage) return;
-      for (const m of markup.matchAll(/<link\b[^>]*href\s*=\s*["']([^"']+\.css)["']/gi))
-        sheets.add(resolveRef(from, m[1]));
-    };
     for (const name of spine) {
       const e = zip.get(name);
       if (!e || e.size > MAX_PAGE_BYTES) continue;
-      look(name, (await zip.readBytes(e, MAX_PAGE_BYTES)).toString('utf8'), true);
-    }
-    for (const name of sheets) {
-      const e = zip.get(name);
-      if (!e || e.size > MAX_PAGE_BYTES) continue;
-      look(name, (await zip.readBytes(e, MAX_PAGE_BYTES)).toString('utf8'), false);
+      const markup = (await zip.readBytes(e, MAX_PAGE_BYTES)).toString('utf8');
+      for (const ref of pictureRefs(markup)) {
+        const pic = resolveRef(name, ref);
+        if (images.has(pic)) shown.add(pic);
+      }
     }
     return { entries: images.size, shown: shown.size };
   } finally {

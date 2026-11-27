@@ -22,6 +22,7 @@ import {
   convertArgs,
   countedChars,
   decideArchive,
+  mokuroPagesHeld,
   volumeOfFolder,
 } from '../../cleanup-apply/src/formats';
 import { Worker } from '../../cleanup-apply/src/worker';
@@ -76,7 +77,21 @@ describe('what a book file is (the sidecar, pure)', () => {
         e('mimetype', 'META-INF/container.xml', 'page.html', '019.jpg', '043.jpg', '075.jpg'),
         '溺愛シークレットラバー | mokuro',
       ),
-    ).toMatchObject({ kind: 'images', images: 3, mokuro: true });
+    ).toMatchObject({ kind: 'images', images: 3, mokuro: true, entry: 'page.html' });
+    // The page lists its pictures: an archive missing most of them is no book (巻5: 8 of ~200)
+    const listed = Array.from({ length: 200 }, (_, i) => `0${i + 1}.jpg`);
+    const page = listed.map((n) => `<div style="background-image:url(&quot;${n}&quot;)"></div>`);
+    expect(mokuroPagesHeld(page.join(''), e(...listed.slice(0, 8)))).toEqual({
+      listed: 200,
+      held: 8,
+    });
+    // ... and one missing page of 216 (溺愛シークレットラバー's 036) is still the book
+    expect(
+      mokuroPagesHeld(
+        page.join(''),
+        e(...listed.filter((n) => n !== '036.jpg').map((n) => `x/${n}`)),
+      ),
+    ).toEqual({ listed: 200, held: 199 });
     // An EPUB named .zip (no mokuro) is still rebuilt
     expect(
       decideArchive(e('mimetype', 'META-INF/container.xml', 'OEBPS/a.xhtml', 'OEBPS/c.jpg'), '小説')
@@ -265,9 +280,9 @@ describe('the pass rules (server, pure)', () => {
   it('counts only the pictures a page shows', async () => {
     expect(
       pictureRefs(
-        '<img src="../i/1.jpg"/><image xlink:href="2.png?x"/><a href="p.xhtml">x</a><div style="background:url(\'3.webp\')">',
+        '<img alt="" src="../i/1.jpg"/><svg><image width="1" xlink:href="2.png?x"/></svg><a href="p.xhtml">x</a><a href="4.jpg">x</a><div style="background:url(\'3.webp\')">',
       ),
-    ).toEqual(['../i/1.jpg', '2.png', '3.webp']);
+    ).toEqual(['../i/1.jpg', '2.png']);
     const dir = makeTempDir('pics');
     const file = path.join(dir, 'b.epub');
     const page = (body: string) =>
@@ -294,8 +309,9 @@ describe('the pass rules (server, pure)', () => {
         { name: 'OEBPS/i/4.jpg', data: 'd' },
       ]),
     );
-    // 1 from a page, 2 from a page's stylesheet; 3 on no page, 4 only on a page not in the spine
-    expect(await epubPictures(file)).toEqual({ entries: 4, shown: 2 });
+    // Only 1 is shown: 2 is a stylesheet background (never loaded by the reader), 3 is on no
+    // page, 4 only on a page not in the spine
+    expect(await epubPictures(file)).toEqual({ entries: 4, shown: 1 });
   });
 
   it('folds only a proven copy (same text both ways at 95 %, or wholly inside)', () => {

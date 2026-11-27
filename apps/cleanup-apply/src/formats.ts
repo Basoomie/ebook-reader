@@ -145,7 +145,9 @@ export function decideArchive(all: ArchiveEntry[], title: string): ArchiveDecisi
     // the text and drops the pictures from the pages (the spot check, 2026-11-27). So a mokuro
     // archive is a picture book, and one without its pictures (only the OCR text) is no book.
     if (mokuro && images === 0) return say('ocr-only', 'mokuro’s text without the pages’ pictures');
-    if (mokuro) return say('images', `${images} pictures (mokuro)`);
+    // Its page (the HTML mokuro wrote) lists the pictures: the job checks they are there.
+    const page = names.find((n) => HTML.test(n) && !n.toLowerCase().startsWith('meta-inf/'));
+    if (mokuro) return say('images', `${images} pictures (mokuro)`, page);
     return say('epub-shaped', 'An EPUB-shaped archive');
   }
   // HTML: calibre's HTMLZ (index.html + metadata.opf at the root), or one page of text.
@@ -165,6 +167,32 @@ export function decideArchive(all: ArchiveEntry[], title: string): ArchiveDecisi
   if (txts.length === 1) return say('txt-inside', 'One text file inside', txts[0]);
   if (txts.length > 1) return say('text-archive', `${txts.length} text files`);
   return say('unknown', `Nothing readable among ${files.length} files`);
+}
+
+/**
+ * How many of the pictures a mokuro page lists the archive holds (by file name; pure). The spot
+ * check (2026-11-27) found mokuro archives with 3 or 8 of a volume's pictures: as picture books
+ * they would pass every check while missing most pages.
+ */
+export function mokuroPagesHeld(
+  html: string,
+  entries: ArchiveEntry[]
+): { listed: number; held: number } {
+  const base = (n: string) => n.replace(/\\/g, '/').split('/').pop()!.toLowerCase();
+  const inArchive = new Set(entries.filter((e) => IMG.test(e.name)).map((e) => base(e.name)));
+  const listed = new Set<string>();
+  for (const m of html.matchAll(/[^"'()\s<>=&;]+\.(?:jpe?g|png|gif|webp|bmp|avif|jxl|tiff?)\b/gi)) {
+    let ref = m[0];
+    try {
+      ref = decodeURIComponent(ref);
+    } catch {
+      // Kept as written.
+    }
+    listed.add(base(ref));
+  }
+  let held = 0;
+  for (const n of listed) if (inArchive.has(n)) held++;
+  return { listed: listed.size, held };
 }
 
 /** What a job does with a file, by its kind: convert, extract, or list and leave. */
@@ -202,6 +230,8 @@ export interface FormatJob {
   format: string;
   timeoutSeconds: number;
   calibreLibrary?: string | null;
+  /** 1.8.1: a mokuro archive holding fewer of its page's pictures than this share is listed. */
+  mokuroPagesMin?: number;
 }
 
 export type JobOutcome = 'converted' | 'gone' | 'drm' | 'listed' | 'failed';
@@ -600,6 +630,20 @@ export class FormatWorker {
         return done('html', d.kind, true, null);
       }
       case 'images': {
+        if (d.mokuro && d.entry) {
+          const page = path.join(work, 'mokuro-page.html');
+          await this.helper(['extract', src, d.entry, page], work, timeoutMs);
+          const { listed, held } = mokuroPagesHeld(await fsp.readFile(page, 'utf8'), facts.entries);
+          if (listed > 0 && held < listed * (job.mokuroPagesMin ?? 0.9))
+            return {
+              ...res,
+              outcome: 'listed',
+              kind: 'ocr-only',
+              detail: `${held} of the ${listed} pages’ pictures are in the archive`,
+              ms: Date.now() - t0
+            };
+          await fsp.rm(page, { force: true });
+        }
         const comic = path.join(work, rar ? 'in.cbr' : 'in.cbz');
         await fsp.copyFile(src, comic);
         await this.convert('comic', comic, out, work, timeoutMs);
