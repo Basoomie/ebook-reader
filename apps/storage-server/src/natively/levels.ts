@@ -21,7 +21,7 @@
  * 'natively'); the first pass also reads every id without one, once.
  */
 import type Database from 'better-sqlite3';
-import { noteCatalogWrite } from '../catalog/catalog-version';
+import { noteFiguresWrite } from '../catalog/catalog-version';
 import { saveRating } from '../ratings/store';
 import { NATIVELY_ID_RE, parseNativelyLevel, parseNativelyReviews } from './parse';
 import { readNativelySettings, type NativelySettings } from './settings';
@@ -458,7 +458,7 @@ export class NativelyLevels {
       .run({ id, level: v.level, temporary: v.temporary ? 1 : 0, state: v.state, now: this.now() });
     this.lastError = null;
     if (!before || before.level !== v.level || before.temporary !== v.temporary) {
-      noteCatalogWrite(this.db);
+      noteFiguresWrite(this.db);
     }
   }
 }

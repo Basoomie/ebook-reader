@@ -36,6 +36,11 @@ export interface Waits {
    * with it, at most this long (hours; docs/design/series-arrivals.md).
    */
   seriesArrivalWaitHours: number;
+  /**
+   * The Calibre index behind (a change of metadata.db not taken in) this long alerts (minutes;
+   * 2026-11-26: failed copies went unnoticed).
+   */
+  indexBehindMinutes: number;
 }
 
 export interface NotificationSettings {
@@ -67,6 +72,7 @@ export const WAIT_LIMITS: Record<keyof Waits, [number, number]> = {
   fetchHelperMinutes: [1, 1440],
   refusalQuietHours: [1, 168],
   seriesArrivalWaitHours: [1, 168],
+  indexBehindMinutes: [10, 1440],
 };
 
 export function defaultSettings(): NotificationSettings {
@@ -84,6 +90,7 @@ export function defaultSettings(): NotificationSettings {
       fetchHelperMinutes: 30,
       refusalQuietHours: 24,
       seriesArrivalWaitHours: 24,
+      indexBehindMinutes: 60,
     },
     // Stats is off by default (approved layout); its three messages start on once it is on.
     sections: { jobs: true, cleanup: true, data: true, stats: false },

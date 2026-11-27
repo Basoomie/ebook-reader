@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3';
+import { createHash } from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { describe, expect, it, vi } from 'vitest';
@@ -106,7 +107,7 @@ describe('a metadata.db Calibre writes every few milliseconds (NAS 2026-11-15)',
     return { root, lib, db };
   }
 
-  it('copies it in one step even while it keeps changing; step by step it never gets through', async () => {
+  it('copies it in one step even while it keeps changing; step by step switches to one step after 3 restarts', async () => {
     statHook.bumpAfter = -1;
     const { lib, db } = await busyLibrary();
     const touch = db.prepare('UPDATE books SET title = ? WHERE id = 1');
@@ -114,10 +115,15 @@ describe('a metadata.db Calibre writes every few milliseconds (NAS 2026-11-15)',
     const writer = setInterval(() => touch.run(`t${n++}`), 2);
     try {
       const dest = path.join(makeTempDir('cache'), 'snap.db');
-      // The old way: 100 pages at a time, restarted by every write, until the deadline.
-      await expect(
-        snapshotMetadataDb(lib.dbFile, dest, { timeoutMs: 1500, allowChanging: true }),
-      ).rejects.toThrow(SnapshotSkipped);
+      // 100 pages at a time is restarted by every write; after 3 restarts the rest goes in one
+      // step (before 2026-11-26 it never got through).
+      const stepped = await snapshotMetadataDb(lib.dbFile, dest, {
+        timeoutMs: 10_000,
+        allowChanging: true,
+      });
+      // How often the writer lands between two steps depends on timing; never more than 3.
+      expect(stepped.restarts).toBeLessThanOrEqual(3);
+      expect(stepped.libraryUuid).toBe(lib.uuid);
       const res = await snapshotMetadataDb(lib.dbFile, dest, {
         timeoutMs: 10_000,
         allowChanging: true,
@@ -131,5 +137,100 @@ describe('a metadata.db Calibre writes every few milliseconds (NAS 2026-11-15)',
       clearInterval(writer);
       db.close();
     }
+  });
+});
+
+/** A database of about `mb` MB (4 KiB pages) to copy. */
+function bigDatabase(mb: number): string {
+  const file = path.join(makeTempDir('calibre'), 'metadata.db');
+  const db = new Database(file);
+  db.exec(
+    "CREATE TABLE library_id (id INTEGER PRIMARY KEY, uuid TEXT); INSERT INTO library_id (uuid) VALUES ('u-1')",
+  );
+  db.exec('CREATE TABLE filler (x BLOB)');
+  const ins = db.prepare('INSERT INTO filler VALUES (?)');
+  db.transaction(() => {
+    for (let i = 0; i < mb * 256; i++) ins.run(Buffer.alloc(4000, i % 255));
+  })();
+  db.close();
+  return file;
+}
+
+/** Keeps this thread's event loop busy: every turn runs 50 ms of synchronous work. */
+function busyLoop(): () => void {
+  let on = true;
+  const turn = () => {
+    const end = Date.now() + 50;
+    while (Date.now() < end);
+    if (on) setTimeout(turn, 0);
+  };
+  setTimeout(turn, 0);
+  return () => {
+    on = false;
+  };
+}
+
+describe('a busy server (NAS 2026-11-26: the copy took longer than 600 s)', () => {
+  it('copies on its own thread: a busy main thread no longer slows the copy', async () => {
+    statHook.bumpAfter = -1;
+    const source = bigDatabase(20); // about 5,000 pages: 50 steps of 100 pages
+    const stop = busyLoop();
+    try {
+      // The cause, shown with better-sqlite3 itself: on the calling thread each 100-page step
+      // waits for a turn of its event loop, so 50 steps take at least 50 x 50 ms.
+      const inThread = new Database(source, { readonly: true });
+      let steps = 0;
+      const started = Date.now();
+      await expect(
+        inThread.backup(path.join(makeTempDir('cache'), 'in-thread.db'), {
+          progress: () => {
+            steps += 1;
+            if (Date.now() - started > 1500) throw new Error('over 1.5 s');
+            return 100;
+          },
+        }),
+      ).rejects.toThrow('over 1.5 s');
+      inThread.close();
+      expect(steps).toBeLessThan(40);
+
+      // The fix: the same copy on a worker thread, while the main thread is just as busy.
+      const dest = path.join(makeTempDir('cache'), 'snap.db');
+      const res = await snapshotMetadataDb(source, dest, { timeoutMs: 15_000 });
+      expect(res.libraryUuid).toBe('u-1');
+      expect(res.steps).toBeGreaterThanOrEqual(50);
+      expect(res.copyMs).toBeLessThan(1500);
+    } finally {
+      stop();
+    }
+  }, 60_000);
+
+  it('returns the SHA-256 of the copy when asked', async () => {
+    const source = bigDatabase(2);
+    const dest = path.join(makeTempDir('cache'), 'snap.db');
+    const res = await snapshotMetadataDb(source, dest, { timeoutMs: 15_000, hash: true });
+    const sha = createHash('sha256').update(fs.readFileSync(dest)).digest('hex');
+    expect(res.sha256).toBe(sha);
+  });
+
+  it('a copy past its time limit is stopped and leaves no temporary file', async () => {
+    const source = bigDatabase(20);
+    const dir = makeTempDir('cache');
+    const dest = path.join(dir, 'snap.db');
+    await expect(snapshotMetadataDb(source, dest, { timeoutMs: 1 })).rejects.toThrow(
+      /took longer than/,
+    );
+    // The stopped thread's file goes once the thread has stopped.
+    for (let i = 0; i < 100 && fs.readdirSync(dir).length > 0; i++)
+      await new Promise((r) => setTimeout(r, 50));
+    expect(fs.readdirSync(dir)).toEqual([]);
+  });
+
+  it('removes a temporary file an older server left behind', async () => {
+    const source = bigDatabase(1);
+    const dir = makeTempDir('cache');
+    const dest = path.join(dir, 'snap.db');
+    fs.writeFileSync(`${dest}.tmp`, 'left behind');
+    await snapshotMetadataDb(source, dest, { timeoutMs: 15_000 });
+    expect(fs.readdirSync(dir)).toEqual(['snap.db']);
   });
 });

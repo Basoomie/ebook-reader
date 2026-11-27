@@ -117,6 +117,7 @@ export class NotificationWatcher {
     this.part('merges', () => this.merges(settings));
     this.part('the PC', () => this.pc(settings, now));
     const index = this.part('the Calibre index', () => this.index());
+    this.part('the Calibre index behind', () => this.indexBehind(settings, now));
     this.part('cleanup stages', () => this.stages(index ?? null));
     this.part('audiobook cleanup stages', () => this.audioStages());
     this.part('the cleanup helpers', () => this.helpers(settings, now));
@@ -354,6 +355,56 @@ export class NotificationWatcher {
     }
     this.service.clearOthers('index_refused', active);
     return alert;
+  }
+
+  /**
+   * A library whose index is behind Calibre for longer than the wait time (2026-11-26: copies of
+   * metadata.db failed for hours without a word). One alert per library; resolved once caught
+   * up. Only enabled libraries count.
+   */
+  private indexBehind(settings: NotificationSettings, now: number): void {
+    const waitMs = settings.waits.indexBehindMinutes * 60_000;
+    const rows = this.s.db
+      .prepare(
+        `SELECT s.library_id AS id, s.behind_since AS since, s.failures, s.last_problem AS problem,
+                l.name
+         FROM library_index_state s JOIN libraries l ON l.id = s.library_id
+         WHERE s.behind_since IS NOT NULL AND l.enabled = 1 AND l.available = 1`,
+      )
+      .all() as {
+      id: string;
+      since: number;
+      failures: number;
+      problem: string | null;
+      name: string;
+    }[];
+    const active = new Set<string>();
+    for (const r of rows) {
+      if (now - r.since < waitMs) continue;
+      const key = `index_behind:${r.id}`;
+      active.add(key);
+      const summary = `Calibre changes in "${r.name}" haven't reached the reader for ${hoursText(now - r.since)}`;
+      // Two lines and the link (render keeps two when there is a link).
+      const tries =
+        r.failures > 0
+          ? ` (${r.failures} ${plural(r.failures, 'try', 'tries')} in a row failed)`
+          : '';
+      const why = `Why: ${r.problem ? clip(r.problem, 200) : 'not known yet'}${tries}`;
+      if (
+        this.service.observe(key, 'index_behind', {
+          startAt: r.since,
+          waitMs,
+          summary,
+          detail: why,
+        })
+      )
+        this.messages.push({
+          event: 'index_behind',
+          lines: [summary, why],
+          link: LINKS.diagnostics,
+        });
+    }
+    this.service.clearOthers('index_behind', active);
   }
 
   // ---- the AI layer ----

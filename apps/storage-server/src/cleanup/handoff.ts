@@ -19,7 +19,7 @@
  * keeps its id.
  */
 import type Database from 'better-sqlite3';
-import { catalogVersion, noteCatalogWrite } from '../catalog/catalog-version';
+import { bookListVersion, noteCatalogWrite } from '../catalog/catalog-version';
 
 export interface SourceRef {
   sourceId: string;
@@ -209,12 +209,14 @@ const presentCounts = new WeakMap<Database.Database, Map<string, { version: stri
  * Present (not missing) Calibre books of a library, for the batch size cap and the page.
  * The count reads every row of the library (52,000+; 290 ms on the PC, longer on the NAS), so
  * it is kept until the catalog changes: every writer of book_sources calls noteCatalogWrite()
- * and other connections' writes show in data_version (catalogVersion). Found live 2026-11-17:
+ * and other connections' writes show in data_version (bookListVersion: a saved rating, level or
+ * character count doesn't count again). Since ttsu.db 36 it reads only the index
+ * book_sources_present (2 ms; 2026-11-26 it still took over 1 s on the NAS). Found live 2026-11-17:
  * counted afresh in every cleanup round, it froze the server for 0.3-0.7 s every 5 s, and for
  * ~1.2 s per fetcher answer once stage 4 woke a round per answer.
  */
 export function presentBookCount(db: Database.Database, libraryId: string): number {
-  const version = catalogVersion(db);
+  const version = bookListVersion(db);
   let byLib = presentCounts.get(db);
   const hit = byLib?.get(libraryId);
   if (hit && hit.version === version) return hit.n;

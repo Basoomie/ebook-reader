@@ -59,6 +59,8 @@ export interface IngestOptions {
    * changed (the "changed in Calibre" check for covers); null when it can't be read.
    */
   coverSig?: (bookPath: string) => Promise<string | null>;
+  /** Covers read at the same time (default 4). */
+  coverReadsAtOnce?: number;
 }
 
 export interface IngestResult {
@@ -754,9 +756,22 @@ export async function ingestSnapshot(
             return !e || e.meta_hash !== metaHash(b);
           }),
         )();
-        for (const b of want) {
-          coverSigs.set(b.uuid, await opts.coverSig(b.path).catch(() => null));
-        }
+        // A few at a time: one by one, each read waited for a turn of the busy server's event
+        // loop (2026-11-26: about 37 books a minute on the NAS).
+        const readCover = opts.coverSig;
+        let next = 0;
+        const reader = async () => {
+          while (next < want.length) {
+            const b = want[next++];
+            coverSigs.set(b.uuid, await readCover(b.path).catch(() => null));
+          }
+        };
+        await Promise.all(
+          Array.from(
+            { length: Math.min(Math.max(opts.coverReadsAtOnce ?? 4, 1), want.length) },
+            reader,
+          ),
+        );
       }
       db.transaction(() => {
         for (const book of batch) {

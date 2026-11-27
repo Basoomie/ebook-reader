@@ -78,13 +78,15 @@ export function createRatingsRouter(ratings: StoreRatings | null): Router {
     });
   });
 
-  router.put('/ratings/settings', (req, res) => {
+  router.put('/ratings/settings', (req, res, next) => {
     const service = need();
     const before = service.settings();
     try {
       const settings = saveRatingSettings(service.db, (req.body ?? {}) as Record<string, unknown>);
-      service.settingsChanged(before, settings);
-      res.json({ settings, score: readScoreParams(service.db) });
+      // A changed score setting is worked out in slices before the answer.
+      service
+        .settingsChanged(before, settings)
+        .then(() => res.json({ settings, score: readScoreParams(service.db) }), next);
     } catch (err) {
       if (err instanceof RatingSettingsError)
         throw new ApiError(400, 'invalid_setting', err.message);

@@ -73,6 +73,13 @@ export const WAIT_FIELDS: {
     unit: 'hours',
     min: 1,
     max: 168
+  },
+  {
+    key: 'indexBehindMinutes',
+    label: 'Calibre changes not in the reader yet (the index is behind)',
+    unit: 'minutes',
+    min: 10,
+    max: 1440
   }
 ];
 

@@ -19,7 +19,8 @@ import type Database from 'better-sqlite3';
 import { createHash, randomUUID } from 'crypto';
 import fs from 'fs';
 import path from 'path';
-import { brotliCompressSync, brotliDecompressSync, constants as zc } from 'zlib';
+import { brotliCompressSync, brotliDecompress, brotliDecompressSync, constants as zc } from 'zlib';
+import { promisify } from 'util';
 import type { FetchSettings, FetchSite } from '../settings';
 import { classifyResponse, type ResponseClass } from './challenge';
 import { LEASE_SLOT_SQL, MAX_FETCHERS, slotKey, slotToken, tokenSlot } from './fetch-slots';
@@ -120,6 +121,10 @@ export function inNdlOutage(s: FetchSettings, now: number): boolean {
   return end <= 1440 ? t >= start && t < end : t >= start || t < end - 1440;
 }
 
+const unbrotli = promisify(brotliDecompress);
+/** Request ids per slice of answeredSinceAsync. */
+const ANSWERED_IDS_PER_SLICE = 10_000;
+
 export class FetchQueue {
   /** The Amazon pace of the trial, decided at most every 30 s. */
   private trialAt = 0;
@@ -216,6 +221,40 @@ export class FetchQueue {
          ORDER BY finished_at`,
       )
       .all(site, urlPrefix.length, urlPrefix, since) as { id: number; finishedAt: number }[];
+  }
+
+  /**
+   * answeredSince read in slices of request ids, a turn of the event loop between them, in id
+   * order (not by finish time): 2026-11-26, the one query read all 200,000 answered 読書メーター
+   * requests at once (0.2-0.3 s on the PC) even when none had finished since.
+   */
+  async answeredSinceAsync(
+    site: string,
+    urlPrefix: string,
+    since: number,
+  ): Promise<{ id: number; finishedAt: number }[]> {
+    const max =
+      (this.db.prepare('SELECT MAX(id) AS m FROM fetch_requests').get() as { m: number | null })
+        .m ?? 0;
+    const slice = this.db.prepare(
+      `SELECT id, finished_at AS finishedAt FROM fetch_requests
+       WHERE id > ? AND id <= ? AND site = ? AND state = 'done' AND cache_file IS NOT NULL
+         AND substr(url, 1, ?) = ? AND finished_at >= ?`,
+    );
+    const out: { id: number; finishedAt: number }[] = [];
+    for (let from = 0; from < max; from += ANSWERED_IDS_PER_SLICE) {
+      for (const r of slice.all(
+        from,
+        from + ANSWERED_IDS_PER_SLICE,
+        site,
+        urlPrefix.length,
+        urlPrefix,
+        since,
+      ) as { id: number; finishedAt: number }[])
+        out.push(r);
+      await new Promise<void>((res) => setImmediate(res));
+    }
+    return out;
   }
 
   /** A request's state ('queued', 'leased', 'done', 'gone', 'failed'), or null when unknown. */
@@ -476,6 +515,22 @@ export class FetchQueue {
     if (!r?.cache_file) return null;
     try {
       return brotliDecompressSync(fs.readFileSync(path.join(this.cacheDir, r.cache_file)));
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * The same, read and decompressed off the event loop (store ratings read thousands of saved
+   * searches in a row: read here, 2026-11-26, they held the server for seconds at a time).
+   */
+  async readAnswerAsync(id: number): Promise<Buffer | null> {
+    const r = this.db.prepare('SELECT cache_file FROM fetch_requests WHERE id = ?').get(id) as
+      | { cache_file: string | null }
+      | undefined;
+    if (!r?.cache_file) return null;
+    try {
+      return await unbrotli(await fs.promises.readFile(path.join(this.cacheDir, r.cache_file)));
     } catch {
       return null;
     }

@@ -44,13 +44,16 @@ import {
 } from './settings';
 import {
   libraryIndex,
+  libraryIndexAsync,
   matchEntry,
   nearBooks,
   searchBooks,
   targetBook,
   type BookActivity,
+  type LibraryIndex,
   type NearBook,
 } from './match';
+import { bookListVersion } from '../catalog/catalog-version';
 import { BOOKMETER_ARRIVED_EVENT } from './events';
 
 export const BOOKMETER_ENTRY_KIND = 'bookmeter-entry';
@@ -227,12 +230,16 @@ export class BookmeterSync {
       if (s.enabled && q) {
         for (const a of s.accounts) this.startDue(q, s, a);
       }
-      // Books added or removed: match again (cheap when nothing changed).
-      const version = libraryIndex(this.db).version;
+      // Books added or removed: match again (cheap when nothing changed). The index (seconds
+      // for the whole library) is built only for an account, in slices (2026-11-26: built here
+      // whenever any figure changed, it stalled the server for 5 s per fetch answer).
+      const version = bookListVersion(this.db);
       if (version !== this.matchedVersion) {
-        this.matchedVersion = version;
-        for (const a of s.accounts) this.rematch(a, s);
-        this.publish();
+        const index = s.accounts.length ? await libraryIndexAsync(this.db) : null;
+        const now = this.settings();
+        this.matchedVersion = index?.version ?? version;
+        if (index) for (const a of now.accounts) this.rematch(a, now, index);
+        this.publish(index ?? undefined);
       }
     } catch (err) {
       console.error('Bookmeter: a round failed:', err);
@@ -526,8 +533,16 @@ export class BookmeterSync {
 
   // ------------------------------------------------------------------ matching
 
-  private rematch(a: BookmeterAccount, s: BookmeterSettings): void {
-    const index = libraryIndex(this.db);
+  /** The library index, built in slices when the book list changed (routes wait for it). */
+  indexReady(): Promise<LibraryIndex> {
+    return libraryIndexAsync(this.db);
+  }
+
+  private rematch(
+    a: BookmeterAccount,
+    s: BookmeterSettings,
+    index: LibraryIndex = libraryIndex(this.db),
+  ): void {
     const entries = this.db
       .prepare('SELECT * FROM bookmeter_entries WHERE account_id = ?')
       .all(a.id) as EntryRow[];
@@ -659,11 +674,13 @@ export class BookmeterSync {
   }
 
   /** The records every device reads; written only when they changed. */
-  publish(): void {
+  publish(built?: LibraryIndex): void {
     if (!this.sync) return;
     try {
       const s = this.settings();
-      const index = libraryIndex(this.db);
+      // Read only for an account's entries (none without an account).
+      let index = built;
+      const indexed = () => (index ??= libraryIndex(this.db)).books;
       const entries = this.db.prepare('SELECT * FROM bookmeter_entries').all() as EntryRow[];
       const links = this.db
         .prepare('SELECT account_id, listing_id, book_id, how FROM bookmeter_links')
@@ -686,7 +703,7 @@ export class BookmeterSync {
           const id = `${e.account_id}:${e.listing_id}`;
           const ls = byEntry.get(id) ?? [];
           const books = ls
-            .map((l) => index.books.get(l.book_id))
+            .map((l) => indexed().get(l.book_id))
             .filter((b): b is NonNullable<typeof b> => !!b);
           want.set(id, {
             account: e.account_id,

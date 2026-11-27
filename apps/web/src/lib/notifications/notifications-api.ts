@@ -26,6 +26,8 @@ export interface NotificationWaits {
   fetchHelperMinutes: number;
   refusalQuietHours: number;
   seriesArrivalWaitHours: number;
+  /** The Calibre index behind this long alerts (minutes). */
+  indexBehindMinutes: number;
 }
 
 export interface NotificationSettings {

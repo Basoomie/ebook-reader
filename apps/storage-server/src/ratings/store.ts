@@ -4,7 +4,7 @@
  * `m`/`c` in `store_rating_params`).
  */
 import type Database from 'better-sqlite3';
-import { noteCatalogWrite } from '../catalog/catalog-version';
+import { noteFiguresWrite } from '../catalog/catalog-version';
 import { BOOK_RATING_SET } from '../db/migrations';
 import type { ParsedRating } from './parse';
 
@@ -118,7 +118,7 @@ export function saveRating(
   ).run({ site, siteId, checkedAt, ...v });
   const changed =
     !before || before.avg !== v.avg || before.count !== v.count || before.reviews !== v.reviews;
-  if (changed && site !== 'natively') noteCatalogWrite(db);
+  if (changed && site !== 'natively') noteFiguresWrite(db);
   return changed;
 }
 
@@ -180,6 +180,58 @@ export function medianPooledAverage(db: Database.Database): number | null {
   return r.v / 10;
 }
 
+/** Book rowids per slice of the async median and score update (a few ms each on the PC). */
+const BOOK_ROWS_PER_SLICE = 2000;
+
+const nextTurn = () => new Promise<void>((r) => setImmediate(r));
+
+const maxBookRow = (db: Database.Database): number =>
+  (db.prepare('SELECT MAX(rowid) AS m FROM books').get() as { m: number | null }).m ?? 0;
+
+/**
+ * medianPooledAverage read in slices of book rowids, a turn of the event loop between them: the
+ * same median (2026-11-26: the two whole-table reads took 0.2 s on the PC, over 0.5 s on the NAS,
+ * after every first fill).
+ */
+export async function medianPooledAverageAsync(db: Database.Database): Promise<number | null> {
+  const slice = db
+    .prepare(
+      'SELECT rating_x10 FROM books WHERE rowid > ? AND rowid <= ? AND rating_x10 IS NOT NULL',
+    )
+    .pluck();
+  const values: number[] = [];
+  const max = maxBookRow(db);
+  for (let from = 0; from < max; from += BOOK_ROWS_PER_SLICE * 5) {
+    for (const v of slice.all(from, from + BOOK_ROWS_PER_SLICE * 5) as number[]) values.push(v);
+    await nextTurn();
+  }
+  if (values.length === 0) return null;
+  const sorted = Float64Array.from(values).sort();
+  return sorted[Math.floor(sorted.length / 2)] / 10;
+}
+
+/**
+ * updateScoreParams with the median read and the books' scores worked out again in slices of
+ * book rowids (each its own short write; the sort is mixed for the second it takes).
+ */
+export async function updateScoreParamsAsync(db: Database.Database, c: number): Promise<boolean> {
+  const m = await medianPooledAverageAsync(db);
+  const now = readScoreParams(db);
+  const next = { m: m ?? now.m, c };
+  if (next.m === now.m && next.c === now.c) return false;
+  db.prepare('UPDATE store_rating_params SET m = ?, c = ? WHERE id = 1').run(next.m, next.c);
+  const max = maxBookRow(db);
+  for (let from = 0; from < max; from += BOOK_ROWS_PER_SLICE) {
+    recomputeBooks(db, 'rowid > ? AND rowid <= ? AND rating_count IS NOT NULL', [
+      from,
+      from + BOOK_ROWS_PER_SLICE,
+    ]);
+    await nextTurn();
+  }
+  noteFiguresWrite(db);
+  return true;
+}
+
 /**
  * Sets the score's parameters and works every book's score out again (one statement) when they
  * changed. `m` null = the median of the saved ratings.
@@ -196,7 +248,7 @@ export function updateScoreParams(
     db.prepare('UPDATE store_rating_params SET m = ?, c = ? WHERE id = 1').run(next.m, next.c);
     recomputeBooks(db, 'rating_count IS NOT NULL');
   })();
-  noteCatalogWrite(db);
+  noteFiguresWrite(db);
   return true;
 }
 
