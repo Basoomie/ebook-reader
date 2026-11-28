@@ -1180,7 +1180,7 @@ export class Stage2Batches {
     } catch {
       return current;
     }
-    const sort = liveTitleSort(dir, current.uuid);
+    const sort = liveTitleSort(dir, current.uuid, rows[0]?.calibre_id);
     return sort === null ? current : { ...current, titleSort: sort };
   }
 
@@ -1848,7 +1848,7 @@ export class Stage2Batches {
       readCoverBytes(resolveInside(libDir, rel), ev.cover!.entry).catch(() => null);
     let bytes = await read(ev.epub.path);
     if (!bytes) {
-      const now = await currentCalibreEpub(libDir, r.calibre_uuid);
+      const now = await currentCalibreEpub(libDir, r.calibre_uuid, r.calibre_id);
       if (now && now !== ev.epub.path) bytes = await read(now);
     }
     if (!bytes) throw new BatchError(409, 'cover_gone', "The EPUB's cover can't be read any more");
@@ -1904,10 +1904,9 @@ export class Stage2Batches {
           .get(libraryId, uuid) as { calibre_path: string | null } | undefined
       )?.calibre_path ??
       null;
-    void calibreId;
     let bytes = folder ? await read(folder) : null;
     if (!bytes) {
-      const now = await currentCalibreEpub(libDir, uuid);
+      const now = await currentCalibreEpub(libDir, uuid, calibreId);
       const live = now ? path.posix.dirname(now) : null;
       if (live && live !== folder) bytes = await read(live);
     }
