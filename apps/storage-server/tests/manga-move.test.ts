@@ -18,7 +18,13 @@ import { decideMove, drawSpot, type MoveCandidate } from '../src/cleanup/move/se
 import { memoryOpener, readWhole, sameEpubContents } from '../src/cleanup/move/epub-same';
 import { recentPaceLeftMs } from '../src/cleanup/move/pace';
 import { CALIBRE_AI_STAGES, rekeyCleanupState } from '../src/cleanup/move/rekey';
-import { getMoveState, moveArrivalsAnalysisId, setMoveMode } from '../src/cleanup/move/state';
+import { ARRIVALS_WAIT } from '../src/cleanup/move/pass';
+import {
+  getMoveState,
+  moveArrivalsAnalysisId,
+  saveMoveProgress,
+  setMoveMode,
+} from '../src/cleanup/move/state';
 import { getSettings, updateSettings } from '../src/cleanup/settings';
 import type { LibraryFixture } from './helpers/calibre-fixture';
 import { type CleanupEnv, healthyHeartbeat, makeCleanupEnv } from './helpers/cleanup-env';
@@ -709,6 +715,63 @@ describe('moving books to the manga library', () => {
     p = env.service.arrivals.currentRun()!.p;
     expect(p.move).toMatchObject({ tagged: 1, auto: 0, held: { no_count: 1 } });
     expect(proposed(run2)).toHaveLength(1);
+  });
+
+  it('a new round after done counts only its own books, and waits while a new-arrivals run is going', async () => {
+    const { T } = await addBooks();
+    const lib = env.libraryId();
+    env.service.move.setMode('analyse');
+    await runPass();
+    const first = getMoveState(env.cleanupDb).progress;
+    expect(first.phase).toBe('spot');
+    expect(first.counts.auto).toBe(2);
+    // A round ended, the bar's start from it, and a book skipped since (Calibre changed it):
+    // the next round proposes it again.
+    env.cleanupDb
+      .prepare(
+        `UPDATE proposed_changes SET state = 'skipped' WHERE stage = ${MOVE_STAGE} AND calibre_uuid = ?`,
+      )
+      .run(T.uuid);
+    const p = { ...first, phase: 'done' as const, snapshotMtimeMs: 1 };
+    p.write = { ...p.write, startedAt: 5, movedAtStart: 7 };
+    saveMoveProgress(env.cleanupDb, p);
+
+    // A new-arrivals run of the library: the pass waits, nothing is selected.
+    const now = Date.now();
+    const run = Number(
+      env.cleanupDb
+        .prepare(
+          `INSERT INTO calibre_arrival_runs (trigger, mode, state, phase, started_at, progress_json, library_id)
+           VALUES ('now', 'on', 'running', 'add', ?, '{}', ?)`,
+        )
+        .run(now, lib).lastInsertRowid,
+    );
+    env.cleanupDb
+      .prepare('UPDATE calibre_arrivals_state SET current_run = ? WHERE library_id = ?')
+      .run(run, lib);
+    expect(await runPass()).toBe('idle');
+    let st = getMoveState(env.cleanupDb).progress;
+    expect(st.phase).toBe('done');
+    expect(st.write.waiting).toBe(ARRIVALS_WAIT);
+
+    // The run ends: the round is selected, counted on its own (T once, not added to the last).
+    env.cleanupDb
+      .prepare('UPDATE calibre_arrivals_state SET current_run = NULL WHERE library_id = ?')
+      .run(lib);
+    env.cleanupDb
+      .prepare(`UPDATE calibre_arrival_runs SET state = 'done', finished_at = ? WHERE id = ?`)
+      .run(now, run);
+    await runPass();
+    st = getMoveState(env.cleanupDb).progress;
+    expect(st.phase).toBe('spot');
+    expect(st.run).toBe(first.run);
+    expect(st.write.waiting).toBeNull();
+    expect(st.write.movedAtStart).toBeNull();
+    expect(st.write.startedAt).toBeNull();
+    expect(st.counts.auto).toBe(2);
+    expect(st.counts.held).toEqual({ real_text: 1, no_epub: 1 });
+    expect(st.counts.withData).toBe(1);
+    expect(env.service.move.heldList(lib, st.run).total).toBe(2);
   });
 
   it('a field batch written before the move is not undone on a moved book', async () => {
