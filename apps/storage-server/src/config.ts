@@ -346,6 +346,16 @@ export interface CalibreConfig {
    */
   lockWarnSeconds: number;
   /**
+   * A metadata.db copy holds the lock in steps of at most about this long (2026-11-28: one step
+   * held it 53 s on a busy disk and a remove was refused). Kept well under Calibre's 10 s.
+   */
+  lockMaxSeconds: number;
+  /**
+   * A copy that finds Calibre writing all this time is postponed and tried again later (1, 2,
+   * 4, 8, then every 10 min), so repeated reads of a busy metadata.db don't slow Calibre.
+   */
+  copyTrySeconds: number;
+  /**
    * Covers of changed books the ingest reads (one stat each) at the same time (2026-11-26: one
    * at a time, each waited for a turn of the busy server's event loop).
    */
@@ -372,6 +382,8 @@ export const DEFAULT_CALIBRE: Omit<CalibreConfig, 'dir' | 'cacheDir'> = {
   maxSettleWaitSeconds: 600,
   snapshotTimeoutSeconds: 600,
   lockWarnSeconds: 5,
+  lockMaxSeconds: 2,
+  copyTrySeconds: 120,
   coverReadsAtOnce: 4,
   maxMissingPercent: 20,
   requireReadonly: true,
@@ -527,6 +539,8 @@ export function parseCalibreConfig(env: Env, warnings: string[]): CalibreConfig 
       86_400,
     ),
     lockWarnSeconds: num('CALIBRE_LOCK_WARN_SECONDS', d.lockWarnSeconds, 0.1, 600),
+    lockMaxSeconds: num('CALIBRE_LOCK_MAX_SECONDS', d.lockMaxSeconds, 0.05, 5),
+    copyTrySeconds: num('CALIBRE_COPY_TRY_SECONDS', d.copyTrySeconds, 5, 3600),
     coverReadsAtOnce: num('CALIBRE_COVER_READS_AT_ONCE', d.coverReadsAtOnce, 1, 32, true),
     maxMissingPercent: num('CALIBRE_MAX_MISSING_PERCENT', d.maxMissingPercent, 0, 100),
     requireReadonly: bool('CALIBRE_REQUIRE_READONLY', d.requireReadonly),

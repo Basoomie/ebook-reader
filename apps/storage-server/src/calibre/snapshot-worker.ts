@@ -15,9 +15,16 @@
  * were refused. So the file is first read with plain reads, which take no lock at all, and
  * that copy is kept when Calibre committed nothing meanwhile: in rollback-journal mode every
  * commit changes the header's file change counter (offset 24), and a journal file exists from
- * before Calibre's first page write until its commit. Only when Calibre wrote during every try
- * does SQLite's backup make the copy, from pages the plain reads just brought into memory, so
- * its lock is short; the longest time one step held it is reported (`lockMs`).
+ * before Calibre's first page write until its commit.
+ *
+ * Never a long lock (2026-11-28). When Calibre wrote during the plain reads, SQLite's backup
+ * makes the copy in steps, each sized from the last step's pace so that it holds the lock at
+ * most about `maxLockMs` (well under Calibre's 10 s); Calibre commits between two steps. Until
+ * then the backup ran in one step "from memory", but the NAS's 1 GB disk cache lets a busy disk
+ * push metadata.db out of memory: that step held the lock 53 s and a cleanup move's remove was
+ * refused. A backup Calibre restarts again and again is given up, the plain reads are tried
+ * again, and when nothing worked within `budgetMs` the copy is postponed (`kind: 'postponed'`)
+ * and the callers try again later. The longest time one step held the lock is `lockMs`.
  */
 import Database from 'better-sqlite3';
 import { createHash } from 'crypto';
@@ -28,15 +35,17 @@ import { openSourceDatabase } from './source-fs';
 export interface SnapshotJob {
   source: string;
   tmp: string;
-  /** Copy everything after the first step in one go (one read lock for the whole copy). */
-  oneStep: boolean;
-  /** Pages per step when copying step by step. */
-  stepPages: number;
-  /** After this many restarts (the source changed between steps), copy the rest in one step. */
+  /** A backup step is sized to hold metadata.db's read lock at most about this long (ms). */
+  maxLockMs: number;
+  /** Pages of the first backup step (later steps are sized from its pace). */
+  firstStepPages: number;
+  /** A backup Calibre restarted this many times (it wrote between steps) is given up. */
   maxRestarts: number;
+  /** Plain reads, then short-lock backups, are tried this long before the copy is postponed. */
+  budgetMs: number;
   /** Also return the copy's SHA-256 (a cleanup batch's copy). */
   hash: boolean;
-  /** Lock-free reads of the whole file tried before SQLite's backup (0 = the backup only). */
+  /** Lock-free reads tried before each backup (0 = the backup only). */
   lockFreeTries: number;
 }
 
@@ -53,21 +62,60 @@ export type SnapshotJobResult =
       lockFree: boolean;
       /** Lock-free reads made (the last one kept when `lockFree`). */
       lockFreeTries: number;
+      /** Short-lock backups started (given-up ones included). */
+      backups: number;
       /** Time spent on the lock-free reads (part of copyMs). */
       readMs: number;
-      /** Longest time one backup step held metadata.db's read lock; 0 when lock-free. */
+      /** Longest time one backup step held metadata.db's read lock; 0 when none ran. */
       lockMs: number;
     }
-  | { ok: false; kind: 'skipped' | 'failed' | 'error'; message: string };
+  | { ok: false; kind: 'skipped' | 'failed' | 'error'; message: string }
+  | {
+      /** Calibre kept writing: no copy within the budget; try again later. */
+      ok: false;
+      kind: 'postponed';
+      message: string;
+      lockFreeTries: number;
+      backups: number;
+      lockMs: number;
+    };
 
 const CHUNK = 1 << 20;
 
+/** better-sqlite3 takes 0..2^31-1 pages per step (not SQLite's -1 for "all"). */
+const MAX_STEP_PAGES = 0x7fffffff;
+/** The smallest step, so a slow disk still makes progress. */
+const MIN_STEP_PAGES = 16;
+
+/** Thrown from the backup's progress callback to give the backup up (its lock is released). */
+class GiveUp extends Error {}
+
 /**
- * "Every page" for one backup step (better-sqlite3 takes 0..2^31-1, not SQLite's -1). Not the
- * pages remaining at the last step: a write just before the step restarts the copy, and a step
- * of the old remaining count then copies only part of it (found in this file's test).
+ * The wait before a refused step is tried again: 1-5 ms, at random so the tries don't fall in
+ * step with a writer that commits on a timer (seen in the test on Windows). Calibre's commits
+ * take milliseconds.
  */
-const ALL_PAGES = 0x7fffffff;
+function busyPauseMs(): number {
+  return 1 + Math.floor(Math.random() * 5);
+}
+/** How long a backup's first step waits for Calibre's commit before it is refused (ms). */
+const STEP_LOCK_WAIT_MS = 200;
+const pauseCell = new Int32Array(new SharedArrayBuffer(4));
+
+/** Sleeps this thread (the copy's own worker thread; never the server's main thread). */
+function pause(ms: number): void {
+  Atomics.wait(pauseCell, 0, 0, ms);
+}
+
+/**
+ * The next step's pages: what the last step's pace says fits in half of `maxLockMs` (half: a
+ * cold page can take longer than the ones before it), at most double the last step.
+ */
+export function nextStepPages(lastPages: number, lastMs: number, maxLockMs: number): number {
+  const perPage = Math.max(lastMs, 0.05) / Math.max(lastPages, 1);
+  const fits = Math.floor(maxLockMs / 2 / perPage);
+  return Math.max(MIN_STEP_PAGES, Math.min(fits, lastPages * 2, MAX_STEP_PAGES));
+}
 
 function sha256Sync(file: string): string {
   const hash = createHash('sha256');
@@ -153,49 +201,154 @@ export function copyWithoutLock(source: string, tmp: string): boolean {
   }
 }
 
+type BackupOutcome = { done: true } | { done: false; why: string };
+type BackupStats = { steps: number; restarts: number; lockMs: number; busySteps: number };
+
+const START_REFUSED = 'Calibre was committing as the copy began';
+
+/**
+ * One SQLite backup in steps that each hold the read lock about `maxLockMs` at most. Given up
+ * (lock released, copy removed) after `maxRestarts` restarts or past `deadline`. A start
+ * refused because Calibre was committing is begun again a moment later.
+ */
+async function shortLockBackup(
+  job: SnapshotJob,
+  deadline: number,
+  stats: BackupStats,
+): Promise<BackupOutcome> {
+  for (;;) {
+    const outcome = await backupOnce(job, deadline, stats);
+    if (outcome.done || outcome.why !== START_REFUSED || Date.now() >= deadline) return outcome;
+  }
+}
+
+async function backupOnce(
+  job: SnapshotJob,
+  deadline: number,
+  stats: BackupStats,
+): Promise<BackupOutcome> {
+  const src = openSourceDatabase(job.source);
+  // While Calibre commits, a step can't take the read lock (measured with better-sqlite3
+  // 12.11.1, 2026-11-28): the first step waits for it up to busy_timeout (SQLite's default
+  // 5 s) and, refused, reports 0 pages in all; a later step never waits and, refused, copies
+  // nothing. So the first step waits only briefly, and a refused step is tried again a moment
+  // later. Neither holds the lock while refused, so neither counts toward lockMs.
+  src.pragma(`busy_timeout = ${STEP_LOCK_WAIT_MS}`);
+  let last = Infinity;
+  let restarts = 0;
+  let pages = 0; // the step that just ran (SQLite's first step copies no page)
+  let stepFrom = Date.now();
+  try {
+    const end = await src.backup(job.tmp, {
+      progress: ({ remainingPages }) => {
+        // Each step holds the read lock only while it runs (SQLite releases it before the
+        // step returns): the time since the last callback is that step.
+        const stepMs = Date.now() - stepFrom;
+        stats.steps += 1;
+        const restarted = remainingPages > last;
+        if (restarted) {
+          restarts += 1;
+          stats.restarts += 1;
+        }
+        const copied = restarted || last === Infinity ? pages : last - remainingPages;
+        last = remainingPages;
+        if (restarts >= job.maxRestarts)
+          throw new GiveUp(`Calibre wrote between two steps ${restarts} times`);
+        if (Date.now() >= deadline) throw new GiveUp('out of time');
+        if (pages === 0) {
+          // SQLite's first step copies no page: it only waited for and checked the lock.
+          pages = job.firstStepPages;
+          stepFrom = Date.now();
+          return pages;
+        }
+        if (copied === 0) {
+          // The lock was not free (Calibre is committing): no lock was held; wait a moment.
+          stats.busySteps += 1;
+          pause(busyPauseMs());
+          stepFrom = Date.now();
+          return pages;
+        }
+        stats.lockMs = Math.max(stats.lockMs, stepMs);
+        pages = nextStepPages(copied, stepMs, job.maxLockMs);
+        stepFrom = Date.now();
+        return pages;
+      },
+    });
+    // A first step refused (Calibre committing) reports 0 pages remaining before SQLite knows
+    // the page count, and better-sqlite3 ends the backup as if done, deleting the unfinished
+    // copy: that is a refused try, not a copy (Linux test, 2026-11-28).
+    if (end.totalPages === 0 || !fs.existsSync(job.tmp)) {
+      stats.busySteps += 1;
+      removeCopy(job.tmp);
+      pause(busyPauseMs());
+      return { done: false, why: START_REFUSED };
+    }
+    stats.lockMs = Math.max(stats.lockMs, Date.now() - stepFrom);
+    return { done: true };
+  } catch (err) {
+    removeCopy(job.tmp);
+    if (err instanceof GiveUp) return { done: false, why: err.message };
+    // A lock refused where better-sqlite3 throws (opening): this backup is given up, not the copy.
+    if (/SQLITE_BUSY|SQLITE_LOCKED|database is locked/i.test(String((err as Error)?.message)))
+      return { done: false, why: 'Calibre held its write lock' };
+    throw err;
+  } finally {
+    src.close();
+  }
+}
+
 export async function runSnapshotJob(job: SnapshotJob): Promise<SnapshotJobResult> {
   const started = Date.now();
-  let steps = 0;
-  let restarts = 0;
-  let last = Infinity;
+  const deadline = started + job.budgetMs;
+  const stats: BackupStats = { steps: 0, restarts: 0, lockMs: 0, busySteps: 0 };
   let lockFree = false;
   let lockFreeTries = 0;
-  while (!lockFree && lockFreeTries < job.lockFreeTries) {
-    lockFreeTries += 1;
-    try {
-      lockFree = copyWithoutLock(job.source, job.tmp);
-    } catch {
-      // An unreadable file: SQLite's backup below reports it properly.
-      lockFree = false;
+  let readMs = 0;
+  let backups = 0;
+  let copied = false;
+  let why = '';
+  // Rounds of plain reads, then one short-lock backup, until a copy is made or the budget is
+  // spent (the first round always runs whole).
+  for (let round = 0; !copied && (round === 0 || Date.now() < deadline); round++) {
+    for (let i = 0; !copied && i < job.lockFreeTries; i++) {
+      if (round > 0 && Date.now() >= deadline) break;
+      const from = Date.now();
+      lockFreeTries += 1;
+      try {
+        lockFree = copyWithoutLock(job.source, job.tmp);
+      } catch {
+        // An unreadable file: SQLite's backup below reports it properly.
+        lockFree = false;
+      }
+      readMs += Date.now() - from;
+      if (lockFree) copied = true;
+      else removeCopy(job.tmp);
     }
-    if (!lockFree) removeCopy(job.tmp);
-  }
-  const readMs = Date.now() - started;
-  let lockMs = 0;
-  if (!lockFree) {
-    const src = openSourceDatabase(job.source);
-    // Each backup step holds the read lock only while it runs (SQLite releases it before the
-    // step returns); the time from the end of one progress call to the next is that step.
-    let stepFrom = Date.now();
+    if (copied || (round > 0 && Date.now() >= deadline)) break;
+    backups += 1;
     try {
-      await src.backup(job.tmp, {
-        progress: ({ remainingPages }) => {
-          lockMs = Math.max(lockMs, Date.now() - stepFrom);
-          steps += 1;
-          if (remainingPages > last) restarts += 1;
-          last = remainingPages;
-          stepFrom = Date.now();
-          if (job.oneStep || restarts >= job.maxRestarts) return ALL_PAGES;
-          return job.stepPages;
-        },
-      });
-      lockMs = Math.max(lockMs, Date.now() - stepFrom);
+      const outcome = await shortLockBackup(job, Math.max(deadline, Date.now() + 1), stats);
+      if (outcome.done) copied = true;
+      else why = outcome.why;
     } catch (err) {
       return { ok: false, kind: 'error', message: (err as Error).message ?? String(err) };
-    } finally {
-      src.close();
     }
   }
+  if (!copied) {
+    const secs = Math.round((Date.now() - started) / 1000);
+    return {
+      ok: false,
+      kind: 'postponed',
+      message:
+        `Calibre kept writing metadata.db: ${lockFreeTries} lock-free read(s) and ${backups} ` +
+        `short-lock backup(s) in ${secs} s found it changed (last: ${why || 'changed during the read'})`,
+      lockFreeTries,
+      backups,
+      lockMs: stats.lockMs,
+    };
+  }
+  // Given-up backups count too: their steps held the lock as well.
+  const { steps, restarts, lockMs } = stats;
   const copyMs = Date.now() - started;
 
   let libraryUuid: string;
@@ -236,6 +389,7 @@ export async function runSnapshotJob(job: SnapshotJob): Promise<SnapshotJobResul
     checkMs: Date.now() - started - copyMs,
     lockFree,
     lockFreeTries,
+    backups,
     readMs,
     lockMs,
   };
