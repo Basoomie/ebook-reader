@@ -41,7 +41,6 @@
  * migration page); the CLI only reports on them and can undo the import.
  */
 import Database from 'better-sqlite3';
-import { retryMoveRemove } from './cleanup/move/move-batches';
 import { existsSync, readFileSync, readdirSync } from 'fs';
 import path from 'path';
 import { UPLOADS_DIRNAME, UploadStore } from './uploads/upload-store';
@@ -365,8 +364,6 @@ const USAGE = `Usage:
                                              Claude's; your own decisions stay)
   cli cleanup arrivals-continue <run>        New arrivals: stages 4-5 and the move for a finished On
                                              run's books that stage 4 never read (a new run)
-  cli cleanup move-retry-remove <book>      Manga move: remove the old copy of a book whose move
-                                             failed at the remove (the copy stays)
   cli cleanup resume 3                       Resume stage 3's failed analysis at the step that failed
                                              (keeps the books read and the pairs measured)
   cli cleanup audio-dryrun --stage 0|1|2 --out <folder>
@@ -1087,16 +1084,6 @@ function cleanupCommand(command: string, rest: string[], env: Record<string, str
         });
         console.log(
           `Run ${out.runId} started: stages 4-5 and the move for ${out.books} books of run ${from} that stage 4 never read.`,
-        );
-        break;
-      }
-      case 'move-retry-remove': {
-        const id = Number(rest[0]);
-        if (!Number.isInteger(id) || id <= 0)
-          fail('cleanup move-retry-remove needs the book: cleanup move-retry-remove 77664');
-        const batch = retryMoveRemove(db, id);
-        console.log(
-          `Batch ${batch} planned: book ${id}'s old copy is removed (its copy in the other library is checked first).`,
         );
         break;
       }

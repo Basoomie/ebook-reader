@@ -18,7 +18,6 @@ import { decideMove, drawSpot, type MoveCandidate } from '../src/cleanup/move/se
 import { memoryOpener, readWhole, sameEpubContents } from '../src/cleanup/move/epub-same';
 import { recentPaceLeftMs } from '../src/cleanup/move/pace';
 import { CALIBRE_AI_STAGES, rekeyCleanupState } from '../src/cleanup/move/rekey';
-import { retryMoveRemove } from '../src/cleanup/move/move-batches';
 import { ARRIVALS_WAIT } from '../src/cleanup/move/pass';
 import {
   getMoveState,
@@ -612,56 +611,6 @@ describe('moving books to the manga library', () => {
       },
     ]);
     expect(r).toMatchObject({ auto: 0, already: 1 });
-  });
-
-  it('a move whose old copy Calibre kept listing is finished by removing only the old copy (run 10)', async () => {
-    const { A, epubA } = await addBooks();
-    const lib = env.libraryId();
-    const now = Date.now();
-    const copy = await addToManga(A.id, epubA);
-    env.cleanupDb
-      .prepare(
-        `INSERT INTO batches (id, stage, library_id, kind, state, item_count, created_at, updated_at, target_library_id, snapshot_saved)
-         VALUES ('mvf', ?, ?, 'apply', 'partial', 1, ?, ?, ?, 1)`,
-      )
-      .run(MOVE_STAGE, lib, now, now, mangaId());
-    const evidence = JSON.stringify({ title: 'よつばと!(1)', lastModified: 0, formats: ['EPUB'] });
-    const mc = env.cleanupDb
-      .prepare(
-        `INSERT INTO proposed_changes (stage, library_id, calibre_id, calibre_uuid, field, source, evidence_json, class, state, review_reason, batch_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, 'book', 'move', ?, 'auto', 'skipped', 'Calibre still lists the book after remove', 'mvf', ?, ?)`,
-      )
-      .run(MOVE_STAGE, lib, A.id, A.uuid, evidence, now, now).lastInsertRowid as number;
-    const moveJson = JSON.stringify({ added: { calibreId: copy.id, uuid: copy.uuid }, fields: {} });
-    env.cleanupDb
-      .prepare(
-        `INSERT INTO batch_items (batch_id, change_id, position, state, quarantine_dir, export_sha256, move_json, detail, updated_at)
-         VALUES ('mvf', ?, 0, 'failed', '/quarantine/x/1', ?, ?, 'Calibre still lists the book after remove', ?)`,
-      )
-      .run(mc, sha(epubA), moveJson, now);
-
-    expect(() => retryMoveRemove(env.cleanupDb, 999999)).toThrow(/failed at its remove/);
-    const id = retryMoveRemove(env.cleanupDb, A.id);
-    expect(() => retryMoveRemove(env.cleanupDb, A.id)).toThrow(/queued/);
-    await heartbeat();
-    const { batch } = await claimAndSave();
-    expect(batch.id).toBe(id);
-    expect(batch.targetCalibreLibrary).toBe('manga-library');
-    const item = batch.items[0];
-    // The sidecar starts after the check: the copy it added is known, no second add.
-    expect(item.state).toBe('tagged');
-    expect(item.move.added).toEqual({ calibreId: copy.id, uuid: copy.uuid });
-    env.lib.trashBook(A.id);
-    await report(batch.id, item.itemId, { step: 'removed' });
-    await request(env.app)
-      .post(`/api/v1/cleanup-apply/batches/${batch.id}/finish`)
-      .set('Authorization', apply)
-      .send({})
-      .expect(200);
-    expect(findCalibreSource(env.db, mangaId(), copy.uuid)?.bookId).toBe(A.bookId);
-    expect(
-      env.cleanupDb.prepare('SELECT state FROM proposed_changes WHERE id = ?').get(mc),
-    ).toEqual({ state: 'applied' });
   });
 
   it('a new-arrivals run waits for the reader to count its tagged books before it decides (at most the setting)', async () => {
