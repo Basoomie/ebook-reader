@@ -9,6 +9,7 @@ import { gzipSync } from 'zlib';
 import { initCleanupDatabase } from '../src/cleanup/cleanup-db';
 import { makeTempDir } from './helpers/spawn-server';
 import {
+  labeledRequestsSince,
   MIN_FOLLOW_UP_ANSWERS,
   openLookups,
   paceSeconds,
@@ -329,5 +330,29 @@ describe('the open lookups', () => {
     expect(o.steps['bookwalker-detail']).toBe(2);
     expect(o.undecided).toBe(1);
     expect(o.coreOpen).toBe(2);
+  });
+});
+
+describe("the labeled books' requests per book", () => {
+  it('counts only the requests made since the analysis started', () => {
+    const s = initCleanupDatabase(makeTempDir('eta-labeled-since'));
+    if (!s.ok) throw new Error(s.error);
+    const db = s.db;
+    const add = (site: string, key: string, priority: number, at: number) =>
+      db
+        .prepare(
+          `INSERT INTO fetch_requests (site, key, method, url, priority, state, created_at, updated_at)
+           VALUES (?, ?, 'GET', 'https://bookwalker.jp/', ?, 'done', ?, ?)`,
+        )
+        .run(site, key, priority, at, at);
+    const started = 1_000_000;
+    // Another analysis's labeled requests (the other library's run): answered from the cache.
+    for (let k = 0; k < 80; k++) add('bookwalker', `old-${k}`, 10, started - 1);
+    // This analysis: two new labeled requests and one book's ordinary request.
+    add('bookwalker', 'new-1', 10, started);
+    add('bookwalker', 'new-2', 10, started + 5);
+    add('bookmeter', 'plain', 0, started + 5);
+    expect(labeledRequestsSince(db, started, 10)).toEqual([{ site: 'bookwalker', n: 2 }]);
+    db.close();
   });
 });

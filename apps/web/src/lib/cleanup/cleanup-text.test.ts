@@ -150,6 +150,9 @@ describe('cleanup wording', () => {
     expect(applyProgress({ proposed: 3700 }, undefined)).toBeNull();
     expect(etaText(30_000)).toBe('less than a minute left');
     expect(etaText(2 * 3600_000)).toBe('about 2 h left');
+    expect(etaText(1961 * 3600_000)).toBe('about 81 days 17 h left');
+    expect(etaText(48 * 3600_000)).toBe('about 2 days left');
+    expect(etaText(47 * 3600_000 + 59 * 60_000)).toBe('about 47 h 59 min left');
   });
 
   it('describes each analysis phase and the result', () => {
