@@ -581,4 +581,31 @@ describe('two libraries: the service, the checks and the new arrivals', () => {
       .send({});
     expect(claim.body.batch).toMatchObject({ calibreLibrary: 'manga-library' });
   });
+
+  it("one library's stage never gives back the disk lock the other library's same stage holds", async () => {
+    // Found live 2026-11-28: japanese-library's stage 4, between its steps, gave back the lock
+    // manga-library's stage 4 held in the middle of its read (both held it as "stage 4").
+    await settle();
+    const svc = env.service as unknown as {
+      diskOwner(stage: number, target: string): string;
+      diskFor(stage: number, owner: string, phase: string, stop: () => boolean): Promise<boolean>;
+    };
+    const lock = env.service.diskLock;
+    const ja = env.libraryId();
+    for (const stage of [1, 2, 3, 4]) {
+      const mine = svc.diskOwner(stage, mangaId());
+      const theirs = svc.diskOwner(stage, ja);
+      expect(mine).not.toBe(theirs);
+      expect(mine).toContain('manga-library');
+      const reading = stage === 1 ? 'hash' : stage === 3 ? 'text' : 'read';
+      expect(await svc.diskFor(stage, mine, reading, () => false)).toBe(true);
+      // The other library's analysis of the same stage, in a phase that reads nothing.
+      expect(await svc.diskFor(stage, theirs, 'done', () => false)).toBe(true);
+      expect(lock.state().holder?.owner).toBe(mine);
+      // And it waits while the other library reads.
+      expect(await svc.diskFor(stage, theirs, reading, () => true)).toBe(false);
+      expect(lock.state().holder?.owner).toBe(mine);
+      lock.release(mine);
+    }
+  });
 });

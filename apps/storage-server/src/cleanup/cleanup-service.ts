@@ -2478,20 +2478,21 @@ export class CleanupService {
     const P = this.lp(target);
     if (P.analysing4 || !P.analysis4) return;
     const analysis = P.analysis4;
+    const owner4 = this.diskOwner(4, target);
     P.analysing4 = (async () => {
       try {
         for (;;) {
           if (this.stopped) break;
           if (getStage(this.db, target, 4).mode === 'off') break;
           const stop4 = () => this.stopped || getStage(this.db, target, 4).mode === 'off';
-          if (!(await this.diskFor(4, analysis.progress()?.phase, stop4))) break;
+          if (!(await this.diskFor(4, owner4, analysis.progress()?.phase, stop4))) break;
           const before = analysis.progress();
           const done = await analysis.step(stop4);
           if (done) {
             // The AI check after the rules (WP20e). It holds no disk: it reads cleanup.db.
             const ai = P.stage4Ai;
             if (!ai || !ai.needsWork()) break;
-            this.diskLock.release(DISK_OWNERS.calibre4);
+            this.diskLock.release(owner4);
             const r = await ai.step(stop4);
             if (r === 'wait') {
               for (let i = 0; i < 10 && !stop4(); i++)
@@ -2513,7 +2514,7 @@ export class CleanupService {
       } catch (err) {
         this.logError('Cleanup: stage 4 analysis failed:', err);
       } finally {
-        this.diskLock.release(DISK_OWNERS.calibre4);
+        this.diskLock.release(owner4);
         P.analysing4 = null;
       }
     })();
@@ -3270,12 +3271,22 @@ export class CleanupService {
    * disk lock (waiting for an audiobook job to give it back, which it does at once); any other
    * phase gives it back. False when the analysis was stopped while waiting.
    */
+  /**
+   * The disk lock's holder name of a library's stage analysis: the stage AND its library (manga
+   * part B). Named by the stage alone, japanese-library's stage 4 gave back the lock manga-
+   * library's stage 4 held in the middle of its read (it releases its name whenever it isn't
+   * reading), and stage 2 took the disk (found live 2026-11-28). Fixed for one analysis loop.
+   */
+  private diskOwner(stage: 1 | 2 | 3 | 4, target: string): string {
+    return `${DISK_OWNERS[`calibre${stage}`]} · ${this.libraryName(target)}`;
+  }
+
   private async diskFor(
     stage: 1 | 2 | 3 | 4,
+    owner: string,
     phase: string | undefined,
     shouldStop: () => boolean,
   ): Promise<boolean> {
-    const owner = DISK_OWNERS[`calibre${stage}`];
     if (phase && DISK_PHASES[stage].includes(phase)) {
       return this.diskLock.acquire(owner, 'calibre', shouldStop);
     }
@@ -3287,20 +3298,21 @@ export class CleanupService {
     const P = this.lp(target);
     if (P.analysing3 || !P.analysis3) return;
     const analysis = P.analysis3;
+    const owner3 = this.diskOwner(3, target);
     P.analysing3 = (async () => {
       try {
         for (;;) {
           if (this.stopped) break;
           if (getStage(this.db, target, 3).mode === 'off') break;
           const stop3 = () => this.stopped || getStage(this.db, target, 3).mode === 'off';
-          if (!(await this.diskFor(3, analysis.progress()?.phase, stop3))) break;
+          if (!(await this.diskFor(3, owner3, analysis.progress()?.phase, stop3))) break;
           const done = await analysis.step(stop3);
           if (done) break;
         }
       } catch (err) {
         this.logError('Cleanup: stage 3 analysis failed:', err);
       } finally {
-        this.diskLock.release(DISK_OWNERS.calibre3);
+        this.diskLock.release(owner3);
         P.analysing3 = null;
         void this.tick();
       }
@@ -3424,20 +3436,21 @@ export class CleanupService {
     const P = this.lp(target);
     if (P.analysing2 || !P.analysis2) return;
     const analysis = P.analysis2;
+    const owner2 = this.diskOwner(2, target);
     P.analysing2 = (async () => {
       try {
         for (;;) {
           if (this.stopped) break;
           if (getStage(this.db, target, 2).mode === 'off') break;
           const stop2 = () => this.stopped || getStage(this.db, target, 2).mode === 'off';
-          if (!(await this.diskFor(2, analysis.progress()?.phase, stop2))) break;
+          if (!(await this.diskFor(2, owner2, analysis.progress()?.phase, stop2))) break;
           const done = await analysis.step(stop2);
           if (done) break;
         }
       } catch (err) {
         this.logError('Cleanup: stage 2 analysis failed:', err);
       } finally {
-        this.diskLock.release(DISK_OWNERS.calibre2);
+        this.diskLock.release(owner2);
         P.analysing2 = null;
         void this.tick();
       }
@@ -3618,20 +3631,21 @@ export class CleanupService {
     const P = this.lp(target);
     if (P.analysing || P.analysing2 || !P.analysis) return;
     const analysis = P.analysis;
+    const owner1 = this.diskOwner(1, target);
     P.analysing = (async () => {
       try {
         for (;;) {
           if (this.stopped) break;
           if (getStage(this.db, target, 1).mode === 'off') break;
           const stop1 = () => this.stopped || getStage(this.db, target, 1).mode === 'off';
-          if (!(await this.diskFor(1, analysis.progress()?.phase, stop1))) break;
+          if (!(await this.diskFor(1, owner1, analysis.progress()?.phase, stop1))) break;
           const done = await analysis.step(stop1);
           if (done) break;
         }
       } catch (err) {
         this.logError('Cleanup: analysis failed:', err);
       } finally {
-        this.diskLock.release(DISK_OWNERS.calibre1);
+        this.diskLock.release(owner1);
         P.analysing = null;
         void this.tick();
       }
