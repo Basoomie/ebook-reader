@@ -23,7 +23,8 @@
  * The batch holds the index of both libraries while claimed, and the next batch waits until both
  * indexes took the last one in.
  */
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
+import type Database from 'better-sqlite3';
 import fs from 'fs/promises';
 import path from 'path';
 import { snapshotFile } from '../../calibre/indexer';
@@ -795,4 +796,62 @@ export class MoveBatches {
         .run(now, now, batch.id);
     }
   }
+}
+
+/**
+ * A move whose old copy Calibre still listed after the remove ("Calibre still lists the book
+ * after remove", run 10, 2026-11-28): the copy is in the new library and was checked, so only
+ * the remove is left. Opens a batch of that one book at the step after the check (`tagged`),
+ * with the item's export, hash and added copy, so the sidecar checks the copy again and removes
+ * the old one; it never adds a second copy (a fresh batch would, its note being in the old
+ * batch's folder). Returns the new batch id.
+ */
+export function retryMoveRemove(
+  db: Database.Database,
+  calibreId: number,
+  now = Date.now(),
+): string {
+  const item = db
+    .prepare(
+      `SELECT i.*, b.library_id, b.target_library_id FROM batch_items i
+       JOIN batches b ON b.id = i.batch_id
+       JOIN proposed_changes c ON c.id = i.change_id
+       WHERE b.stage = ? AND b.kind = 'apply' AND c.calibre_id = ? AND i.state = 'failed'
+         AND i.detail LIKE 'Calibre still lists the book after remove%'
+       ORDER BY i.updated_at DESC LIMIT 1`,
+    )
+    .get(MOVE_STAGE, calibreId) as
+    | {
+        change_id: number;
+        quarantine_dir: string | null;
+        export_sha256: string | null;
+        move_json: string | null;
+        library_id: string;
+        target_library_id: string | null;
+      }
+    | undefined;
+  if (!item) throw new Error(`No move of book ${calibreId} failed at its remove`);
+  const note = item.move_json ? (JSON.parse(item.move_json) as MoveItemNote) : {};
+  if (!note.added || !item.quarantine_dir || !item.export_sha256 || !item.target_library_id)
+    throw new Error(`The failed move of book ${calibreId} has no checked copy to keep`);
+  const c = db.prepare('SELECT state FROM proposed_changes WHERE id = ?').get(item.change_id) as {
+    state: string;
+  };
+  if (c.state !== 'skipped')
+    throw new Error(`The move of book ${calibreId} is ${c.state}, not failed`);
+  const id = randomUUID();
+  db.transaction(() => {
+    db.prepare(
+      `INSERT INTO batches (id, stage, library_id, kind, undo_of, state, item_count, created_at, updated_at, target_library_id)
+       VALUES (?, ?, ?, 'apply', NULL, 'planned', 1, ?, ?, ?)`,
+    ).run(id, MOVE_STAGE, item.library_id, now, now, item.target_library_id);
+    db.prepare(
+      `INSERT INTO batch_items (batch_id, change_id, position, state, quarantine_dir, export_sha256, move_json, updated_at)
+       VALUES (?, ?, 0, 'tagged', ?, ?, ?, ?)`,
+    ).run(id, item.change_id, item.quarantine_dir, item.export_sha256, item.move_json, now);
+    db.prepare(
+      `UPDATE proposed_changes SET state = 'queued', batch_id = ?, review_reason = NULL, updated_at = ? WHERE id = ?`,
+    ).run(id, now, item.change_id);
+  })();
+  return id;
 }
