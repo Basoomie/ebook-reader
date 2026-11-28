@@ -85,3 +85,75 @@ export function inheritChanges(
   if (tags.length > 0) add('tags', kept.tags, { add: tags, remove: [] });
   return out;
 }
+
+/** A field's change from every old record a copy replaced, merged. */
+export interface MergedChange extends InheritChange {
+  /** The old record (index in `olds`) whose value it is, for what the cleanup knew of it. */
+  from: number | null;
+  /** The old records disagree: listed for review, never written. */
+  conflict: string | null;
+}
+
+/**
+ * One kept copy may have replaced several library books (two copies of one book): one change
+ * per field from all of them (the write refuses two changes of one field). Store ids and custom
+ * tags are pooled (an id type the old records give different values of is left out); any other
+ * field the old records agree on is given, else it goes to review.
+ */
+export function mergeInherit(
+  olds: InheritValues[],
+  kept: InheritValues,
+  customTags: string[],
+  yours: ReadonlySet<string> = new Set(),
+): MergedChange[] {
+  const per = olds.map((o) => inheritChanges(o, kept, customTags, yours));
+  const fields = [...new Set(per.flat().map((c) => c.field))];
+  const out: MergedChange[] = [];
+  for (const field of fields) {
+    const found = per
+      .map((l, i) => ({ c: l.find((x) => x.field === field), i }))
+      .filter((x): x is { c: InheritChange; i: number } => !!x.c);
+    const first = found[0].c;
+    if (field === 'identifiers') {
+      const pooled = new Map<string, string>();
+      const clash = new Set<string>();
+      for (const { c } of found)
+        for (const [type, v] of Object.entries(c.value as Record<string, string>)) {
+          if (type in kept.identifiers) continue;
+          if (pooled.has(type) && pooled.get(type) !== v) clash.add(type);
+          else pooled.set(type, v);
+        }
+      for (const t of clash) pooled.delete(t);
+      if (pooled.size === 0) continue;
+      out.push({
+        ...first,
+        value: { ...kept.identifiers, ...Object.fromEntries(pooled) },
+        from: null,
+        conflict: null,
+      });
+      continue;
+    }
+    if (field === 'tags') {
+      const add: string[] = [];
+      const seen = new Set<string>();
+      for (const { c } of found)
+        for (const t of (c.value as { add: string[] }).add)
+          if (!seen.has(t.toLowerCase())) {
+            seen.add(t.toLowerCase());
+            add.push(t);
+          }
+      out.push({ ...first, value: { add, remove: [] }, from: null, conflict: null });
+      continue;
+    }
+    const distinct = [...new Set(found.map(({ c }) => JSON.stringify(c.value)))];
+    out.push({
+      ...first,
+      from: found[0].i,
+      conflict:
+        distinct.length > 1
+          ? `The library books this copy replaced had different values: ${distinct.join(' / ')}`
+          : null,
+    });
+  }
+  return out;
+}

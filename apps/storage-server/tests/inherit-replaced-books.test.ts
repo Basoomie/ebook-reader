@@ -14,7 +14,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { Calibredb } from '../../cleanup-apply/src/calibredb';
 import type { SidecarConfig } from '../../cleanup-apply/src/config';
 import { Worker } from '../../cleanup-apply/src/worker';
-import { inheritChanges, type InheritValues } from '../src/cleanup/inherit/rules';
+import { inheritChanges, mergeInherit, type InheritValues } from '../src/cleanup/inherit/rules';
+import { TWO_VALUES_REASON } from '../src/cleanup/stage2-batches';
 import { INHERIT_ANALYSIS, InheritPass } from '../src/cleanup/inherit/pass';
 import { type CleanupEnv, makeCleanupEnv } from './helpers/cleanup-env';
 import { makeTempDir } from './helpers/spawn-server';
@@ -79,6 +80,28 @@ describe('replaced books: the rules', () => {
     expect(inheritChanges(old, kept, [], new Set(['publisher']))).toEqual([]);
     expect(inheritChanges(values(), values({ publisher: 'B' }), [])).toEqual([]);
   });
+
+  it('one copy that replaced two books: one change per field; disagreements go to review', () => {
+    const a = values({
+      series: { name: 'S', index: 1 },
+      identifiers: { amazon_jp: 'B0A', isbn: '1' },
+      publisher: 'P',
+    });
+    const b = values({
+      series: { name: 'S', index: 2 },
+      identifiers: { amazon_jp: 'B0A', isbn: '2', google: 'g' },
+      publisher: 'P',
+    });
+    const out = mergeInherit([a, b], values({ identifiers: { bookmeter: '9' } }), []);
+    expect(out.map((c) => c.field)).toEqual(['series', 'identifiers', 'publisher']);
+    // The isbn the two disagree on is left out; the rest is pooled.
+    expect(out[1]).toMatchObject({
+      value: { bookmeter: '9', amazon_jp: 'B0A', google: 'g' },
+      conflict: null,
+    });
+    expect(out[0].conflict).toMatch(/different values/);
+    expect(out[2]).toMatchObject({ value: 'P', conflict: null, from: 0 });
+  });
 });
 
 describe('replaced books: the pass', () => {
@@ -108,6 +131,8 @@ describe('replaced books: the pass', () => {
         publisher: '主婦の友社',
       }),
       KEPT: await book('薬屋のひとりごと'),
+      // A second library copy the same new copy replaced (same series, one more store id).
+      OLD3: await book('薬屋のひとりごと', { series: { name: '薬屋のひとりごと', index: 1 } }),
       // A second replacement whose kept copy already has a series of its own.
       OLD2: await book('別の本', { series: { name: '旧シリーズ', index: 3 } }),
       KEPT2: await book('別の本', { series: { name: '新シリーズ', index: 2 } }),
@@ -118,6 +143,8 @@ describe('replaced books: the pass', () => {
     ident.run(ids.OLD, 'amazon_jp', 'B0OLD');
     ident.run(ids.OLD, 'bookmeter', '111');
     ident.run(ids.KEPT, 'bookmeter', '222');
+    ident.run(ids.OLD3, 'amazon_jp', 'B0OLD');
+    ident.run(ids.OLD3, 'isbn', '9784');
     uuids = Object.fromEntries(
       Object.entries(ids).map(([k, id]) => [
         k,
@@ -179,6 +206,7 @@ describe('replaced books: the pass', () => {
     ).run(lib);
     for (const [o, k] of [
       ['OLD', 'KEPT'],
+      ['OLD3', 'KEPT'],
       ['OLD2', 'KEPT2'],
     ]) {
       const change = Number(
@@ -200,7 +228,7 @@ describe('replaced books: the pass', () => {
            kept_calibre_id, kept_uuid, created_at) VALUES ('b-run7', ?, ?, ?, ?, ?, ?, 1)`,
       ).run(change, lib, ids[o], uuids[o], ids[k], uuids[k]);
       db.prepare(
-        `INSERT INTO calibre_known_books (library_id, calibre_id, calibre_uuid, origin, added_at, run_id)
+        `INSERT OR IGNORE INTO calibre_known_books (library_id, calibre_id, calibre_uuid, origin, added_at, run_id)
          VALUES (?, ?, ?, 'import', 1, 7)`,
       ).run(lib, ids[k], uuids[k]);
     }
@@ -214,6 +242,7 @@ describe('replaced books: the pass', () => {
     // Calibre's trash: the old records are gone from the library; the reader keeps their records.
     env.lib.removeBook(ids.OLD);
     env.lib.removeBook(ids.OLD2);
+    env.lib.removeBook(ids.OLD3);
     await env.index();
     pass = new InheritPass(
       {
@@ -303,12 +332,12 @@ describe('replaced books: the pass', () => {
     ]);
     // Nothing written in Preview.
     expect(calibreRecord(env.lib, ids.KEPT)!.identifiers).toEqual({ bookmeter: '222' });
-    expect(pass.view().books).toEqual({ proposed: 1, nothing: 1 });
+    expect(pass.view().books).toEqual({ proposed: 2, nothing: 1 });
 
     pass.setMode('on');
     await drain(worker());
     const kept = calibreRecord(env.lib, ids.KEPT)!;
-    expect(kept.identifiers).toEqual({ bookmeter: '222', amazon_jp: 'B0OLD' });
+    expect(kept.identifiers).toEqual({ bookmeter: '222', amazon_jp: 'B0OLD', isbn: '9784' });
     expect(kept.publisher).toBe('主婦の友社');
     expect(series(ids.KEPT)).toEqual({ name: '薬屋のひとりごと', idx: 1 });
     // The copy that had its own series keeps it.
@@ -363,6 +392,35 @@ describe('replaced books: the pass', () => {
         )
         .get(uuids.KEPT),
     ).toEqual({ n: 0 });
+  });
+
+  it('once: a copy whose changes the write refused as two of one field is looked at again', async () => {
+    await pass.step();
+    const db = env.cleanupDb;
+    db.prepare(
+      `UPDATE proposed_changes SET state = 'skipped', review_reason = ? WHERE analysis_id = ? AND calibre_id = ?`,
+    ).run(TWO_VALUES_REASON, INHERIT_ANALYSIS, ids.KEPT);
+    // As live: the refused changes are there before the deploy's first step.
+    db.prepare(
+      `UPDATE calibre_inherit_state SET progress_json = json_remove(progress_json, '$.regrouped')`,
+    ).run();
+    expect(await pass.step()).toBe('more');
+    const again = db
+      .prepare(
+        `SELECT field, state FROM proposed_changes WHERE analysis_id = ? AND calibre_id = ? ORDER BY field`,
+      )
+      .all(INHERIT_ANALYSIS, ids.KEPT);
+    expect(again).toEqual([
+      { field: 'identifiers', state: 'proposed' },
+      { field: 'publisher', state: 'proposed' },
+      { field: 'series', state: 'proposed' },
+    ]);
+    // Done once.
+    db.prepare(
+      `UPDATE proposed_changes SET state = 'skipped', review_reason = ? WHERE analysis_id = ? AND calibre_id = ?`,
+    ).run(TWO_VALUES_REASON, INHERIT_ANALYSIS, ids.KEPT);
+    await pass.step();
+    expect(pass.counts()).toEqual({ skipped: 3 });
   });
 
   it('a run asks for its own replacements only, and only when the pass is On', async () => {

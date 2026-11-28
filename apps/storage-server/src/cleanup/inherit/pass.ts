@@ -23,7 +23,8 @@ import { getSettings } from '../settings';
 import { catalogValues, bookOfUuid } from '../edits/catalog';
 import { yoursOf } from '../edits/yours';
 import type { Stage2Batches } from '../stage2-batches';
-import { inheritChanges, type InheritChange, type InheritValues } from './rules';
+import { mergeInherit, type InheritValues } from './rules';
+import { PROPOSED_TWICE_REASON, TWO_VALUES_REASON } from '../stage2-batches';
 
 export const INHERIT_ANALYSIS = 'inherit';
 const SOURCE = 'inherit';
@@ -62,6 +63,8 @@ interface Progress {
   closedUpTo?: number;
   /** Every undo record up to this rowid has been looked at (a poll then reads one number). */
   scannedTo?: number;
+  /** The one-time look again at copies refused for two changes of one field (1: done). */
+  regrouped?: number;
 }
 
 /** What the cleanup knew of the old record's value (stage2-batches.ts `written`). */
@@ -82,6 +85,8 @@ export interface InheritEvidence {
     provenance: InheritProvenance | 'merged';
   };
   unconfirmed?: boolean;
+  /** The Calibre ids of every library book the copy replaced, when several. */
+  from?: number[];
 }
 
 export class InheritPass {
@@ -214,83 +219,176 @@ export class InheritPass {
       : { applied: null, unconfirmed: false };
   }
 
-  /** Looks at the replacements given: proposals for what each kept copy lacks. */
+  /** Every replacement of one kept copy (applied, not undone), looked at or not. */
+  private pairsOfKept(keptUuid: string): InheritPair[] {
+    const rows = this.db
+      .prepare(
+        `SELECT u.removed_uuid, u.removed_calibre_id, u.kept_uuid, u.kept_calibre_id, u.change_id,
+           p.analysis_id
+         FROM undo_records u JOIN proposed_changes p ON p.id = u.change_id
+         WHERE u.library_id = ? AND u.kept_uuid = ? AND u.restored_at IS NULL AND p.field = 'book'
+           AND p.stage IN (1, 3) AND p.analysis_id LIKE 'arrivals:%'
+         ORDER BY u.created_at, u.change_id`,
+      )
+      .all(this.libraryId, keptUuid) as {
+      removed_uuid: string;
+      removed_calibre_id: number;
+      kept_uuid: string;
+      kept_calibre_id: number;
+      change_id: number;
+      analysis_id: string;
+    }[];
+    return rows.map((r) => ({
+      removedUuid: r.removed_uuid,
+      removedId: r.removed_calibre_id,
+      keptUuid: r.kept_uuid,
+      keptId: r.kept_calibre_id,
+      changeId: r.change_id,
+      run: Number(r.analysis_id.slice('arrivals:'.length)) || null,
+    }));
+  }
+
+  /**
+   * Looks at the replacements given: proposals for what each kept copy lacks. A copy that
+   * replaced several library books is decided with all of them (one change per field: the write
+   * refuses two changes of one field, live 2026-11-28: 19 copies), and a field the pass already
+   * proposed or wrote for the copy is not proposed again.
+   */
   propose(pairs: InheritPair[], now = Date.now()): { pairs: number; changes: number } {
     const customTags = getSettings(this.db).customTags;
     const insert = this.db.prepare(
       `INSERT INTO proposed_changes (stage, library_id, calibre_id, calibre_uuid, field, old_json,
-         new_json, source, evidence_json, class, state, analysis_id, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, '${SOURCE}', ?, 'auto', 'proposed', '${INHERIT_ANALYSIS}', ?, ?)`,
+         new_json, source, evidence_json, class, review_reason, state, analysis_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, '${SOURCE}', ?, ?, ?, 'proposed', '${INHERIT_ANALYSIS}', ?, ?)`,
     );
     const record = this.db.prepare(
       `INSERT OR REPLACE INTO calibre_inherits (library_id, removed_uuid, removed_calibre_id, kept_uuid,
          kept_calibre_id, removal_change_id, state, fields_json, decided_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
+    const done = this.db.prepare(
+      `SELECT DISTINCT field FROM proposed_changes INDEXED BY proposed_changes_book
+       WHERE library_id = ? AND calibre_uuid = ? AND source = '${SOURCE}'
+         AND analysis_id = '${INHERIT_ANALYSIS}' AND state IN ('proposed', 'queued', 'applied')`,
+    );
     let changes = 0;
+    let looked = 0;
     this.db.transaction(() => {
-      for (const pair of pairs) {
-        const old = this.values(pair.removedUuid, true);
-        const kept = bookOfUuid(this.deps.main, this.libraryId, pair.keptUuid)
-          ? this.values(pair.keptUuid, false)
+      for (const keptUuid of [...new Set(pairs.map((p) => p.keptUuid))]) {
+        const all = this.pairsOfKept(keptUuid);
+        for (const p of pairs)
+          if (p.keptUuid === keptUuid && !all.some((a) => a.removedUuid === p.removedUuid))
+            all.push(p);
+        looked += all.length;
+        const kept = bookOfUuid(this.deps.main, this.libraryId, keptUuid)
+          ? this.values(keptUuid, false)
           : null;
-        if (!old || !kept) {
+        const olds = all.map((pair) => ({ pair, old: this.values(pair.removedUuid, true) }));
+        const known = olds.filter((o) => o.old !== null) as {
+          pair: InheritPair;
+          old: { values: InheritValues; title: string; calibreId: number };
+        }[];
+        const rec = (p: InheritPair, state: string, fields: string[]) =>
           record.run(
             this.libraryId,
-            pair.removedUuid,
-            pair.removedId,
-            pair.keptUuid,
-            pair.keptId,
-            pair.changeId,
-            'gone',
-            '[]',
+            p.removedUuid,
+            p.removedId,
+            p.keptUuid,
+            kept?.calibreId ?? p.keptId,
+            p.changeId,
+            state,
+            JSON.stringify(fields),
             now,
           );
+        if (!kept || known.length === 0) {
+          for (const { pair } of olds) rec(pair, 'gone', []);
           continue;
         }
-        const yours = new Set(yoursOf(this.db, this.libraryId, pair.keptUuid).map((y) => y.field));
-        const list: InheritChange[] = inheritChanges(old.values, kept.values, customTags, yours);
+        const yours = new Set(yoursOf(this.db, this.libraryId, keptUuid).map((y) => y.field));
+        for (const r of done.all(this.libraryId, keptUuid) as { field: string }[])
+          yours.add(r.field);
+        const list = mergeInherit(
+          known.map((k) => k.old.values),
+          kept.values,
+          customTags,
+          yours,
+        );
         for (const c of list) {
-          const merged = c.field === 'identifiers' || c.field === 'tags';
-          const prov = merged ? null : this.provenance(pair.removedUuid, c.field);
+          const src = c.from === null ? known[0].pair : known[c.from].pair;
+          const prov = c.from === null ? null : this.provenance(src.removedUuid, c.field);
           const ev: InheritEvidence = {
             title: kept.title,
             inherit: {
-              fromUuid: pair.removedUuid,
-              fromCalibreId: pair.removedId,
-              run: pair.run,
+              fromUuid: src.removedUuid,
+              fromCalibreId: src.removedId,
+              run: src.run,
               provenance: prov ?? 'merged',
             },
+            ...(known.length > 1 ? { from: known.map((k) => k.pair.removedId) } : {}),
             ...(prov?.unconfirmed ? { unconfirmed: true } : {}),
           };
           insert.run(
             c.stage,
             this.libraryId,
             kept.calibreId,
-            pair.keptUuid,
+            keptUuid,
             c.field,
             JSON.stringify(c.before ?? null),
             JSON.stringify(c.value),
             JSON.stringify(ev),
+            c.conflict ? 'review' : 'auto',
+            c.conflict,
             now,
             now,
           );
           changes++;
         }
-        record.run(
-          this.libraryId,
-          pair.removedUuid,
-          pair.removedId,
-          pair.keptUuid,
-          kept.calibreId,
-          pair.changeId,
-          list.length ? 'proposed' : 'nothing',
-          JSON.stringify(list.map((c) => c.field)),
-          now,
-        );
+        for (const { pair, old } of olds)
+          rec(
+            pair,
+            !old ? 'gone' : list.length ? 'proposed' : 'nothing',
+            list.map((c) => c.field),
+          );
       }
     })();
-    return { pairs: pairs.length, changes };
+    return { pairs: looked, changes };
+  }
+
+  /**
+   * Once (live 2026-11-28): the changes the write refused because one copy had two of them for
+   * one field are taken out, and their copies' replacements looked at again (merged).
+   */
+  private regroup(now: number): void {
+    const p = this.state().progress;
+    if ((p.regrouped ?? 0) >= 1) return;
+    const kept = (
+      this.db
+        .prepare(
+          `SELECT DISTINCT calibre_uuid AS u FROM proposed_changes
+           WHERE source = '${SOURCE}' AND library_id = ? AND analysis_id = '${INHERIT_ANALYSIS}'
+             AND state = 'skipped' AND review_reason IN (?, ?)`,
+        )
+        .all(this.libraryId, TWO_VALUES_REASON, PROPOSED_TWICE_REASON) as { u: string }[]
+    ).map((r) => r.u);
+    this.db.transaction(() => {
+      for (const u of kept) {
+        this.db
+          .prepare(
+            `DELETE FROM proposed_changes WHERE source = '${SOURCE}' AND library_id = ?
+               AND calibre_uuid = ? AND analysis_id = '${INHERIT_ANALYSIS}' AND state = 'skipped'
+               AND review_reason IN (?, ?) AND id NOT IN (SELECT change_id FROM batch_items)`,
+          )
+          .run(this.libraryId, u, TWO_VALUES_REASON, PROPOSED_TWICE_REASON);
+        this.db
+          .prepare('DELETE FROM calibre_inherits WHERE library_id = ? AND kept_uuid = ?')
+          .run(this.libraryId, u);
+      }
+      p.regrouped = 1;
+      if (kept.length) p.scannedTo = 0;
+      this.saveProgress(p, now);
+    })();
+    if (kept.length)
+      this.deps.log?.(`Replaced books: ${kept.length} copies looked at again (merged)`);
   }
 
   /** Open proposals of the pass (proposed or queued), all or of one run's replacements. */
@@ -399,6 +497,7 @@ export class InheritPass {
   async step(now = Date.now()): Promise<'more' | 'wait' | 'idle'> {
     const { mode } = this.state();
     if (mode === 'off') return 'idle';
+    this.regroup(now);
     if (this.scanNew(null, now)) return 'more';
     if (mode !== 'on') return 'idle';
     this.closeAnswered(now);
@@ -432,12 +531,12 @@ export class InheritPass {
     const out: Record<string, number> = {};
     for (const r of this.db
       .prepare(
-        `SELECT state, COUNT(*) AS n FROM proposed_changes
+        `SELECT CASE WHEN class = 'review' AND state = 'proposed' THEN 'review' ELSE state END AS st, COUNT(*) AS n FROM proposed_changes
          WHERE source = '${SOURCE}' AND library_id = ? AND analysis_id = '${INHERIT_ANALYSIS}'
-         GROUP BY state`,
+         GROUP BY st`,
       )
-      .all(this.libraryId) as { state: string; n: number }[])
-      out[r.state] = r.n;
+      .all(this.libraryId) as { st: string; n: number }[])
+      out[r.st] = r.n;
     return out;
   }
 
@@ -469,9 +568,9 @@ export class InheritPass {
       books[r.state] = r.n;
     const fields = this.db
       .prepare(
-        `SELECT field, state, COUNT(*) AS n FROM proposed_changes
+        `SELECT field, CASE WHEN class = 'review' AND state = 'proposed' THEN 'review' ELSE state END AS state, COUNT(*) AS n FROM proposed_changes
          WHERE source = '${SOURCE}' AND library_id = ? AND analysis_id = '${INHERIT_ANALYSIS}'
-         GROUP BY field, state ORDER BY field, state`,
+         GROUP BY 1, 2 ORDER BY 1, 2`,
       )
       .all(this.libraryId) as { field: string; state: string; n: number }[];
     const rows = this.db

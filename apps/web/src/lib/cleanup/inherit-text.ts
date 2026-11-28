@@ -66,6 +66,7 @@ export const INHERIT_FIELDS: Record<string, string> = {
 
 const STATES: Record<string, string> = {
   proposed: 'to write',
+  review: 'to look at (the replaced books disagree)',
   queued: 'being written',
   applied: 'written',
   skipped: 'not written',
