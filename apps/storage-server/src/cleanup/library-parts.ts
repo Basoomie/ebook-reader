@@ -48,7 +48,11 @@ export class LibraryParts {
   bookmeterCache: Cache = null;
   linksCache: Cache = null;
   listingsCache: Cache = null;
-  labeled4Cache: { at: number; value: { site: string; n: number }[] } | null = null;
+  labeled4Cache: {
+    at: number;
+    analysisId: string;
+    value: { site: string; n: number }[];
+  } | null = null;
   fields4Cache: { at: number; value: { field: string; class: string; n: number }[] } | null = null;
   /** Books written per finished stage-4 batch (counted once each; write-progress.ts). */
   batchBooks = new Map<string, number>();

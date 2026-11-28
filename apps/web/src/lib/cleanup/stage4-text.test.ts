@@ -134,9 +134,7 @@ describe('stage 4 wording', () => {
     expect(booksLine(reading)).toBe(
       '1,600 of 52,164 books looked up · 400 waiting for the sites · 2 couldn’t be read'
     );
-    expect(readingLine(reading)).toBe(
-      'Reading the files: 2,002 of 52,164 · 9.3 books a second · about 1 h 30 min left'
-    );
+    expect(readingLine(reading)).toBe('Reading the files: 2,002 of 52,164 · 9.3 books a second');
     // The lookups' bar: books looked up of every book that can be read, the whole Preview's time.
     expect(lookupBar(reading)).toEqual({
       label: 'Looking up: 1,600 of 52,162 books · 400 waiting for the sites · 2 couldn’t be read',

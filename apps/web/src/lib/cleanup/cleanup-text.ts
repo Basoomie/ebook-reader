@@ -69,13 +69,20 @@ export interface ProgressBar {
   eta: string | null;
 }
 
-/** "less than a minute left", "about 25 min left", "about 2 h 10 min left". */
+/**
+ * "less than a minute left", "about 25 min left", "about 2 h 10 min left", and from 48 hours
+ * "about 3 days 4 h left" (as stage 4's lines count: 1,961 h is not a time anyone reads).
+ */
 export function etaText(ms: number): string {
   if (ms < 60_000) return 'less than a minute left';
   const min = Math.round(ms / 60_000);
   if (min < 60) return `about ${min} min left`;
   const h = Math.floor(min / 60);
   const m = min % 60;
+  if (h >= 48) {
+    const d = Math.floor(h / 24);
+    return h % 24 === 0 ? `about ${d} days left` : `about ${d} days ${h % 24} h left`;
+  }
   return m === 0 ? `about ${h} h left` : `about ${h} h ${m} min left`;
 }
 

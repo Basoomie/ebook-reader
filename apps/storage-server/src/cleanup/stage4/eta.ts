@@ -309,6 +309,25 @@ export function stage4Eta(i: EtaInput): EtaResult {
 }
 
 /**
+ * The requests made for the labeled books since an analysis started, per site (its labeled books'
+ * requests per book, once they are all proposed). A request asked before the analysis is answered
+ * from the cache and costs nothing; counting every labeled request in the queue divided manga-
+ * library's 25 labeled books into japanese-library's 790 books' requests: 70-80 requests a book,
+ * 1,961 h (found live 2026-11-28).
+ */
+export function labeledRequestsSince(
+  db: Database.Database,
+  since: number,
+  minPriority: number,
+): { site: string; n: number }[] {
+  return db
+    .prepare(
+      'SELECT site, COUNT(*) AS n FROM fetch_requests WHERE priority >= ? AND created_at >= ? GROUP BY site',
+    )
+    .all(minPriority, since) as { site: string; n: number }[];
+}
+
+/**
  * The lookups open now, from the fetch queue: each waiting book's open step (its request waiting
  * or in flight, by the queue's site/state index, or answered and not handled yet, by the ready
  * index). One row per waiting book and step (~20,000 mid-run).

@@ -273,15 +273,17 @@ export function siteLine(s: Stage4Site, now = Date.now()): string {
   return parts.join(' · ');
 }
 
-/** The reading: each book once, out of the books with an EPUB, with its pace and time left. */
+/**
+ * The reading: each book once, out of the books with an EPUB, with its pace. Its own time left is
+ * not shown: the card has one time left, the whole Preview's (user, 2026-11-28: "why does stage 4
+ * have two time estimates?").
+ */
 export function readingLine(status: Stage4Status): string {
   const r = status.read;
   if (!r || !r.total || r.done >= r.total) return '';
   const parts = [`Reading the files: ${n(r.done)} of ${n(r.total)}`];
-  const left = status.timeLeft?.read;
-  if (r.perSecond && left !== null && left !== undefined) {
-    parts.push(`${r.perSecond.toFixed(1)} books a second · about ${duration(left)} left`);
-  } else parts.push('measuring the speed');
+  if (r.perSecond) parts.push(`${r.perSecond.toFixed(1)} books a second`);
+  else parts.push('measuring the speed');
   return parts.join(' · ');
 }
 

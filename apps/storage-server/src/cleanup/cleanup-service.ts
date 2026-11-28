@@ -44,7 +44,13 @@ import {
   CLEANUP_AI_TASK_NAMES,
   cleanupFeatureOf,
 } from './ai-features';
-import { openLookups, paceSeconds, stage4Eta, type SiteCounts } from './stage4/eta';
+import {
+  labeledRequestsSince,
+  openLookups,
+  paceSeconds,
+  stage4Eta,
+  type SiteCounts,
+} from './stage4/eta';
 import { FetchQueue, LABELED_PRIORITY, backoffKey } from './stage4/queue';
 import { FetcherSlots, slotStateRow, type FetcherSlot } from './stage4/fetch-slots';
 import { BookArrivals } from './arrivals/run';
@@ -3083,14 +3089,16 @@ export class CleanupService {
     // Also while reopened labeled books are checked again: their earlier ratios still hold.
     const labeledKnown = p.labeledDoneAt !== null || p.labeledCheckedOnce === true;
     if (labeledKnown) {
-      if (!P.labeled4Cache || now - P.labeled4Cache.at > 600_000) {
+      if (
+        !P.labeled4Cache ||
+        P.labeled4Cache.analysisId !== p.analysisId ||
+        now - P.labeled4Cache.at > 600_000
+      ) {
+        // Only the requests this analysis made (stage4/eta.ts labeledRequestsSince).
         P.labeled4Cache = {
           at: now,
-          value: this.db
-            .prepare(
-              'SELECT site, COUNT(*) AS n FROM fetch_requests WHERE priority >= ? GROUP BY site',
-            )
-            .all(LABELED_PRIORITY) as { site: string; n: number }[],
+          analysisId: p.analysisId,
+          value: labeledRequestsSince(this.db, p.startedAt, LABELED_PRIORITY),
         };
       }
       labeled = P.labeled4Cache.value;
