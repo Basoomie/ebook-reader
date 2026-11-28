@@ -156,8 +156,10 @@ async function main() {
     const current = calibreCurrent(meta);
     const rows = db
       .prepare(
-        `SELECT id, calibre_id, field, old_json, new_json, json_extract(evidence_json, '$.title') AS title
-         FROM proposed_changes WHERE source = 'inherit' AND library_id = ? AND analysis_id = ?`,
+        `SELECT id, calibre_id, field, old_json, new_json, state, class,
+           json_extract(evidence_json, '$.title') AS title
+         FROM proposed_changes WHERE source = 'inherit' AND library_id = ? AND analysis_id = ?
+           AND state = 'proposed'`,
       )
       .all(lib, INHERIT_ANALYSIS) as {
       id: number;
@@ -166,7 +168,25 @@ async function main() {
       old_json: string;
       new_json: string;
       title: string;
+      state: string;
+      class: string;
     }[];
+    // Open proposals by field and class (a live copy: earlier ones are applied already).
+    const open: Record<string, number> = {};
+    for (const r of rows) open[`${r.field} ${r.class}`] = (open[`${r.field} ${r.class}`] ?? 0) + 1;
+    const replaced = rows
+      .filter(
+        (r) =>
+          r.field !== 'identifiers' &&
+          r.field !== 'tags' &&
+          r.old_json !== 'null' &&
+          r.old_json !== '[]' &&
+          r.old_json !== '""',
+      )
+      .map(
+        (r) =>
+          `${r.calibre_id} ${r.title} | ${r.field}: ${r.old_json} -> ${r.new_json} (${r.class})`,
+      );
     const differs: unknown[] = [];
     for (const r of rows) {
       const cur = current(r.calibre_id);
@@ -225,6 +245,9 @@ async function main() {
       books: view.books,
       fields: view.fields,
       proposals: rows.length,
+      open,
+      replacedCount: replaced.length,
+      replaced,
       beforeDiffersFromCalibre: differs.length,
       differs: differs.slice(0, 40),
       five,
