@@ -282,7 +282,9 @@ describe('the shared disk lock', () => {
       }
       expect(getStage(env.cleanupDb, env.libraryId(), 1).state).not.toBe('ready');
       expect(lock.shouldYield(DISK_OWNERS.audio1)).toBe(true);
-      expect(lock.state().waiting[0].owner).toBe(DISK_OWNERS.calibre1);
+      expect(lock.state().waiting[0].owner).toBe(
+        `${DISK_OWNERS.calibre1} · ${env.service.libraryName(env.libraryId())}`,
+      );
       lock.release(DISK_OWNERS.audio1);
       for (
         let i = 0;
