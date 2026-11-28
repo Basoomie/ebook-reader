@@ -894,7 +894,7 @@
   function adjustPlaybackRateBy(value: number) {
     $playbackRate$ = between(
       0.1,
-      2,
+      5,
       Math.round(($playbackRate$ + value) * 100 + Number.EPSILON) / 100
     );
     displayedPlaybackrate = $playbackRate$;
@@ -1029,7 +1029,7 @@
       <input
         type="range"
         min="0.1"
-        max="2"
+        max="5"
         step="0.05"
         disabled={$isRecording$}
         bind:value={displayedPlaybackrate}
