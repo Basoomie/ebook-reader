@@ -577,6 +577,13 @@ function indexCommand(db: Database.Database, command: string, rest: string[]) {
             `skipped=${s.booksSkipped}  indexed=${formatDate(s.indexedAt)}` +
             (s.reindexRequestedAt ? '  reindex=requested' : ''),
         );
+        console.log(
+          s.behindSince
+            ? `    behind since ${formatDate(s.behindSince)}` +
+                (s.failures ? `  failures in a row=${s.failures}` : '') +
+                (s.lastProblem ? `: ${s.lastProblem}` : '')
+            : `    up to date (checked ${formatDate(s.checkedAt)})`,
+        );
         if (s.lastError) console.log(`    error (${formatDate(s.lastErrorAt)}): ${s.lastError}`);
         if (s.lastWarning) {
           console.log(`    warning (${formatDate(s.lastWarningAt)}): ${s.lastWarning}`);

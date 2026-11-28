@@ -22,3 +22,26 @@ export const MOVE_STAGE = 11;
 
 /** The sidecar version that moves books and uses each batch's own library (1.6.0). */
 export const MOVE_SIDECAR_VERSION = '1.6.0';
+
+/**
+ * The sidecar version that uses a copy an earlier move batch left in the new library (an item's
+ * `move.leftover`) instead of adding a second one (1.8.2). Move batches go only to it.
+ */
+export const MOVE_LEFTOVER_SIDECAR_VERSION = '1.8.2';
+
+/**
+ * Books without an EPUB (non-epub-books.md): the batches that add an EPUB made for a book to its
+ * own record (add_format), or fold a proven copy into its EPUB twin (its file added there, the
+ * copy removed the stage-1 way). Their items have their own steps (formats/format-batches.ts).
+ */
+export const FORMATS_STAGE = 12;
+
+/** The sidecar version that converts books and runs add_format / remove_format (1.8.0). */
+export const FORMATS_SIDECAR_VERSION = '1.8.0';
+
+/**
+ * The sidecar version whose conversions follow the pass's rules 2 (formats/pass.ts
+ * FORMATS_RULES_VERSION: mokuro archives made as picture books, or listed without pictures).
+ * An older sidecar is handed no conversion job.
+ */
+export const FORMATS_CONVERT_SIDECAR_VERSION = '1.8.1';

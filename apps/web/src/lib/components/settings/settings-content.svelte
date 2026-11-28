@@ -107,6 +107,14 @@
   } from '$lib/library/search-settings';
   import { nextInSeriesApi, recentlyViewedApi, searchHistoryApi } from '$lib/sync/sync-service';
   import { nextInSeriesBonus$, nextInSeriesOn$ } from '$lib/library/next-in-series-settings';
+  import {
+    KEPT_LIMITS,
+    seriesKeptMaxPercent$,
+    seriesKeptMinMonths$,
+    seriesKeptMinReaders$,
+    seriesKeptNeighbourPercent$
+  } from '$lib/library/series-figures-settings';
+  import { DEFAULT_KEPT_RULES } from '$lib/library/series-figures';
   import { logger } from '$lib/data/logger';
   import {
     recentlyViewedDwellSeconds$,
@@ -1494,6 +1502,97 @@
         >
           {recentlyViewedCount ? `Clear ${recentlyViewedCount}…` : 'Nothing to clear'}
         </button>
+      </SettingRow>
+    </SettingsGroup>
+    <!-- Series figures (2026-11-26): "Went on to vol 2"'s thresholds, after Recently viewed. -->
+    <SettingsGroup id="library-series-figures">
+      <SettingRow id="series-kept-min-readers" settingKey="seriesKeptMinReaders" let:labelId>
+        <SettingField unit="readers">
+          <input
+            type="number"
+            step="1"
+            min={KEPT_LIMITS.minReaders.min}
+            max={KEPT_LIMITS.minReaders.max}
+            aria-labelledby={labelId}
+            data-testid="series-kept-min-readers"
+            bind:value={$seriesKeptMinReaders$}
+            on:change={() =>
+              seriesKeptMinReaders$.next(
+                clampSetting(
+                  $seriesKeptMinReaders$,
+                  KEPT_LIMITS.minReaders.min,
+                  KEPT_LIMITS.minReaders.max,
+                  DEFAULT_KEPT_RULES.minReaders
+                )
+              )}
+          />
+        </SettingField>
+      </SettingRow>
+      <SettingRow id="series-kept-neighbour" settingKey="seriesKeptNeighbourPercent" let:labelId>
+        <SettingField unit="%">
+          <input
+            type="number"
+            step="1"
+            min={KEPT_LIMITS.neighbourPercent.min}
+            max={KEPT_LIMITS.neighbourPercent.max}
+            aria-labelledby={labelId}
+            data-testid="series-kept-neighbour"
+            bind:value={$seriesKeptNeighbourPercent$}
+            on:change={() =>
+              seriesKeptNeighbourPercent$.next(
+                clampSetting(
+                  $seriesKeptNeighbourPercent$,
+                  KEPT_LIMITS.neighbourPercent.min,
+                  KEPT_LIMITS.neighbourPercent.max,
+                  DEFAULT_KEPT_RULES.neighbourPercent
+                )
+              )}
+          />
+        </SettingField>
+      </SettingRow>
+      <SettingRow id="series-kept-max" settingKey="seriesKeptMaxPercent" let:labelId>
+        <SettingField unit="%">
+          <input
+            type="number"
+            step="1"
+            min={KEPT_LIMITS.maxPercent.min}
+            max={KEPT_LIMITS.maxPercent.max}
+            aria-labelledby={labelId}
+            data-testid="series-kept-max"
+            bind:value={$seriesKeptMaxPercent$}
+            on:change={() =>
+              seriesKeptMaxPercent$.next(
+                clampSetting(
+                  $seriesKeptMaxPercent$,
+                  KEPT_LIMITS.maxPercent.min,
+                  KEPT_LIMITS.maxPercent.max,
+                  DEFAULT_KEPT_RULES.maxPercent
+                )
+              )}
+          />
+        </SettingField>
+      </SettingRow>
+      <SettingRow id="series-kept-months" settingKey="seriesKeptMinMonths" let:labelId>
+        <SettingField unit="months">
+          <input
+            type="number"
+            step="1"
+            min={KEPT_LIMITS.minMonths.min}
+            max={KEPT_LIMITS.minMonths.max}
+            aria-labelledby={labelId}
+            data-testid="series-kept-months"
+            bind:value={$seriesKeptMinMonths$}
+            on:change={() =>
+              seriesKeptMinMonths$.next(
+                clampSetting(
+                  $seriesKeptMinMonths$,
+                  KEPT_LIMITS.minMonths.min,
+                  KEPT_LIMITS.minMonths.max,
+                  DEFAULT_KEPT_RULES.minMonths
+                )
+              )}
+          />
+        </SettingField>
       </SettingRow>
     </SettingsGroup>
     <SettingsGroup id="library-book-page">

@@ -18,3 +18,16 @@ export {
   QUERY_LIMITS,
   QUERY_STATUSES
 } from './parse';
+
+// Series and author figures (docs/design/series-figures.md): the same rules on both sides.
+export {
+  seriesFigures,
+  pickFigure,
+  worksFigure,
+  figureKey,
+  figureSortValue,
+  figureTermValue,
+  figureMatches,
+  DEFAULT_KEPT_RULES,
+  DEFAULT_SCORE_PARAMS
+} from '../series-figures';

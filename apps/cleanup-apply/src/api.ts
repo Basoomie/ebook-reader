@@ -8,6 +8,7 @@ import fs from 'fs';
 import { Readable } from 'stream';
 import { pipeline } from 'stream/promises';
 import { arrivalApi } from './arrivals';
+import type { FormatApi, FormatJob, JobResult } from './formats';
 
 export interface CalibreLogin {
   contentServerUrl: string;
@@ -63,8 +64,30 @@ export interface BatchItem {
   /** 1.6.0, a move item: the copy added to the new library (undo: the moved copy there). */
   move?: {
     added: { calibreId: number; uuid: string } | null;
+    /**
+     * 1.8.2, apply: the copy an earlier batch added to the new library for this book and left
+     * there (its old copy could not be removed). Used instead of adding a second copy.
+     */
+    leftover?: { calibreId: number; uuid: string } | null;
     movedCopy?: { calibreId: number; uuid: string } | null;
     fieldsAtMove?: Record<string, unknown> | null;
+  };
+  /**
+   * 1.8.0, a books-without-an-EPUB item (stage 12). convert: the EPUB the server checked is added
+   * to the book (calibreId/uuid; kept is the same book). fold: the copy (calibreId/uuid) goes
+   * into its EPUB twin (kept), its file added there when the twin has no such format.
+   */
+  format?: {
+    kind: 'convert' | 'fold';
+    /** The book's file that was converted or compared (its format and SHA-256). */
+    sourceFormat: string;
+    sourceSha256: string;
+    /** convert: the EPUB to add. */
+    epubSha256?: string | null;
+    /** fold: the format to add to the twin (null: the twin has one). */
+    addFormat?: string | null;
+    /** undo of a fold: the format the fold added to the twin, taken off again (null: none). */
+    removeFormat?: string | null;
   };
 }
 
@@ -248,6 +271,51 @@ export class ServerApi {
   report(batchId: string, itemId: number, report: StepReport): Promise<{ state: ItemState }> {
     return this.call('POST', `/batches/${batchId}/items/${itemId}`, report);
   }
+
+  /** 1.8.0: the books-without-an-EPUB pass's conversion jobs and its EPUBs (formats.ts). */
+  readonly formats: FormatApi = {
+    claimFormatJob: () => this.call<{ job: FormatJob | null }>('POST', '/formats/claim', {}),
+    formatJobAlive: (jobId) => this.call('POST', `/formats/jobs/${jobId}/alive`, {}),
+    uploadFormatEpub: async (jobId, file, sha256, size) => {
+      const res = await this.fetchImpl(`${this.base}/formats/jobs/${jobId}/epub`, {
+        method: 'PUT',
+        headers: {
+          Authorization: `Bearer ${this.token}`,
+          'Content-Type': 'application/epub+zip',
+          'Content-Length': String(size),
+          'X-Sha256': sha256
+        },
+        body: Readable.toWeb(fs.createReadStream(file)) as never,
+        duplex: 'half',
+        signal: AbortSignal.timeout(Math.max(this.timeoutMs, 900_000))
+      } as RequestInit);
+      if (!res.ok) {
+        let message = `HTTP ${res.status}`;
+        let code = 'upload';
+        try {
+          const j = (await res.json()) as { error?: { code?: string; message?: string } };
+          message = j.error?.message ?? message;
+          code = j.error?.code ?? code;
+        } catch {
+          // Not JSON.
+        }
+        throw new ServerError(res.status, code, message);
+      }
+      return res.json();
+    },
+    finishFormatJob: (jobId: number, result: JobResult) =>
+      this.call('POST', `/formats/jobs/${jobId}/done`, result),
+    downloadFormatEpub: async (itemId, file) => {
+      const res = await this.fetchImpl(`${this.base}/formats/items/${itemId}/epub`, {
+        headers: { Authorization: `Bearer ${this.token}` },
+        signal: AbortSignal.timeout(Math.max(this.timeoutMs, 900_000))
+      });
+      if (!res.ok || !res.body) throw new ServerError(res.status, 'epub', `HTTP ${res.status}`);
+      const out = fs.createWriteStream(file, { flags: 'wx' });
+      await pipeline(Readable.fromWeb(res.body as never), out);
+      return { sha256: res.headers.get('x-sha256') };
+    }
+  };
 
   /** 1.6.0: the server's half of a move's check (the stored EPUB, the cover, the title sort). */
   moveCheck(

@@ -9,11 +9,15 @@
  *
  * Without a database file (in-memory test databases) queries run on the given
  * connection, unprotected.
+ *
+ * It also works out the series and author figures (series-figures.ts `figures`): a read of the
+ * whole library that would hold the main thread for a second or two on the NAS.
  */
 import type Database from 'better-sqlite3';
 import path from 'path';
 import { Worker } from 'worker_threads';
 import { registerRegexp } from './regexp';
+import { computeFigures, type FiguresAnswer, type FiguresJob } from './series-figures';
 
 export class RegexTimeoutError extends Error {}
 
@@ -27,7 +31,7 @@ export interface SearchRunnerOptions {
 }
 
 interface Pending {
-  resolve: (rows: unknown[]) => void;
+  resolve: (value: unknown) => void;
   reject: (err: Error) => void;
   timer: NodeJS.Timeout;
 }
@@ -35,6 +39,8 @@ interface Pending {
 // Under ts-node (dev, tests) the worker is TypeScript too.
 const RUNNING_TS = path.extname(__filename) === '.ts';
 const WORKER_FILE = path.join(__dirname, `search-worker${RUNNING_TS ? '.ts' : '.js'}`);
+/** A figures job's own time limit (SearchRunner.figures). */
+const FIGURES_TIMEOUT_MS = 60_000;
 
 export class SearchRunner {
   private worker: Worker | null = null;
@@ -59,8 +65,29 @@ export class SearchRunner {
     const id = this.nextId++;
     return new Promise<unknown[]>((resolve, reject) => {
       const timer = setTimeout(() => this.timeout(), this.timeoutMs);
-      this.pending.set(id, { resolve, reject, timer });
+      this.pending.set(id, { resolve: resolve as (value: unknown) => void, reject, timer });
       worker.postMessage({ id, sql, params });
+    });
+  }
+
+  /**
+   * The series and author figures, worked out on the worker's connection. Its own time limit
+   * (a busy NAS can take a few seconds; the search limit is for runaway patterns).
+   */
+  figures(job: FiguresJob, timeoutMs = FIGURES_TIMEOUT_MS): Promise<FiguresAnswer> {
+    if (!this.opts.file) {
+      return Promise.resolve().then(() => computeFigures(this.opts.db, job));
+    }
+    if (this.closed) return Promise.reject(new Error('the search runner is closed'));
+    const worker = this.ensureWorker();
+    const id = this.nextId++;
+    return new Promise<FiguresAnswer>((resolve, reject) => {
+      const timer = setTimeout(
+        () => void this.stopWorker(new Error('working out the series figures took too long')),
+        timeoutMs,
+      );
+      this.pending.set(id, { resolve: resolve as (value: unknown) => void, reject, timer });
+      worker.postMessage({ id, figures: job });
     });
   }
 
@@ -79,15 +106,18 @@ export class SearchRunner {
         )
       : new Worker(WORKER_FILE, { workerData });
     worker.unref();
-    worker.on('message', (msg: { id?: number; rows?: unknown[]; error?: string }) => {
-      if (msg.id === undefined) return;
-      const job = this.pending.get(msg.id);
-      if (!job) return;
-      this.pending.delete(msg.id);
-      clearTimeout(job.timer);
-      if (msg.error !== undefined) job.reject(new Error(msg.error));
-      else job.resolve(msg.rows ?? []);
-    });
+    worker.on(
+      'message',
+      (msg: { id?: number; rows?: unknown[]; figures?: unknown; error?: string }) => {
+        if (msg.id === undefined) return;
+        const job = this.pending.get(msg.id);
+        if (!job) return;
+        this.pending.delete(msg.id);
+        clearTimeout(job.timer);
+        if (msg.error !== undefined) job.reject(new Error(msg.error));
+        else job.resolve(msg.figures ?? msg.rows ?? []);
+      },
+    );
     worker.on('error', (err) => {
       this.opts.logError?.('the search worker failed', err);
       if (this.worker === worker) void this.stopWorker(err);

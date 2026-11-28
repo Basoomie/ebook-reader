@@ -259,6 +259,12 @@ export const SETTINGS_REGISTRY: Record<string, SettingSpec> = {
   nextInSeriesOn: g('Boolean'),
   nextInSeriesBonus: g('Boolean'),
 
+  // --- lib/library/series-figures-settings.ts (every device; the server reads them) ---
+  seriesKeptMinReaders: g('Number'),
+  seriesKeptNeighbourPercent: g('Number'),
+  seriesKeptMaxPercent: g('Number'),
+  seriesKeptMinMonths: g('Number'),
+
   // --- lib/calibre-edit/settings.ts (per device: Calibre metadata editing, Settings > Library) ---
   bookEditAs: d('String'),
   seriesEditAs: d('String'),

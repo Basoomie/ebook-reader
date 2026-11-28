@@ -3029,6 +3029,145 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
         ON bookmeter_listing_books (library_id, author, state);
     `,
   },
+  {
+    version: 40,
+    name: 'Bookmeter links: each author walk keeps its pages-left estimate (the card’s time left)',
+    // The card's time left was paced by walks ended, which was fast while every author's first
+    // page was read and slow for the authors with many pages. first_reg: page 1's first
+    // listing's registrations; left_pages: pages still to read, estimated from how fast the
+    // counts fall (NULL: not estimated yet).
+    sql: `
+      ALTER TABLE bookmeter_author_walks ADD COLUMN first_reg INTEGER;
+      ALTER TABLE bookmeter_author_walks ADD COLUMN left_pages INTEGER;
+    `,
+  },
+  {
+    version: 41,
+    name: 'Books without an EPUB: the pass, its books, spot check and writes',
+    // docs/design/non-epub-books.md (formats/). calibre_formats_state: the pass's own
+    // Off/Preview/On, progress and pause. calibre_format_books: each book of the library with no
+    // EPUB (one row per book and library): what it is (listed and left, with its reason), its
+    // conversion job (the sidecar's lease and result), the checked EPUB kept under
+    // CACHE_DIR/cleanup/formats until written, its EPUB twins and their measures, and its
+    // proposal. One state row per Calibre library (manga part B: every pass belongs to one
+    // library), made when first needed. calibre_formats_spot: the 30 converted books of the spot check.
+    // calibre_format_writes: what each write did (an EPUB added to its own book, or a copy folded
+    // into its twin with the format it gave the twin), for Undo, for "never again" and for the
+    // stored EPUB's check (calibre_format_store). batch_items.format_json: a stage-12 item's note (the format a fold
+    // added). calibre_known_books is rebuilt (a CHECK list can't be altered) with the origin
+    // 'format': a book that got its EPUB from this pass is taken in by the next new-arrivals run
+    // as a book added by hand.
+    sql: `
+      CREATE TABLE calibre_formats_state (
+        library_id    TEXT PRIMARY KEY,
+        mode          TEXT NOT NULL DEFAULT 'off' CHECK (mode IN ('off', 'analyse', 'on')),
+        progress_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(progress_json)),
+        paused_reason TEXT,
+        paused_detail TEXT,
+        updated_at    INTEGER NOT NULL
+      );
+      CREATE TABLE calibre_format_books (
+        id               INTEGER PRIMARY KEY,
+        library_id       TEXT NOT NULL,
+        calibre_uuid     TEXT NOT NULL,
+        calibre_id       INTEGER NOT NULL,
+        run              INTEGER NOT NULL,
+        title            TEXT NOT NULL,
+        authors_json     TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(authors_json)),
+        tags_json        TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(tags_json)),
+        formats_json     TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(formats_json)),
+        last_modified    TEXT,
+        source_format    TEXT,
+        state            TEXT NOT NULL CHECK (state IN ('listed', 'waiting', 'converting',
+                           'converted', 'checked', 'compared', 'proposed')),
+        listed_reason    TEXT,
+        detail           TEXT,
+        lease_until      INTEGER,
+        attempts         INTEGER NOT NULL DEFAULT 0,
+        result_json      TEXT CHECK (result_json IS NULL OR json_valid(result_json)),
+        epub_sha256      TEXT,
+        epub_size        INTEGER,
+        check_json       TEXT CHECK (check_json IS NULL OR json_valid(check_json)),
+        twins_json       TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(twins_json)),
+        compare_json     TEXT CHECK (compare_json IS NULL OR json_valid(compare_json)),
+        verdict          TEXT,
+        change_id        INTEGER,
+        converted_at     INTEGER,
+        updated_at       INTEGER NOT NULL,
+        UNIQUE (library_id, calibre_uuid)
+      );
+      CREATE INDEX calibre_format_books_state ON calibre_format_books (library_id, state);
+      CREATE INDEX calibre_format_books_change ON calibre_format_books (change_id)
+        WHERE change_id IS NOT NULL;
+      CREATE TABLE calibre_formats_spot (
+        library_id    TEXT NOT NULL,
+        calibre_uuid  TEXT NOT NULL,
+        change_id     INTEGER NOT NULL,
+        position      INTEGER NOT NULL,
+        kind          TEXT NOT NULL,
+        verdict       TEXT CHECK (verdict IN ('right', 'wrong')),
+        decided_at    INTEGER,
+        PRIMARY KEY (library_id, calibre_uuid)
+      ) WITHOUT ROWID;
+      CREATE TABLE calibre_format_writes (
+        change_id      INTEGER PRIMARY KEY,
+        batch_id       TEXT NOT NULL,
+        library_id     TEXT NOT NULL,
+        kind           TEXT NOT NULL CHECK (kind IN ('convert', 'fold')),
+        calibre_id     INTEGER NOT NULL,
+        calibre_uuid   TEXT NOT NULL,
+        twin_id        INTEGER,
+        twin_uuid      TEXT,
+        added_format   TEXT,
+        epub_sha256    TEXT,
+        quarantine_dir TEXT,
+        added_tags_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(added_tags_json)),
+        state          TEXT NOT NULL CHECK (state IN ('written', 'undone')),
+        back_uuid      TEXT,
+        written_at     INTEGER NOT NULL,
+        undone_at      INTEGER,
+        undo_batch_id  TEXT
+      );
+      CREATE INDEX calibre_format_writes_uuid ON calibre_format_writes (library_id, calibre_uuid);
+      CREATE INDEX calibre_format_writes_batch ON calibre_format_writes (batch_id);
+      -- The EPUB Calibre stored for a converted book, compared with the checked one after the
+      -- write: same bytes, repacked (same files inside: DeDRM), different (the pass pauses) or
+      -- missing; its size and mtime (Undo removes it only while they are unchanged).
+      CREATE TABLE calibre_format_store (
+        change_id     INTEGER PRIMARY KEY,
+        state         TEXT NOT NULL CHECK (state IN ('same', 'repacked', 'different', 'missing')),
+        stored_size   INTEGER NOT NULL,
+        stored_mtime  INTEGER NOT NULL,
+        detail        TEXT,
+        checked_at    INTEGER NOT NULL
+      );
+      -- The pass's own proposals (stage 12), read per run by the card and the planner.
+      CREATE INDEX proposed_changes_formats
+        ON proposed_changes (library_id, analysis_id, state, class) WHERE stage = 12;
+      ALTER TABLE batch_items ADD COLUMN format_json TEXT
+        CHECK (format_json IS NULL OR json_valid(format_json));
+
+      CREATE TABLE calibre_known_books_v41 (
+        library_id   TEXT NOT NULL,
+        calibre_id   INTEGER NOT NULL,
+        calibre_uuid TEXT NOT NULL,
+        origin       TEXT NOT NULL CHECK (origin IN ('baseline', 'import', 'hand', 'undo', 'move', 'format')),
+        file_id      INTEGER,
+        added_at     INTEGER NOT NULL,
+        settled_at   INTEGER,
+        run_id       INTEGER,
+        gone_at      INTEGER,
+        PRIMARY KEY (library_id, calibre_id)
+      );
+      INSERT INTO calibre_known_books_v41
+        SELECT library_id, calibre_id, calibre_uuid, origin, file_id, added_at, settled_at, run_id,
+          gone_at FROM calibre_known_books;
+      DROP TABLE calibre_known_books;
+      ALTER TABLE calibre_known_books_v41 RENAME TO calibre_known_books;
+      CREATE INDEX calibre_known_books_uuid ON calibre_known_books (calibre_uuid);
+      CREATE INDEX calibre_known_books_waiting ON calibre_known_books (library_id, origin, run_id);
+    `,
+  },
 ];
 
 export const CLEANUP_SCHEMA_VERSION = CLEANUP_MIGRATIONS[CLEANUP_MIGRATIONS.length - 1].version;

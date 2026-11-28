@@ -21,7 +21,7 @@ import { Worker } from '../../cleanup-apply/src/worker';
 import { listLibraries, updateLibrary } from '../src/calibre/libraries';
 import { BatchError } from '../src/cleanup/batches';
 import { findCalibreSource } from '../src/cleanup/handoff';
-import { getMoveState } from '../src/cleanup/move/state';
+import { getMoveState, saveMoveProgress } from '../src/cleanup/move/state';
 import { getSettings, updateSettings } from '../src/cleanup/settings';
 import type { LibraryFixture } from './helpers/calibre-fixture';
 import { type CleanupEnv, makeCleanupEnv } from './helpers/cleanup-env';
@@ -500,6 +500,51 @@ describe('the sidecar moves books', () => {
     for (const f of failed) expect(f.detail).toMatch(/was taken out again/);
     // Only the moved book is in the manga library: no copy left behind.
     expect(row(manga, 'SELECT COUNT(*) AS n FROM books')!.n).toBe(1);
+  });
+
+  it('a book whose old copy Calibre would not remove is finished with the copy it left (1.8.2), never added twice', async () => {
+    await preview();
+    // Live 2026-11-28: Calibre refused the remove ("database is locked") after the copy was in.
+    const logs: string[] = [];
+    await runAll(worker({ fail: 'remove', logs }), 4);
+    const left = row(manga, 'SELECT id, uuid FROM books') as { id: number; uuid: string };
+    expect(row(manga, 'SELECT COUNT(*) AS n FROM books')!.n).toBe(1);
+    expect(row(env.lib, 'SELECT id FROM books WHERE id = ?', ids.A)).toBeDefined();
+    const failed = env.cleanupDb
+      .prepare(`SELECT state, detail FROM batch_items WHERE state = 'failed'`)
+      .all() as { detail: string }[];
+    expect(failed.length).toBe(1);
+    expect(failed[0].detail).toMatch(/stays: the move's next round finishes with it/);
+    expect(getMoveState(env.cleanupDb).pausedReason).toBe('batch_failed');
+
+    // Resumed; the next round proposes the book again and uses the copy it left.
+    env.service.move.resume();
+    const p = getMoveState(env.cleanupDb).progress;
+    saveMoveProgress(env.cleanupDb, { ...p, phase: 'done', snapshotMtimeMs: 1 });
+    const logs2: string[] = [];
+    await runAll(worker({ logs: logs2 }));
+    expect(logs2.some((l) => l.includes(`using the copy ${left.id} an earlier batch left`))).toBe(
+      true,
+    );
+    const moves = env.cleanupDb
+      .prepare(
+        `SELECT from_calibre_id, to_calibre_id, to_uuid, state FROM calibre_moves ORDER BY from_calibre_id`,
+      )
+      .all() as {
+      from_calibre_id: number;
+      to_calibre_id: number;
+      to_uuid: string;
+      state: string;
+    }[];
+    expect(moves.map((m) => [m.from_calibre_id, m.state])).toEqual([
+      [ids.A, 'moved'],
+      [ids.B, 'moved'],
+    ]);
+    expect([moves[0].to_calibre_id, moves[0].to_uuid]).toEqual([left.id, left.uuid]);
+    // One copy of each book in manga-library; none left in japanese-library.
+    expect(row(manga, 'SELECT COUNT(*) AS n FROM books')!.n).toBe(2);
+    expect(row(env.lib, 'SELECT id FROM books WHERE id = ?', ids.A)).toBeUndefined();
+    expect(findCalibreSource(env.db, mangaId(), left.uuid)?.bookId).toBe(books.A);
   });
 
   it('adds go through the long-lived helper (1.6.1), not a new calibredb each time', async () => {

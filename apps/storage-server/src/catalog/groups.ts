@@ -36,7 +36,16 @@ import {
   visibilitySql,
 } from './queries';
 import { groupNameSql, querySql, type SqlCondition } from './search-sql';
-import { DEFAULT_GROUP_SORT, type GroupSort } from './sort';
+import { DEFAULT_GROUP_SORT, GROUP_FIGURE_KEYS, type GroupSort } from './sort';
+import {
+  authorFigures,
+  figureIndex,
+  figureSortValue,
+  figureTerms,
+  groupFigure,
+  type FigureKey,
+  type SeriesFigure,
+} from './series-figures';
 
 export interface GroupChars {
   /** Sum of the counts the group's books have (a book waiting for a recount adds its old count). */
@@ -96,6 +105,11 @@ export interface GroupCard {
   bookIds?: string[];
   /** Authors, tags, "No series": up to four tiles in collage order. */
   tiles?: GroupTile[];
+  /**
+   * Series: volume 1's stars and readers and "Went on to vol 2"; authors: over their works
+   * (series-figures.ts). Absent for tags, "No series" and groups without any figure.
+   */
+  figures?: SeriesFigure;
 }
 
 export interface GroupPage {
@@ -201,11 +215,23 @@ function compareGroups(a: GroupRow, b: GroupRow): number {
  * Group order for a sort (WP19a). "No series" is always last; ties go by name (A→Z),
  * so the order is total and a cursor (newest, count, name) finds its place.
  */
-export function groupComparator(sort: GroupSort): (a: GroupRow, b: GroupRow) => number {
+export function groupComparator(
+  sort: GroupSort,
+  figure: (r: GroupRow) => number | null = () => null,
+): (a: GroupRow, b: GroupRow) => number {
   const sign = sort.dir === 'asc' ? 1 : -1;
+  const byFigure = GROUP_FIGURE_KEYS.includes(sort.key);
   return (a, b) => {
     if ((a.gid === null) !== (b.gid === null)) return a.gid === null ? 1 : -1;
     if (sort.key === 'name') return sign * compareNames(a, b);
+    if (byFigure) {
+      // Groups without the figure come last whichever the direction, by name.
+      const fa = figure(a);
+      const fb = figure(b);
+      if ((fa === null) !== (fb === null)) return fa === null ? 1 : -1;
+      if (fa !== null && fb !== null && fa !== fb) return sign * (fa - fb);
+      return compareNames(a, b);
+    }
     const diff = sort.key === 'count' ? a.n - b.n : a.newest - b.newest;
     if (diff !== 0) return sign * diff;
     return compareNames(a, b);
@@ -303,7 +329,13 @@ export function planGroups(
     const names = joinConds(groupNameSql(parsed, opts.by, 'gn.name'));
     const conds: SqlCondition[] = [
       ...visibilitySql(opts),
-      ...querySql(parsed, user.id, undefined, user.deviceId ?? null),
+      ...querySql(
+        parsed,
+        user.id,
+        undefined,
+        user.deviceId ?? null,
+        figureTerms(db, user.id, { seriesTab: opts.by === 'series', libraryId: opts.libraryId }),
+      ),
     ];
     if (names.sql) {
       conds.push({
@@ -324,7 +356,12 @@ export function planGroups(
       const all = aggregateGroups(db, opts).filter(
         (r) => (opts.by === 'series' || r.gid !== null) && (!filtered || hits.has(r.gid)),
       );
-      return pageGroups(opts, all, (page) => describeGroups(db, user, opts, page, spec));
+      return pageGroups(
+        opts,
+        all,
+        (page) => describeGroups(db, user, opts, page, spec),
+        figureLookup(db, user, opts),
+      );
     },
   };
 }
@@ -334,10 +371,20 @@ function pageGroups(
   opts: ListGroupsOptions,
   rows: GroupRow[],
   describe: (page: GroupRow[]) => GroupCard[],
+  figureOf?: (r: GroupRow) => SeriesFigure | null,
 ): GroupPage {
   const limit = Math.min(Math.max(1, opts.limit ?? DEFAULT_PAGE_SIZE), MAX_PAGE_SIZE);
   const sort = opts.sort ?? DEFAULT_GROUP_SORT;
-  const compare = groupComparator(sort);
+  // A figure sort orders by the figure's value (series-figures.ts), worked out once per row.
+  const values = new Map<GroupRow, number | null>();
+  const byFigure = GROUP_FIGURE_KEYS.includes(sort.key);
+  if (byFigure) {
+    for (const r of rows) {
+      values.set(r, figureOf ? figureSortValue(figureOf(r), sort.key as FigureKey) : null);
+    }
+  }
+  const valueOf = (r: GroupRow) => values.get(r) ?? null;
+  const compare = groupComparator(sort, valueOf);
   const cursor = opts.cursor ? decodeGroupCursor(opts.cursor) : null;
   let all = rows;
   // The cached rows are in the default order; other sorts sort a copy.
@@ -347,16 +394,29 @@ function pageGroups(
   let start = 0;
   if (cursor) {
     const probe = { gid: 0, name: cursor.name, newest: cursor.newest, n: cursor.n } as GroupRow;
+    values.set(probe, cursor.figure);
     start = all.findIndex((r) => compare(r, probe) > 0);
     if (start === -1) start = all.length;
   }
   const page = all.slice(start, start + limit);
   const last = page[page.length - 1];
+  // A figure sort's cursor also carries the figure (-1: none; figures are never negative).
   const nextCursor =
     start + limit < all.length && last && last.name !== null
-      ? encodeCursor([last.newest, last.n, last.name])
+      ? byFigure
+        ? encodeCursor([last.newest, last.n, last.name, valueOf(last) ?? -1])
+        : encodeCursor([last.newest, last.n, last.name])
       : null;
-  return { groups: describe(page), nextCursor, total: all.length };
+  const groups = describe(page);
+  // Only under a figure sort (the only time the cards show them): working the figures out reads
+  // the library, which a plain page of the tabs must not pay for.
+  if (figureOf && byFigure) {
+    page.forEach((r, i) => {
+      const f = figureOf(r);
+      if (f && (f.rating || f.readers !== null || f.kept !== null)) groups[i].figures = f;
+    });
+  }
+  return { groups, nextCursor, total: all.length };
 }
 
 /** A book of a collection, in one of its groups (scoped lists). */
@@ -424,7 +484,13 @@ function planScopedGroups(
       sql: 'SELECT NULL WHERE 0',
       params: [],
       regex: false,
-      finish: () => pageGroups(opts, hit.data.rows, describe(hit.data)),
+      finish: () =>
+        pageGroups(
+          opts,
+          hit.data.rows,
+          describe(hit.data),
+          scopedFigures(db, user, opts, hit.data),
+        ),
     };
   }
 
@@ -435,7 +501,13 @@ function planScopedGroups(
   // In a grouped tab, terms on the grouping field also pick the groups by name.
   let names = { sql: '', params: [] as unknown[] };
   if (filtered) {
-    const conds = querySql(parsed, user.id, undefined, user.deviceId ?? null);
+    const conds = querySql(
+      parsed,
+      user.id,
+      undefined,
+      user.deviceId ?? null,
+      figureTerms(db, user.id, { seriesTab: opts.by === 'series', libraryId: opts.libraryId }),
+    );
     if (conds.length > 0) {
       hitSql = `CASE WHEN ${conds.map((c) => `(${c.sql})`).join(' AND ')} THEN 1 ELSE 0 END`;
       hitParams = conds.flatMap((c) => c.params);
@@ -444,7 +516,17 @@ function planScopedGroups(
   }
   const inScope: SqlCondition[] = [...visibilitySql(opts)];
   if (opts.collection) inScope.push(collectionMemberSql(user.id, opts.collection));
-  if (scope) inScope.push(...querySql(scope, user.id, db, user.deviceId ?? null));
+  if (scope) {
+    inScope.push(
+      ...querySql(
+        scope,
+        user.id,
+        db,
+        user.deviceId ?? null,
+        figureTerms(db, user.id, { seriesTab: false }),
+      ),
+    );
+  }
   const where = joinConds(inScope);
   // One row per book of the collection (kind 0), then the groups whose name matches
   // (kind 1). The book-to-author/tag links are walked here in finish(): joining them in
@@ -466,7 +548,7 @@ function planScopedGroups(
       store.delete(key);
       store.set(key, { changes, data });
       if (store.size > SCOPED_CACHE_SIZE) store.delete(store.keys().next().value as string);
-      return pageGroups(opts, data.rows, describe(data));
+      return pageGroups(opts, data.rows, describe(data), scopedFigures(db, user, opts, data));
     },
   };
 }
@@ -659,15 +741,78 @@ function collageOf(list: Member[], opened: Map<string, number>): string[] {
   return picked;
 }
 
-/** [newest, count, name]; the pre-WP19 [newest, name] still works (newest-first order). */
-function decodeGroupCursor(cursor: string): { newest: number; n: number; name: string } {
+/**
+ * [newest, count, name] (a figure sort adds the figure, -1 for none); the pre-WP19
+ * [newest, name] still works (newest-first order).
+ */
+function decodeGroupCursor(cursor: string): {
+  newest: number;
+  n: number;
+  name: string;
+  figure: number | null;
+} {
+  try {
+    const [newest, n, name, figure] = decodeCursor(cursor, [
+      'number',
+      'number',
+      'string',
+      'number',
+    ]);
+    const f = figure as number;
+    return {
+      newest: newest as number,
+      n: n as number,
+      name: name as string,
+      figure: f < 0 ? null : f,
+    };
+  } catch {
+    // One of the shorter shapes below.
+  }
   try {
     const [newest, n, name] = decodeCursor(cursor, ['number', 'number', 'string']);
-    return { newest: newest as number, n: n as number, name: name as string };
+    return { newest: newest as number, n: n as number, name: name as string, figure: null };
   } catch {
     const [newest, name] = decodeCursor(cursor, ['number', 'string']);
-    return { newest: newest as number, n: 0, name: name as string };
+    return { newest: newest as number, n: 0, name: name as string, figure: null };
   }
+}
+
+/**
+ * A group's figures (series-figures.ts): a series' (the library asked for, else the one whose
+ * volume 1 has the most readers), an author's over their works. None for tags.
+ */
+function figureLookup(
+  db: Database.Database,
+  user: CatalogUser,
+  opts: ListGroupsOptions,
+  books?: ReadonlySet<string>,
+): ((r: GroupRow) => SeriesFigure | null) | undefined {
+  if (opts.by === 'tag') return undefined;
+  let index: ReturnType<typeof figureIndex> | null = null;
+  const idx = () => (index ??= figureIndex(db, user.id));
+  if (opts.by === 'series') return (r) => groupFigure(idx(), r.gid, opts.libraryId);
+  let authors: Map<number, SeriesFigure> | null = null;
+  return (r) => {
+    if (r.gid === null) return null;
+    authors ??= authorFigures(db, user.id, opts, books);
+    return authors.get(r.gid) ?? null;
+  };
+}
+
+/**
+ * A collection's groups: a series' figures are the series' own (volume 1 may be outside the
+ * collection); an author's works are only the collection's books.
+ */
+function scopedFigures(
+  db: Database.Database,
+  user: CatalogUser,
+  opts: ListGroupsOptions,
+  data: ScopedData,
+): ((r: GroupRow) => SeriesFigure | null) | undefined {
+  if (opts.by !== 'author') return figureLookup(db, user, opts);
+  const books = new Set<string>();
+  for (const list of data.members.values()) for (const m of list) books.add(m.id);
+  return figureLookup(db, user, opts, books);
 }
 
 function tileOf(summary: BookSummary | undefined): GroupTile | null {

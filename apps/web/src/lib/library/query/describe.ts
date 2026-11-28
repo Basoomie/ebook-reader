@@ -153,6 +153,28 @@ function describeCount(raw: string, unit: 'ratings' | 'readers'): string {
   }
 }
 
+/** kept: ("went on to vol 2: at least 70 %"). */
+function describeKept(raw: string): string {
+  const value = raw.replace(/^[^:：]*[:：]/, '').replace(/[%％]/g, '');
+  const what = 'went on to vol 2:';
+  const range = /^([^-]+)-([^-]+)$/.exec(value);
+  if (range) return `${what} ${range[1]} to ${range[2]} %`;
+  const op = /^(<=|>=|<|>|=)?(.*)$/.exec(value)!;
+  const n = op[2];
+  switch (op[1]) {
+    case '<':
+      return `${what} under ${n} %`;
+    case '<=':
+      return `${what} ${n} % or less`;
+    case '>':
+      return `${what} over ${n} %`;
+    case '>=':
+      return `${what} at least ${n} %`;
+    default:
+      return `${what} exactly ${n} %`;
+  }
+}
+
 function describeTerm(term: QueryTerm, text: string): string {
   const raw = text.slice(term.start, term.end).replace(/^-/, '');
   switch (term.type) {
@@ -183,6 +205,10 @@ function describeTerm(term: QueryTerm, text: string): string {
     case 'readers': {
       const d = describeCount(raw, term.type);
       return term.negated ? `not ${d}` : d;
+    }
+    case 'kept': {
+      const d = describeKept(raw);
+      return term.negated ? `not: ${d}` : d;
     }
     case 'status': {
       const d = orList(

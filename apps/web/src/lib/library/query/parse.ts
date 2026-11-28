@@ -15,7 +15,7 @@
  *   term    := ["-"] (filter | regex | text)  terms combine with AND; "-" negates
  *   filter  := field (":" | "：") value       field names ignore case
  *   field   := author | illustrator | series | tag | chars | level | rating | ratings | readers
- *              | myrating | status | favorite | on
+ *              | kept | myrating | status | favorite | on
  *   author/illustrator/series/tag value := ["="] item ("," item)*   "=" exact; "," = any of
  *   item    := "quoted" | /regex/[i] | bare  (a quoted item is never split at commas)
  *   chars   := [<|<=|>|>=|=] N  |  N-N       N: digits, "," or "_" separators, "k" = 1000
@@ -26,6 +26,8 @@
  *   myrating:= the same, on your own rating (Calibre's)
  *   ratings := like chars                    how many people rated it on those stores
  *   readers := like chars                    読書メーター's 登録数 (people who logged it)
+ *   kept    := [<|<=|>|>=|=] P  |  P-P       "Went on to vol 2" of the book's series, whole
+ *                                            percent (P: digits, "%" allowed; series-figures.ts)
  *   status  := unread|reading|completed|dropped ("," = any of)
  *   favorite:= yes|no
  *   on      := device                       the books stored on the device that searches
@@ -89,6 +91,11 @@ export type QueryTerm =
   | (TermBase & { type: 'rating' | 'myrating'; min: number | null; max: number | null })
   /** ratings: the stores' rating count, readers: 読書メーター's 登録数; inclusive bounds. */
   | (TermBase & { type: 'ratings' | 'readers'; min: number | null; max: number | null })
+  /**
+   * kept: "Went on to vol 2" of the book's series (series-figures.ts), whole percent; inclusive
+   * bounds. Books without the figure never match.
+   */
+  | (TermBase & { type: 'kept'; min: number | null; max: number | null })
   | (TermBase & { type: 'status'; values: QueryStatus[] })
   | (TermBase & { type: 'favorite'; value: boolean })
   /** on:device: the books stored on the device that asks (WP15e). */
@@ -130,6 +137,7 @@ const FIELDS = [
   'rating',
   'ratings',
   'readers',
+  'kept',
   'myrating',
   'status',
   'favorite',
@@ -139,7 +147,7 @@ const FIELDS = [
 type Field = (typeof FIELDS)[number];
 
 const FIELD_RE =
-  /^(author|illustrator|series|tag|chars|level|ratings|rating|readers|myrating|status|favorite|on|bookmeter)[:：]/i;
+  /^(author|illustrator|series|tag|chars|level|ratings|rating|readers|kept|myrating|status|favorite|on|bookmeter)[:：]/i;
 /** Characters FIELD_RE needs to see: the longest field name and its colon. */
 const FIELD_LOOKAHEAD = Math.max(...FIELDS.map((f) => f.length)) + 1;
 
@@ -392,6 +400,55 @@ function parseCountRange(
   }
 }
 
+const KEPT_HELP = 'Use kept:>=70, kept:<50 or kept:50-80 (percent).';
+
+/** kept: whole percents 0-100; "70%" and "70％" read as 70. */
+function parseKeptRange(
+  raw: string,
+  start: number,
+  end: number
+): { min: number | null; max: number | null } {
+  const pct = (v: string) => {
+    const m = /^(\d{1,3})[%％]?$/.exec(v);
+    if (!m) return null;
+    const n = Number(m[1]);
+    return n <= 100 ? n : null;
+  };
+  if (raw === '') throw new QueryError(`kept: needs a percent. ${KEPT_HELP}`, start, end);
+  const range = /^([^-]+)-([^-]+)$/.exec(raw);
+  if (range) {
+    const low = pct(range[1]);
+    const high = pct(range[2]);
+    if (low === null || high === null) {
+      throw new QueryError(
+        `"${raw}" isn't a range of percents (0 to 100). ${KEPT_HELP}`,
+        start,
+        end
+      );
+    }
+    if (low > high) {
+      throw new QueryError('The first number of a range must be the smaller one.', start, end);
+    }
+    return { min: low, max: high };
+  }
+  const compare = /^(<=|>=|<|>|=)?(.*)$/.exec(raw)!;
+  const value = pct(compare[2]);
+  if (value === null)
+    throw new QueryError(`"${raw}" isn't a percent (0 to 100). ${KEPT_HELP}`, start, end);
+  switch (compare[1]) {
+    case '<':
+      return { min: null, max: value - 1 };
+    case '<=':
+      return { min: null, max: value };
+    case '>':
+      return { min: value + 1, max: null };
+    case '>=':
+      return { min: value, max: null };
+    default:
+      return { min: value, max: value };
+  }
+}
+
 function parseWordList(raw: string): string[] {
   return raw
     .split(',')
@@ -407,6 +464,7 @@ function parseField(s: Scanner, field: Field, negated: boolean, start: number): 
     field === 'rating' ||
     field === 'ratings' ||
     field === 'readers' ||
+    field === 'kept' ||
     field === 'myrating' ||
     field === 'status' ||
     field === 'favorite' ||
@@ -423,6 +481,8 @@ function parseField(s: Scanner, field: Field, negated: boolean, start: number): 
       return { type: field, negated, start, end, ...parseStarsRange(raw, start, end, field) };
     if (field === 'ratings' || field === 'readers')
       return { type: field, negated, start, end, ...parseCountRange(raw, start, end, field) };
+    if (field === 'kept')
+      return { type: 'kept', negated, start, end, ...parseKeptRange(raw, start, end) };
     const words = parseWordList(raw);
     if (field === 'on') {
       if (words.length === 1 && words[0] === 'device') {

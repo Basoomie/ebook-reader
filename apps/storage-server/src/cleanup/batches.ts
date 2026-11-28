@@ -28,20 +28,26 @@ import type Database from 'better-sqlite3';
 import {
   EDIT_SIDECAR_VERSION,
   EDIT_STAGE,
+  FORMATS_SIDECAR_VERSION,
+  FORMATS_STAGE,
   isFieldStage,
   MOVE_SIDECAR_VERSION,
+  MOVE_LEFTOVER_SIDECAR_VERSION,
   MOVE_STAGE,
 } from './field-stages';
+import { FormatBatches } from './formats/format-batches';
+import { pauseFormats } from './formats/state';
 import { MoveBatches } from './move/move-batches';
 import { pauseMove } from './move/state';
 import { movedFrom } from './move/rekey';
 import { releaseUnwritten } from './edits/yours';
-import { createHash, randomUUID } from 'crypto';
+import { randomUUID } from 'crypto';
 import fs from 'fs/promises';
 import path from 'path';
+import { sha256File } from './file-hash';
 import { snapshotFile } from '../calibre/indexer';
 import { getIndexState, getLibrary } from '../calibre/libraries';
-import { snapshotMetadataDb } from '../calibre/snapshot';
+import { describeLock, snapshotMetadataDb } from '../calibre/snapshot';
 import { folderExists, METADATA_DB, resolveInside, statFile } from '../calibre/source-fs';
 import {
   applyHandoff,
@@ -299,21 +305,15 @@ export function batchSnapshotPath(cacheDir: string, batchId: string): string {
   return path.join(cacheDir, 'cleanup', 'batches', `${batchId}.db`);
 }
 
-async function sha256File(file: string): Promise<string> {
-  const hash = createHash('sha256');
-  const handle = await fs.open(file, 'r');
-  try {
-    for await (const chunk of handle.createReadStream()) hash.update(chunk as Buffer);
-  } finally {
-    await handle.close().catch(() => {});
-  }
-  return hash.digest('hex');
-}
-
 export class BatchService {
   private readonly leaseSeconds: number;
   /** metadata.db copies being made, per batch (never two at once for one batch). */
-  private readonly snapshotting = new Map<string, Promise<void>>();
+  private readonly snapshotting = new Map<string, { promise: Promise<void>; startedAt: number }>();
+  /**
+   * A copy still unsettled after this long is dropped and made again: the copy itself gives up
+   * after 10 minutes, so one past this is stuck (a stalled read, 2026-11-26).
+   */
+  snapshotStuckMs = 15 * 60_000;
   /** How long a claim waits for a copy before answering "being made" (under the sidecar's 60 s). */
   snapshotAnswerMs = 30_000;
   /** Stage 2's batches (WP20b): writing fields instead of removing copies. */
@@ -326,6 +326,8 @@ export class BatchService {
   readonly edits: Stage2Batches;
   /** Manga part A: moving books to another Calibre library (stage 11). */
   readonly moves: MoveBatches;
+  /** Books without an EPUB: an EPUB added to its book, or a copy folded into its twin (stage 12). */
+  readonly formats: FormatBatches;
 
   /** The field-write path of a stage (2, 4, 5 or the user's edits). */
   fieldWriter(stage: number): Stage2Batches {
@@ -350,6 +352,7 @@ export class BatchService {
     this.stage5 = new Stage2Batches(this, deps, 5);
     this.edits = new Stage2Batches(this, deps, EDIT_STAGE);
     this.moves = new MoveBatches(this, deps);
+    this.formats = new FormatBatches(this, deps);
   }
 
   private get db() {
@@ -914,6 +917,11 @@ export class BatchService {
           wait: `The cleanup sidecar is older than 1.${need}.0: rebuild ttsu-cleanup-apply before stage ${batch.stage} writes`,
         };
     }
+    if (batch.stage === FORMATS_STAGE && !this.sidecarAtLeast(FORMATS_SIDECAR_VERSION))
+      return {
+        batch: null,
+        wait: `The cleanup sidecar is older than ${FORMATS_SIDECAR_VERSION}: rebuild ttsu-cleanup-apply before books without an EPUB are written`,
+      };
     // 1.6.0 (manga part A): a move batch, and any batch of another library than the sidecar's
     // own (the reader's edits of a moved book), go only to a sidecar that uses each batch's
     // library: an older one would write to its one library (another book with that id).
@@ -930,6 +938,13 @@ export class BatchService {
         wait: `The cleanup sidecar is older than ${MOVE_SIDECAR_VERSION}: rebuild ttsu-cleanup-apply before batches of ${batch.stage === MOVE_STAGE ? 'the move' : 'another library'} are written`,
       };
     }
+    // 1.8.2: a move item may carry a copy an earlier batch left in the new library; an older
+    // sidecar would add a second copy.
+    if (batch.stage === MOVE_STAGE && !this.sidecarAtLeast(MOVE_LEFTOVER_SIDECAR_VERSION))
+      return {
+        batch: null,
+        wait: `The cleanup sidecar is older than ${MOVE_LEFTOVER_SIDECAR_VERSION}: rebuild ttsu-cleanup-apply before batches of the move are written`,
+      };
     if (this.deps.calibreLibraryOf && calibreLibrary === null)
       return {
         batch: null,
@@ -946,12 +961,25 @@ export class BatchService {
     if (!batch.snapshotSaved) {
       // One copy per batch at a time, and the sidecar gets an answer within its request time:
       // a copy still running answers "being made" and is asked about again on the next claim.
-      let making = this.snapshotting.get(batch.id);
-      if (!making) {
-        making = this.makeSnapshot(batch).finally(() => this.snapshotting.delete(batch.id));
-        this.snapshotting.set(batch.id, making);
-        making.catch(() => {});
+      let entry = this.snapshotting.get(batch.id);
+      if (entry && Date.now() - entry.startedAt > this.snapshotStuckMs) {
+        this.deps.log?.(
+          `Cleanup: batch ${batch.id}: its metadata.db copy has not settled in ${Math.round(this.snapshotStuckMs / 60_000)} min; made again`,
+        );
+        this.snapshotting.delete(batch.id);
+        entry = undefined;
       }
+      if (!entry) {
+        const promise: Promise<void> = this.makeSnapshot(batch).finally(() => {
+          // Only this copy's own entry (a dropped stuck copy never removes its successor).
+          if (this.snapshotting.get(batch.id)?.promise === promise)
+            this.snapshotting.delete(batch.id);
+        });
+        promise.catch(() => {});
+        entry = { promise, startedAt: Date.now() };
+        this.snapshotting.set(batch.id, entry);
+      }
+      const making = entry.promise;
       try {
         const done = await Promise.race([
           making.then(() => true),
@@ -971,7 +999,10 @@ export class BatchService {
       .run(now, now + this.leaseSeconds * 1000, now, batch.id).changes;
     if (changed !== 1) return { batch: null, wait: null };
     const view = this.sidecarView(batch.id);
-    if (view.kind === 'undo' && (isRemovalStage(view.stage) || view.stage === MOVE_STAGE))
+    if (
+      view.kind === 'undo' &&
+      (isRemovalStage(view.stage) || view.stage === MOVE_STAGE || view.stage === FORMATS_STAGE)
+    )
       await this.markCalibreTrash(view, batch.libraryId);
     return { batch: view, wait: null };
   }
@@ -1023,12 +1054,17 @@ export class BatchService {
     await fs.mkdir(path.dirname(dest), { recursive: true });
     // Calibre keeps writing metadata.db during a run (its own background writes): a consistent
     // copy in one step (SQLite's backup), not one that must find metadata.db unchanged.
-    await snapshotMetadataDb(path.join(this.deps.calibreDir, lib.folder, METADATA_DB), dest, {
-      timeoutMs: 600_000,
-      allowChanging: true,
-      oneStep: true,
-    });
-    const sha = await sha256File(dest);
+    // The copy and its checksum run on a worker thread (2026-11-26): on the busy main thread the
+    // checksum's reads each waited for a turn of the event loop.
+    const snap = await snapshotMetadataDb(
+      path.join(this.deps.calibreDir, lib.folder, METADATA_DB),
+      dest,
+      { timeoutMs: 600_000, allowChanging: true, oneStep: true, hash: true },
+    );
+    this.deps.log?.(
+      `Cleanup: batch ${batch.id}: metadata.db copied in ${((snap.copyMs + snap.checkMs) / 1000).toFixed(1)} s (${describeLock(snap)})`,
+    );
+    const sha = snap.sha256 ?? (await sha256File(dest));
     this.db
       .prepare('UPDATE batches SET snapshot_sha256 = ?, updated_at = ? WHERE id = ?')
       .run(sha, Date.now(), batch.id);
@@ -1072,6 +1108,17 @@ export class BatchService {
 
   private sidecarViewOf(batch: BatchRow): SidecarBatch {
     const settings = getSettings(this.db);
+    if (batch.stage === FORMATS_STAGE)
+      return this.formats.sidecarView(batch, {
+        id: batch.id,
+        kind: batch.kind,
+        stage: batch.stage,
+        createdAt: batch.createdAt,
+        leaseSeconds: this.leaseSeconds,
+        itemDelaySeconds: settings.pacing.itemDelaySeconds,
+        snapshotSha256: batch.snapshotSha256,
+        snapshotSaved: batch.snapshotSaved,
+      });
     if (batch.stage === MOVE_STAGE)
       return this.moves.sidecarView(batch, {
         id: batch.id,
@@ -1213,6 +1260,7 @@ export class BatchService {
   ): { state: ItemState } {
     const batch = this.requireClaimed(batchId);
     if (batch.stage === MOVE_STAGE) return this.moves.report(batch, itemId, report, now);
+    if (batch.stage === FORMATS_STAGE) return this.formats.report(batch, itemId, report, now);
     if (isFieldStage(batch.stage)) {
       throw new BatchError(
         409,
@@ -1433,7 +1481,9 @@ export class BatchService {
       batch.kind === 'apply'
         ? isFieldStage(batch.stage)
           ? STAGE2_TERMINAL_APPLY
-          : TERMINAL_APPLY
+          : batch.stage === FORMATS_STAGE
+            ? [...TERMINAL_APPLY, 'written' as ItemState]
+            : TERMINAL_APPLY
         : TERMINAL_UNDO;
     if (!error && states.some((s) => !terminal.includes(s))) {
       throw new BatchError(409, 'not_done', 'Some items are not finished');
@@ -1441,7 +1491,9 @@ export class BatchService {
     const good =
       batch.kind === 'apply' ? (isFieldStage(batch.stage) ? 'written' : 'removed') : 'restored';
     const failed = states.filter((s) => s === 'failed' || !terminal.includes(s)).length;
-    const doneCount = states.filter((s) => s === good).length;
+    const doneCount = states.filter(
+      (s) => s === good || (batch.stage === FORMATS_STAGE && s === 'written'),
+    ).length;
     const state: BatchState =
       failed === 0
         ? 'applied'
@@ -1499,15 +1551,17 @@ export class BatchService {
         const left =
           batch.stage === MOVE_STAGE
             ? this.moves.leftToUndo(batch.undoOf)
-            : (
-                this.db
-                  .prepare(
-                    isFieldStage(batch.stage)
-                      ? `SELECT COUNT(*) AS n FROM field_undo WHERE batch_id = ? AND restored_at IS NULL`
-                      : `SELECT COUNT(*) AS n FROM undo_records WHERE batch_id = ? AND restored_at IS NULL`,
-                  )
-                  .get(batch.undoOf) as { n: number }
-              ).n;
+            : batch.stage === FORMATS_STAGE
+              ? this.formats.leftToUndo(batch.undoOf)
+              : (
+                  this.db
+                    .prepare(
+                      isFieldStage(batch.stage)
+                        ? `SELECT COUNT(*) AS n FROM field_undo WHERE batch_id = ? AND restored_at IS NULL`
+                        : `SELECT COUNT(*) AS n FROM undo_records WHERE batch_id = ? AND restored_at IS NULL`,
+                    )
+                    .get(batch.undoOf) as { n: number }
+                ).n;
         if (left === 0) {
           this.db
             .prepare(`UPDATE batches SET state = 'undone', updated_at = ? WHERE id = ?`)
@@ -1530,6 +1584,14 @@ export class BatchService {
       // A few failed items don't stop the run (decided 2026-11-15): they stay listed in the batch.
       this.deps.log?.(
         `Cleanup: ${failed} of ${states.length} items failed in batch ${batchId} (not above ${failedLimit} %): going on`,
+      );
+    } else if (failed > 0 && batch.kind === 'apply' && batch.stage === FORMATS_STAGE) {
+      pauseFormats(
+        this.db,
+        batch.libraryId,
+        'batch_failed',
+        `${failed} of ${states.length} books failed in the last batch of books without an EPUB${error ? `: ${error}` : ''}. ` +
+          'Check the batch, then resume.',
       );
     } else if (failed > 0 && batch.kind === 'apply' && batch.stage === MOVE_STAGE) {
       pauseMove(
@@ -1566,6 +1628,7 @@ export class BatchService {
       throw new BatchError(409, 'busy', 'Another batch is being applied; try again after it');
     if (isFieldStage(batch.stage)) return this.fieldWriter(batch.stage).undo(batch, now);
     if (batch.stage === MOVE_STAGE) return this.moves.undo(batch, now);
+    if (batch.stage === FORMATS_STAGE) return this.formats.undo(batch, now);
     const records = this.db
       .prepare(
         `SELECT change_id, removed_uuid, kept_uuid FROM undo_records

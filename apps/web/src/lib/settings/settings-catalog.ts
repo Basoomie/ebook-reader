@@ -153,6 +153,16 @@ export const SETTINGS_SECTIONS: CatalogSection[] = [
       'Books whose details page you opened, for the “Recently viewed” row on Home. The same on every device.',
     keywords: 'recently viewed history browsing looked at details'
   },
+  // Series figures (2026-11-26): after Recently viewed.
+  {
+    id: 'library-series-figures',
+    tab: 'Library',
+    jp: '継続率',
+    title: 'Went on to vol 2',
+    description:
+      'How many of a series’ volume 1 readers on 読書メーター went on to volume 2, for the Series tab’s sort and the kept: search, and when a series gets none. The same on every device.',
+    keywords: 'went on to vol 2 kept: series retention readers 読書メーター sort'
+  },
   {
     id: 'library-book-page',
     tab: 'Library',
@@ -659,6 +669,38 @@ export const SETTINGS_CATALOG: CatalogSetting[] = [
     title: 'Clear recently viewed',
     description: 'Empties the list on every device. The books stay in your library.',
     keywords: 'recently viewed history delete forget clear'
+  },
+  {
+    id: 'series-kept-min-readers',
+    section: 'library-series-figures',
+    title: 'Volume 1 needs at least',
+    description:
+      'A series whose volume 1 has fewer 読書メーター readers gets no figure (too few to tell).',
+    keywords: 'readers minimum volume 1 kept'
+  },
+  {
+    id: 'series-kept-neighbour',
+    section: 'library-series-figures',
+    title: 'Volume 2 needs at least, of volume 3',
+    description:
+      'A volume 2 with fewer readers than this share of volume 3’s is likely linked to a 読書メーター listing almost nobody logs: no figure.',
+    keywords: 'volume 3 listing link kept'
+  },
+  {
+    id: 'series-kept-max',
+    section: 'library-series-figures',
+    title: 'No figure above',
+    description:
+      'More readers on volume 2 than on volume 1 by this much points at a wrong link: no figure. Up to it, the figure shows as 100 %.',
+    keywords: 'maximum wrong link kept'
+  },
+  {
+    id: 'series-kept-months',
+    section: 'library-series-figures',
+    title: 'No figure for a volume 2 newer than',
+    description:
+      'Readers haven’t caught up with a new volume 2 yet. A volume 2 without a date counts as old.',
+    keywords: 'new release months kept'
   },
   {
     id: 'collection-groups-as',

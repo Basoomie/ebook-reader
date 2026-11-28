@@ -14,6 +14,7 @@ import { sourceKey, thumbnailVersion } from '../thumbnails/thumbnails';
 import { parseOrThrow, usesRegex } from './query-parser';
 import { registerRegexp } from './regexp';
 import { querySql, setPrefix, type SqlCondition } from './search-sql';
+import { figureTerms } from './series-figures';
 import {
   type BookSort,
   DEFAULT_BOOK_SORT,
@@ -427,8 +428,9 @@ function listConditions(
   const conds: SqlCondition[] = [...visibilitySql(opts)];
   if (opts.group) conds.push(groupMemberSql(opts.group, db));
   if (opts.collection) conds.push(collectionMemberSql(user.id, opts.collection));
-  if (scoped) conds.push(...querySql(scoped, user.id, db, user.deviceId ?? null));
-  conds.push(...querySql(parsed, user.id, db, user.deviceId ?? null));
+  const figures = figureTerms(db, user.id, { seriesTab: false });
+  if (scoped) conds.push(...querySql(scoped, user.id, db, user.deviceId ?? null, figures));
+  conds.push(...querySql(parsed, user.id, db, user.deviceId ?? null, figures));
   return { conds, regex: usesRegex(parsed) || (scoped !== null && usesRegex(scoped)) };
 }
 
@@ -565,7 +567,13 @@ export function planLookup(
       sql: unique.length ? `b.id IN (${unique.map(() => '?').join(',')})` : '0',
       params: unique,
     },
-    ...querySql(parsed, user.id, db, user.deviceId ?? null),
+    ...querySql(
+      parsed,
+      user.id,
+      db,
+      user.deviceId ?? null,
+      figureTerms(db, user.id, { seriesTab: false }),
+    ),
   ];
   return {
     sql: `${BOOK_SELECT} WHERE ${conds.map((c) => c.sql).join(' AND ')}`,
@@ -665,6 +673,8 @@ export interface BookFileLocation {
   missing: boolean;
   /** The Calibre book's UUID (to find a folder Calibre moved since the last index). */
   calibreUuid: string | null;
+  /** The Calibre book's id (looked up first: Calibre's uuid column has no index). */
+  calibreId?: number | null;
 }
 
 /** Where a visible book's EPUB lives, or null when the book is unknown or not visible. */
@@ -676,7 +686,8 @@ export function getBookFileFor(
   const row = db
     .prepare(
       `SELECT s.kind, s.content_hash, l.folder, s.file_path, s.file_size,
-              s.calibre_last_modified, s.calibre_uuid, (s.missing_at IS NOT NULL) AS missing
+              s.calibre_last_modified, s.calibre_uuid, s.calibre_id,
+              (s.missing_at IS NOT NULL) AS missing
          FROM books b
          JOIN book_sources s ON s.book_id = b.id AND ${SQL_CATALOG_SOURCE}
          JOIN libraries l ON l.id = b.library_id AND l.enabled = 1
@@ -691,6 +702,7 @@ export function getBookFileFor(
         file_size: number | null;
         calibre_last_modified: number | null;
         calibre_uuid: string | null;
+        calibre_id: number | null;
         missing: number;
       }
     | undefined;
@@ -704,5 +716,6 @@ export function getBookFileFor(
     calibreLastModified: row.calibre_last_modified,
     missing: row.missing === 1,
     calibreUuid: row.calibre_uuid,
+    calibreId: row.calibre_id,
   };
 }

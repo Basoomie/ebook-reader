@@ -47,6 +47,7 @@ import {
   hashSourceFile,
   Pacer,
   readSnapshotBooks,
+  readSnapshotBooksAsync,
   readSnapshotPresence,
   type SnapshotBook,
 } from '../stage1';
@@ -623,6 +624,11 @@ export class BookArrivals {
   private readonly log: (m: string) => void;
 
   private readonly settleCheckedAt = new Map<string, number>();
+  /**
+   * Each library's snapshot books, kept while its snapshot file is unchanged (2026-11-26: read
+   * afresh by every step of stage 4, 2.5 s each time on the NAS, the server stalled all run long).
+   */
+  private readonly snapshots = new Map<string, { key: string; books: Map<number, SnapshotBook> }>();
   /** The compare stage's pace was started in this process. */
   /** The library lookup file this process built, per run (null: the reader has none). */
   private lookup: { run: number; file: string | null } | null = null;
@@ -1127,8 +1133,33 @@ export class BookArrivals {
       .get(calibreId) as AddedFile | undefined;
   }
 
+  /** A snapshot file as it is now (a new snapshot is renamed over it: a new key). */
+  private snapshotKey(file: string): string | null {
+    try {
+      const st = fs.statSync(file);
+      return `${st.mtimeMs}|${st.size}|${st.ino}`;
+    } catch {
+      return null;
+    }
+  }
+
   private snapshotBooks(libraryId: string): Map<number, SnapshotBook> {
-    return readSnapshotBooks(snapshotFile(this.deps.cacheDir, libraryId));
+    const file = snapshotFile(this.deps.cacheDir, libraryId);
+    const key = this.snapshotKey(file);
+    const hit = this.snapshots.get(libraryId);
+    if (key !== null && hit?.key === key) return hit.books;
+    const books = readSnapshotBooks(file);
+    if (key !== null) this.snapshots.set(libraryId, { key, books });
+    return books;
+  }
+
+  /** Reads a changed snapshot ahead, in slices (the step's own reads then find it read). */
+  private async loadSnapshotBooks(libraryId: string): Promise<void> {
+    const file = snapshotFile(this.deps.cacheDir, libraryId);
+    const key = this.snapshotKey(file);
+    if (key === null || this.snapshots.get(libraryId)?.key === key) return;
+    const books = await readSnapshotBooksAsync(file);
+    this.snapshots.set(libraryId, { key, books });
   }
 
   /**
@@ -1183,7 +1214,7 @@ export class BookArrivals {
     const rows = this.db
       .prepare(
         `SELECT calibre_id, added_at FROM calibre_known_books INDEXED BY calibre_known_books_waiting
-         WHERE library_id = ? AND origin = 'hand' AND run_id IS NULL`,
+         WHERE library_id = ? AND origin IN ('hand', 'format') AND run_id IS NULL`,
       )
       .all(libraryId) as { calibre_id: number; added_at: number }[];
     // Books a Preview run took in were only shown: the first On run takes them in again and
@@ -1194,7 +1225,7 @@ export class BookArrivals {
           .prepare(
             `SELECT k.calibre_id, k.added_at FROM calibre_known_books k INDEXED BY calibre_known_books_waiting
              JOIN calibre_arrival_runs r ON r.id = k.run_id
-             WHERE k.library_id = ? AND k.origin = 'hand' AND k.run_id IS NOT NULL AND r.mode = 'analyse'`,
+             WHERE k.library_id = ? AND k.origin IN ('hand', 'format') AND k.run_id IS NOT NULL AND r.mode = 'analyse'`,
           )
           .all(libraryId) as { calibre_id: number; added_at: number }[]),
       );
@@ -1232,6 +1263,8 @@ export class BookArrivals {
         const libs = this.libraries();
         const asked = libs.filter((l) => this.state(l).run_now);
         for (const lib of [...asked, ...libs.filter((l) => !asked.includes(l))]) {
+          // The books added by hand are looked up in the snapshot: read ahead in slices.
+          if (this.deps.calibreDir) await this.loadSnapshotBooks(lib);
           id = this.maybeStart(lib);
           if (id !== null) break;
         }
@@ -1290,6 +1323,7 @@ export class BookArrivals {
     const lib = getLibrary(this.deps.main, libraryId);
     if (!lib) throw new RunStop('setup', 'The library is not in the reader any more');
     const libDir = path.join(this.deps.calibreDir, lib.folder);
+    await this.loadSnapshotBooks(libraryId);
     const settings = getSettings(this.db);
     const busy = this.deps.libraryBusy();
     if (busy && p.phase !== 'scan' && p.phase !== 'archives') {

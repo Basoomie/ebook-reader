@@ -158,6 +158,12 @@ const EVENTS: EventDef[] = [
     kind: 'now',
   },
   {
+    id: 'index_behind',
+    section: 'data',
+    label: 'Calibre changes haven’t reached the reader for a while (the index is behind)',
+    kind: 'now',
+  },
+  {
     id: 'snapshot_failed',
     section: 'data',
     label: 'The nightly database copy failed',

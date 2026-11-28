@@ -46,7 +46,7 @@ export async function locateCalibreFile(
   }
   let stat = await statFile(file);
   if (!stat && location.calibreUuid) {
-    const moved = await currentCalibreEpub(libraryDir, location.calibreUuid);
+    const moved = await currentCalibreEpub(libraryDir, location.calibreUuid, location.calibreId);
     if (moved) {
       try {
         file = resolveInside(libraryDir, moved);

@@ -2,7 +2,7 @@
  * GENERATED FILE, DO NOT EDIT. The storage server library search parser, bundled from
  * the web app (apps/web/src/lib/library/query/server-entry.ts).
  * Rebuild with `pnpm build:server-query` in apps/web after changing that code.
- * build: bf897a1f9cde67c4
+ * build: feb34807654c4a99
  */
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
@@ -25,12 +25,21 @@ var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: tru
 // src/lib/library/query/server-entry.ts
 var server_entry_exports = {};
 __export(server_entry_exports, {
+  DEFAULT_KEPT_RULES: () => DEFAULT_KEPT_RULES,
+  DEFAULT_SCORE_PARAMS: () => DEFAULT_SCORE_PARAMS,
   QUERY_FIELDS: () => FIELDS,
   QUERY_LIMITS: () => QUERY_LIMITS,
   QUERY_STATUSES: () => QUERY_STATUSES,
+  figureKey: () => figureKey,
+  figureMatches: () => figureMatches,
+  figureSortValue: () => figureSortValue,
+  figureTermValue: () => figureTermValue,
   parseQuery: () => parseQuery,
+  pickFigure: () => pickFigure,
+  seriesFigures: () => seriesFigures,
   usesBookState: () => usesBookState,
-  usesRegex: () => usesRegex
+  usesRegex: () => usesRegex,
+  worksFigure: () => worksFigure
 });
 module.exports = __toCommonJS(server_entry_exports);
 
@@ -64,13 +73,14 @@ var FIELDS = [
   "rating",
   "ratings",
   "readers",
+  "kept",
   "myrating",
   "status",
   "favorite",
   "on",
   "bookmeter"
 ];
-var FIELD_RE = /^(author|illustrator|series|tag|chars|level|ratings|rating|readers|myrating|status|favorite|on|bookmeter)[:：]/i;
+var FIELD_RE = /^(author|illustrator|series|tag|chars|level|ratings|rating|readers|kept|myrating|status|favorite|on|bookmeter)[:：]/i;
 var FIELD_LOOKAHEAD = Math.max(...FIELDS.map((f) => f.length)) + 1;
 function isSpace(ch) {
   return ch !== void 0 && /\s/.test(ch);
@@ -276,12 +286,54 @@ function parseCountRange(raw, start, end, field) {
     );
   }
 }
+var KEPT_HELP = "Use kept:>=70, kept:<50 or kept:50-80 (percent).";
+function parseKeptRange(raw, start, end) {
+  const pct = (v) => {
+    const m = /^(\d{1,3})[%％]?$/.exec(v);
+    if (!m) return null;
+    const n = Number(m[1]);
+    return n <= 100 ? n : null;
+  };
+  if (raw === "") throw new QueryError(`kept: needs a percent. ${KEPT_HELP}`, start, end);
+  const range = /^([^-]+)-([^-]+)$/.exec(raw);
+  if (range) {
+    const low = pct(range[1]);
+    const high = pct(range[2]);
+    if (low === null || high === null) {
+      throw new QueryError(
+        `"${raw}" isn't a range of percents (0 to 100). ${KEPT_HELP}`,
+        start,
+        end
+      );
+    }
+    if (low > high) {
+      throw new QueryError("The first number of a range must be the smaller one.", start, end);
+    }
+    return { min: low, max: high };
+  }
+  const compare = /^(<=|>=|<|>|=)?(.*)$/.exec(raw);
+  const value = pct(compare[2]);
+  if (value === null)
+    throw new QueryError(`"${raw}" isn't a percent (0 to 100). ${KEPT_HELP}`, start, end);
+  switch (compare[1]) {
+    case "<":
+      return { min: null, max: value - 1 };
+    case "<=":
+      return { min: null, max: value };
+    case ">":
+      return { min: value + 1, max: null };
+    case ">=":
+      return { min: value, max: null };
+    default:
+      return { min: value, max: value };
+  }
+}
 function parseWordList(raw) {
   return raw.split(",").map((w) => w.trim().toLowerCase()).filter((w) => w !== "");
 }
 function parseField(s, field, negated, start) {
   const valueStart = s.pos;
-  if (field === "chars" || field === "level" || field === "rating" || field === "ratings" || field === "readers" || field === "myrating" || field === "status" || field === "favorite" || field === "on" || field === "bookmeter") {
+  if (field === "chars" || field === "level" || field === "rating" || field === "ratings" || field === "readers" || field === "kept" || field === "myrating" || field === "status" || field === "favorite" || field === "on" || field === "bookmeter") {
     const raw = s.readBare(false);
     const end = s.pos;
     if (field === "chars")
@@ -292,6 +344,8 @@ function parseField(s, field, negated, start) {
       return { type: field, negated, start, end, ...parseStarsRange(raw, start, end, field) };
     if (field === "ratings" || field === "readers")
       return { type: field, negated, start, end, ...parseCountRange(raw, start, end, field) };
+    if (field === "kept")
+      return { type: "kept", negated, start, end, ...parseKeptRange(raw, start, end) };
     const words = parseWordList(raw);
     if (field === "on") {
       if (words.length === 1 && words[0] === "device") {
@@ -463,14 +517,137 @@ function usesRegex(query) {
     (t) => t.type === "any" ? t.matcher.kind === "regex" : t.type === "field" && t.matchers.some((m) => m.kind === "regex")
   );
 }
+
+// src/lib/library/series-figures.ts
+var DEFAULT_KEPT_RULES = {
+  minReaders: 50,
+  neighbourPercent: 70,
+  maxPercent: 120,
+  minMonths: 6
+};
+var DEFAULT_SCORE_PARAMS = { m: 4.1, c: 20 };
+var MONTH = 30 * 24 * 60 * 60 * 1e3;
+function figureKey(library, series) {
+  return `${library}:${series}`;
+}
+function isVolume(index, n) {
+  return Math.abs(index - n) < 1e-9;
+}
+function maxOf(a, b) {
+  if (a === null) return b;
+  if (b === null) return a;
+  return Math.max(a, b);
+}
+function seriesFigures(volumes, rules, now) {
+  const by = /* @__PURE__ */ new Map();
+  for (const v of volumes) {
+    let n;
+    if (isVolume(v.index, 1)) n = 1;
+    else if (isVolume(v.index, 2)) n = 2;
+    else if (isVolume(v.index, 3)) n = 3;
+    else continue;
+    const key = figureKey(v.library, v.series);
+    let c = by.get(key);
+    if (!c) {
+      c = { stars: null, r1: null, r2: null, r3: null, pub2: null };
+      by.set(key, c);
+    }
+    if (n === 1) {
+      c.r1 = maxOf(c.r1, v.readers);
+      if (v.ratingCount !== null && v.ratingX10 !== null && v.ratingScore !== null) {
+        const s = c.stars;
+        if (!s || v.ratingCount > (s.ratingCount ?? 0) || v.ratingCount === s.ratingCount && v.id < s.id) {
+          c.stars = v;
+        }
+      }
+    } else if (n === 2) {
+      c.r2 = maxOf(c.r2, v.readers);
+      c.pub2 = maxOf(c.pub2, v.publishedAt);
+    } else {
+      c.r3 = maxOf(c.r3, v.readers);
+    }
+  }
+  const out = /* @__PURE__ */ new Map();
+  for (const [key, c] of by) {
+    const s = c.stars;
+    out.set(key, {
+      rating: s && s.ratingX10 !== null && s.ratingCount !== null && s.ratingScore !== null ? { avg: s.ratingX10 / 10, count: s.ratingCount, score: s.ratingScore } : null,
+      readers: c.r1,
+      kept: keptOf(c, rules, now)
+    });
+  }
+  return out;
+}
+function keptOf(c, rules, now) {
+  if (c.r1 === null || c.r2 === null || c.r1 <= 0 || c.r1 < rules.minReaders) return null;
+  if (c.pub2 !== null && c.pub2 > now - rules.minMonths * MONTH) return null;
+  if (c.r3 !== null && c.r3 > 0 && c.r2 * 100 < rules.neighbourPercent * c.r3) return null;
+  const percent = c.r2 * 100 / c.r1;
+  if (percent > rules.maxPercent) return null;
+  return Math.min(100, Math.round(percent));
+}
+function pickFigure(figures) {
+  let best = null;
+  for (const f of figures) {
+    if (!f) continue;
+    if (!best || (f.readers ?? -1) > (best.readers ?? -1) || (f.readers ?? -1) === (best.readers ?? -1) && (f.rating?.count ?? -1) > (best.rating?.count ?? -1)) {
+      best = f;
+    }
+  }
+  return best;
+}
+function worksFigure(works, params) {
+  let count = 0;
+  let weighted = 0;
+  let readers = null;
+  for (const w of works) {
+    if (w.rating && w.rating.count > 0) {
+      count += w.rating.count;
+      weighted += w.rating.avg * w.rating.count;
+    }
+    if (w.readers !== null) readers = (readers ?? 0) + w.readers;
+  }
+  const rating = count > 0 ? {
+    avg: Math.round(weighted * 10 / count) / 10,
+    count,
+    score: Math.round(1e3 * (params.c * params.m + weighted) / (params.c + count))
+  } : null;
+  return { rating, readers, kept: null };
+}
+function figureSortValue(f, key) {
+  if (!f) return null;
+  if (key === "rating") return f.rating?.score ?? null;
+  if (key === "ratings") return f.rating?.count ?? null;
+  if (key === "readers") return f.readers;
+  return f.kept;
+}
+function figureTermValue(f, key) {
+  if (!f) return null;
+  if (key === "rating") return f.rating ? Math.round(f.rating.avg * 10) : null;
+  return figureSortValue(f, key);
+}
+function figureMatches(value, min, max, negated) {
+  if (value === null) return false;
+  const inside = (min === null || value >= min) && (max === null || value <= max);
+  return negated ? !inside : inside;
+}
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
+  DEFAULT_KEPT_RULES,
+  DEFAULT_SCORE_PARAMS,
   QUERY_FIELDS,
   QUERY_LIMITS,
   QUERY_STATUSES,
+  figureKey,
+  figureMatches,
+  figureSortValue,
+  figureTermValue,
   parseQuery,
+  pickFigure,
+  seriesFigures,
   usesBookState,
-  usesRegex
+  usesRegex,
+  worksFigure
 });
 /**
  * @license BSD-3-Clause

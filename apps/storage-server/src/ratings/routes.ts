@@ -61,8 +61,12 @@ export function createRatingsRouter(ratings: StoreRatings | null): Router {
 
   // What the pages show. 読書メーター had its own switch until its link fix (2026-11-25); it is
   // fetched with the other stores now, so its numbers are always shown when there are any.
+  // `score`: the Rating score's pull, for the offline Library's author figures (series-figures).
   router.get('/ratings/features', (_req, res) => {
-    res.json({ bookmeter: ratings !== null });
+    res.json({
+      bookmeter: ratings !== null,
+      score: ratings ? readScoreParams(ratings.db) : null,
+    });
   });
 
   router.get('/ratings/progress', (_req, res) => {
@@ -74,13 +78,15 @@ export function createRatingsRouter(ratings: StoreRatings | null): Router {
     });
   });
 
-  router.put('/ratings/settings', (req, res) => {
+  router.put('/ratings/settings', (req, res, next) => {
     const service = need();
     const before = service.settings();
     try {
       const settings = saveRatingSettings(service.db, (req.body ?? {}) as Record<string, unknown>);
-      service.settingsChanged(before, settings);
-      res.json({ settings, score: readScoreParams(service.db) });
+      // A changed score setting is worked out in slices before the answer.
+      service
+        .settingsChanged(before, settings)
+        .then(() => res.json({ settings, score: readScoreParams(service.db) }), next);
     } catch (err) {
       if (err instanceof RatingSettingsError)
         throw new ApiError(400, 'invalid_setting', err.message);

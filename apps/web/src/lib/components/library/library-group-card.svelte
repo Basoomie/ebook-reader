@@ -20,6 +20,11 @@
   export let infoLine = true;
   /** Tags: a "⋯" button for the tag's cover rule. */
   export let menu = false;
+  /**
+   * The tab's figure while it is sorted by one (series-figures.ts; store-ratings.ts
+   * groupFigureText): a badge on the cover in the grid, first in the info line in the list.
+   */
+  export let figureText: string | null = null;
 
   const dispatch = createEventDispatcher<{ reveal: CatalogGroup; menu: CatalogGroup }>();
 
@@ -41,8 +46,14 @@
 {#if layout === 'grid'}
   <li class="c-card min-w-0" data-testid="group-card" data-group={group.name ?? ''}>
     <a class="c-focus block rounded-sm" {href} on:click={onClick} data-sveltekit-noscroll>
-      <div class="c-cover aspect-[2/3] w-full overflow-hidden rounded-sm">
+      <div class="c-cover relative aspect-[2/3] w-full overflow-hidden rounded-sm">
         <CoverCollage {tiles} />
+        {#if figureText}
+          <span
+            class="c-badge absolute bottom-2 left-2 px-2 text-[0.7rem]"
+            data-testid="group-figure">{figureText}</span
+          >
+        {/if}
       </div>
       <div class="mt-2 line-clamp-2 font-mincho text-[15px] font-bold leading-snug">
         {groupTitle(group)}
@@ -89,7 +100,8 @@
         <div class="line-clamp-2 font-mincho font-bold">{groupTitle(group)}</div>
         {#if infoLine}
           <div class="truncate text-sm text-c-muted" data-testid="group-info">
-            {details.join(' · ')}
+            {#if figureText}<span data-testid="group-figure">{figureText}</span> ·
+            {/if}{details.join(' · ')}
           </div>
         {/if}
       </div>

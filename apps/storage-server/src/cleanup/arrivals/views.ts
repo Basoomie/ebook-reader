@@ -304,14 +304,14 @@ export function arrivalsList(
     const total = (
       db
         .prepare(
-          `SELECT COUNT(*) AS n FROM calibre_known_books WHERE origin = 'hand'${libraryId ? ' AND library_id = ?' : ''}`,
+          `SELECT COUNT(*) AS n FROM calibre_known_books WHERE origin IN ('hand', 'format')${libraryId ? ' AND library_id = ?' : ''}`,
         )
         .get(...L) as { n: number }
     ).n;
     const items = db
       .prepare(
-        `SELECT calibre_id, calibre_uuid, added_at, settled_at, run_id FROM calibre_known_books
-         WHERE origin = 'hand'${libraryId ? ' AND library_id = ?' : ''} ORDER BY added_at DESC LIMIT ? OFFSET ?`,
+        `SELECT calibre_id, calibre_uuid, origin, added_at, settled_at, run_id FROM calibre_known_books
+         WHERE origin IN ('hand', 'format')${libraryId ? ' AND library_id = ?' : ''} ORDER BY added_at DESC LIMIT ? OFFSET ?`,
       )
       .all(...L, lim, off);
     return { total, items };

@@ -23,12 +23,13 @@
  * The batch holds the index of both libraries while claimed, and the next batch waits until both
  * indexes took the last one in.
  */
-import { createHash, randomUUID } from 'crypto';
+import { randomUUID } from 'crypto';
 import type Database from 'better-sqlite3';
-import fs from 'fs/promises';
 import path from 'path';
+import { sha256File } from '../file-hash';
 import { snapshotFile } from '../../calibre/indexer';
 import { getIndexState, getLibrary } from '../../calibre/libraries';
+import { lookupLiveBook } from '../../calibre/live-book';
 import {
   METADATA_DB,
   openSourceDatabase,
@@ -78,6 +79,8 @@ export interface MoveEvidence {
 /** What the sidecar keeps on an item (batch_items.move_json). */
 export interface MoveItemNote {
   added?: { calibreId: number; uuid: string };
+  /** apply: the copy an earlier batch left in the new library for this book (noteLeftovers). */
+  leftover?: { calibreId: number; uuid: string };
   /** The fields the sidecar listed on the old copy (written back on Undo when changed). */
   fields?: Record<string, unknown>;
   fixed?: string[];
@@ -87,6 +90,7 @@ export interface MoveItemNote {
 export interface SidecarMoveItem extends SidecarItem {
   move: {
     added: { calibreId: number; uuid: string } | null;
+    leftover?: { calibreId: number; uuid: string } | null;
     /** undo: the moved copy in the new library, and the fields it had when it arrived. */
     movedCopy?: { calibreId: number; uuid: string } | null;
     fieldsAtMove?: Record<string, unknown> | null;
@@ -100,45 +104,32 @@ const APPLY_STEPS: Record<string, ItemState[]> = {
   tagged: ['removed', 'skipped', 'failed'],
 };
 
-const sha256File = async (file: string): Promise<string> => {
-  const hash = createHash('sha256');
-  const handle = await fs.open(file, 'r');
-  try {
-    for await (const chunk of handle.createReadStream()) hash.update(chunk as Buffer);
-  } finally {
-    await handle.close().catch(() => {});
-  }
-  return hash.digest('hex');
-};
-
-/** A book as Calibre's live metadata.db holds it now (read-only, one query by UUID). */
-function liveBook(
+/**
+ * A book as Calibre's live metadata.db holds it now (read-only), by its Calibre id first and on
+ * the live lookup's thread (calibre/live-book.ts): the UUID search read the whole table on the
+ * server's main thread, 6-10 s per book on the NAS (the Library showed offline, 2026-11-28).
+ */
+async function liveBook(
   libraryDir: string,
   uuid: string,
-): { id: number; path: string; epub: string | null; hasCover: boolean; sort: string } | null {
+  calibreId: number | null,
+): Promise<{
+  id: number;
+  path: string;
+  epub: string | null;
+  hasCover: boolean;
+  sort: string;
+} | null> {
   try {
-    const db = openSourceDatabase(path.join(libraryDir, METADATA_DB));
-    try {
-      db.pragma('busy_timeout = 3000');
-      const b = db
-        .prepare('SELECT id, path, has_cover, sort FROM books WHERE uuid = ?')
-        .get(uuid) as
-        | { id: number; path: string; has_cover: number; sort: string | null }
-        | undefined;
-      if (!b) return null;
-      const d = db
-        .prepare(`SELECT name FROM data WHERE book = ? AND format = 'EPUB' LIMIT 1`)
-        .get(b.id) as { name: string } | undefined;
-      return {
-        id: b.id,
-        path: b.path,
-        epub: d ? `${b.path}/${d.name}.epub` : null,
-        hasCover: b.has_cover === 1,
-        sort: b.sort ?? '',
-      };
-    } finally {
-      db.close();
-    }
+    const b = await lookupLiveBook(path.join(libraryDir, METADATA_DB), { uuid, calibreId });
+    if (!b) return null;
+    return {
+      id: b.id,
+      path: b.path,
+      epub: b.formats.get('EPUB') ?? null,
+      hasCover: b.hasCover,
+      sort: b.sort,
+    };
   } catch {
     return null;
   }
@@ -283,7 +274,49 @@ export class MoveBatches {
     this.db
       .prepare('UPDATE batches SET target_library_id = ? WHERE id = ?')
       .run(targetId, batch.id);
+    this.noteLeftovers(batch.id, libraryId, targetId);
     return { batch: this.batches.get(batch.id), reason: null };
+  }
+
+  /**
+   * A book whose earlier move failed after its copy was added and checked in the new library
+   * (the old copy could not be removed: live 2026-11-28, Calibre locked by a reader of
+   * metadata.db) still has that copy there. Its item in the new batch carries it
+   * (`move_json.leftover`) and the sidecar uses it, checked again, instead of adding a second
+   * copy. Only failed items count: a copy taken out again after a failure is never reported as
+   * added; one that is gone by now is added afresh (the sidecar looks).
+   */
+  private noteLeftovers(batchId: string, libraryId: string, targetId: string): void {
+    const left = this.db
+      .prepare(
+        `SELECT c.calibre_uuid AS uuid, i.move_json FROM batch_items i
+         JOIN batches b ON b.id = i.batch_id
+         JOIN proposed_changes c ON c.id = i.change_id
+         WHERE b.stage = ${MOVE_STAGE} AND b.kind = 'apply' AND b.id <> ? AND b.library_id = ?
+           AND b.target_library_id = ? AND i.state = 'failed'
+           AND json_extract(i.move_json, '$.added') IS NOT NULL
+         ORDER BY i.id`,
+      )
+      .all(batchId, libraryId, targetId) as { uuid: string; move_json: string }[];
+    if (left.length === 0) return;
+    const byUuid = new Map<string, { calibreId: number; uuid: string }>();
+    for (const r of left) {
+      const added = (JSON.parse(r.move_json) as MoveItemNote).added;
+      if (added) byUuid.set(r.uuid, added); // the latest failed item wins
+    }
+    const items = this.db
+      .prepare(
+        `SELECT i.id, c.calibre_uuid AS uuid FROM batch_items i
+         JOIN proposed_changes c ON c.id = i.change_id WHERE i.batch_id = ?`,
+      )
+      .all(batchId) as { id: number; uuid: string }[];
+    const set = this.db.prepare('UPDATE batch_items SET move_json = ? WHERE id = ?');
+    this.db.transaction(() => {
+      for (const it of items) {
+        const leftover = byUuid.get(it.uuid);
+        if (leftover) set.run(JSON.stringify({ leftover }), it.id);
+      }
+    })();
   }
 
   /** The batch as the sidecar gets it (its two libraries are added by BatchService). */
@@ -323,7 +356,7 @@ export class MoveBatches {
           sha256: r.export_sha256 ?? '',
           kept: { calibreId: 0, uuid: '' },
           addTags: [],
-          move: { added: note.added ?? null },
+          move: { added: note.added ?? null, leftover: note.leftover ?? null },
         };
       });
       return { ...base, items, stopAfterFailures: getSettings(this.db).move.stopAfterFailures };
@@ -391,16 +424,18 @@ export class MoveBatches {
       throw new BatchError(409, 'bad_batch', 'Not a move batch');
     const item = this.db
       .prepare(
-        `SELECT i.export_sha256, c.calibre_uuid FROM batch_items i JOIN proposed_changes c ON c.id = i.change_id
+        `SELECT i.export_sha256, c.calibre_uuid, c.calibre_id FROM batch_items i JOIN proposed_changes c ON c.id = i.change_id
          WHERE i.id = ? AND i.batch_id = ?`,
       )
-      .get(itemId, batchId) as { export_sha256: string | null; calibre_uuid: string } | undefined;
+      .get(itemId, batchId) as
+      | { export_sha256: string | null; calibre_uuid: string; calibre_id: number | null }
+      | undefined;
     if (!item) throw new BatchError(404, 'not_found', 'No such item in this batch');
     const problems: string[] = [];
     const fromDir = this.libraryDir(batch.libraryId);
     const toDir = this.libraryDir(batch.targetLibraryId);
-    const from = liveBook(fromDir, item.calibre_uuid);
-    const to = liveBook(toDir, copy.uuid);
+    const to = await liveBook(toDir, copy.uuid, copy.calibreId);
+    const from = await liveBook(fromDir, item.calibre_uuid, item.calibre_id);
     if (!to || to.id !== copy.calibreId) {
       problems.push('The new library does not show the added copy yet');
       return { ok: false, problems };

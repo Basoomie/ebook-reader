@@ -3,15 +3,19 @@
  * its own read-only connection, so a pattern that never finishes can be stopped by
  * terminating the thread (search-runner.ts) while the server keeps answering. The
  * database is in WAL mode, so this reader sees every committed write.
+ *
+ * It also works out the series and author figures (series-figures.ts) for the main thread.
  */
 import Database from 'better-sqlite3';
 import { parentPort, workerData } from 'worker_threads';
 import { registerRegexp } from './regexp';
+import { computeFigures, type FiguresJob } from './series-figures';
 
 interface Job {
   id: number;
-  sql: string;
-  params: unknown[];
+  sql?: string;
+  params?: unknown[];
+  figures?: FiguresJob;
 }
 
 const db = new Database((workerData as { file: string }).file, {
@@ -35,7 +39,11 @@ function statement(sql: string): Database.Statement {
 
 parentPort!.on('message', (job: Job) => {
   try {
-    parentPort!.postMessage({ id: job.id, rows: statement(job.sql).all(...job.params) });
+    if (job.figures) {
+      parentPort!.postMessage({ id: job.id, figures: computeFigures(db, job.figures) });
+      return;
+    }
+    parentPort!.postMessage({ id: job.id, rows: statement(job.sql!).all(...(job.params ?? [])) });
   } catch (err) {
     parentPort!.postMessage({ id: job.id, error: (err as Error).message });
   }

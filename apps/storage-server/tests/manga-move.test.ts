@@ -19,7 +19,13 @@ import { memoryOpener, readWhole, sameEpubContents } from '../src/cleanup/move/e
 import { recentPaceLeftMs } from '../src/cleanup/move/pace';
 import { CALIBRE_AI_STAGES, rekeyCleanupState } from '../src/cleanup/move/rekey';
 import { retryMoveRemove } from '../src/cleanup/move/move-batches';
-import { getMoveState, moveArrivalsAnalysisId, setMoveMode } from '../src/cleanup/move/state';
+import { ARRIVALS_WAIT } from '../src/cleanup/move/pass';
+import {
+  getMoveState,
+  moveArrivalsAnalysisId,
+  saveMoveProgress,
+  setMoveMode,
+} from '../src/cleanup/move/state';
 import { getSettings, updateSettings } from '../src/cleanup/settings';
 import type { LibraryFixture } from './helpers/calibre-fixture';
 import { type CleanupEnv, healthyHeartbeat, makeCleanupEnv } from './helpers/cleanup-env';
@@ -159,7 +165,7 @@ describe('moving books to the manga library', () => {
          VALUES (?, 'ok', 'k', 'v1', ?, 0, ?, ?)`,
       )
       .run(bookId, chars, Date.now(), fileBytes);
-  const heartbeat = (version = '1.6.0') =>
+  const heartbeat = (version = '1.8.2') =>
     request(env.app)
       .post('/api/v1/cleanup-apply/heartbeat')
       .set('Authorization', apply)
@@ -396,7 +402,7 @@ describe('moving books to the manga library', () => {
     // An older sidecar never gets a move batch.
     await heartbeat('1.5.0');
     await runPass();
-    expect(getMoveState(env.cleanupDb).progress.write.waiting).toMatch(/older than 1\.6\.0/);
+    expect(getMoveState(env.cleanupDb).progress.write.waiting).toMatch(/older than 1\.8\.2/);
     await heartbeat();
     await runPass();
     const { batch } = await claimAndSave();
@@ -760,6 +766,118 @@ describe('moving books to the manga library', () => {
     p = env.service.arrivals.currentRun()!.p;
     expect(p.move).toMatchObject({ tagged: 1, auto: 0, held: { no_count: 1 } });
     expect(proposed(run2)).toHaveLength(1);
+  });
+
+  it('a book whose old copy could not be removed is moved again with the copy it left, never a second one', async () => {
+    const { A, B, epubA } = await addBooks();
+    env.service.move.setMode('analyse');
+    await runPass();
+    env.service.move.setVerdict(A.uuid, 'right');
+    env.service.move.setVerdict(B.uuid, 'right');
+    env.service.move.choose(
+      env.service.move.spotList().find((b) => b.uuid === B.uuid)!.changeId,
+      'keep',
+    );
+    env.service.move.setMode('on');
+    // A 1.8.1 sidecar would add a second copy: it gets no move batch.
+    await heartbeat('1.8.1');
+    await runPass();
+    expect(getMoveState(env.cleanupDb).progress.write.waiting).toMatch(/older than 1\.8\.2/);
+    await heartbeat();
+    await runPass();
+    const first = (await claimAndSave()).batch;
+    const item = first.items[0];
+    expect(item.uuid).toBe(A.uuid);
+    expect(item.move.leftover).toBeNull();
+    await report(first.id, item.itemId, { step: 'verified' });
+    await report(first.id, item.itemId, {
+      step: 'exported',
+      quarantineDir: '/quarantine/x/1',
+      exportSha256: sha(epubA),
+    });
+    const copy = await addToManga(A.id, epubA);
+    await report(first.id, item.itemId, { step: 'tagged', calibreId: copy.id, uuid: copy.uuid });
+    // Live 2026-11-28: Calibre was locked, the remove refused; the copy stays in manga-library.
+    await report(first.id, item.itemId, {
+      step: 'failed',
+      detail: 'Calibre still lists the book after remove',
+    });
+    await request(env.app)
+      .post(`/api/v1/cleanup-apply/batches/${first.id}/finish`)
+      .set('Authorization', apply)
+      .send({})
+      .expect(200);
+
+    // (Its only book failed: the move pauses; resumed.) The next round proposes A again; its
+    // item carries the copy it left.
+    expect(getMoveState(env.cleanupDb).pausedReason).toBe('batch_failed');
+    env.service.move.resume();
+    const p = getMoveState(env.cleanupDb).progress;
+    saveMoveProgress(env.cleanupDb, { ...p, phase: 'done', snapshotMtimeMs: 1 });
+    await runPass();
+    const claimed = await claimAndSave();
+    const second = claimed.batch;
+    expect(second).not.toBeNull();
+    expect(second.id).not.toBe(first.id);
+    expect(second.items.map((i: { uuid: string }) => i.uuid)).toEqual([A.uuid]);
+    expect(second.items[0].move.leftover).toEqual({ calibreId: copy.id, uuid: copy.uuid });
+  });
+
+  it('a new round after done counts only its own books, and waits while a new-arrivals run is going', async () => {
+    const { T } = await addBooks();
+    const lib = env.libraryId();
+    env.service.move.setMode('analyse');
+    await runPass();
+    const first = getMoveState(env.cleanupDb).progress;
+    expect(first.phase).toBe('spot');
+    expect(first.counts.auto).toBe(2);
+    // A round ended, the bar's start from it, and a book skipped since (Calibre changed it):
+    // the next round proposes it again.
+    env.cleanupDb
+      .prepare(
+        `UPDATE proposed_changes SET state = 'skipped' WHERE stage = ${MOVE_STAGE} AND calibre_uuid = ?`,
+      )
+      .run(T.uuid);
+    const p = { ...first, phase: 'done' as const, snapshotMtimeMs: 1 };
+    p.write = { ...p.write, startedAt: 5, movedAtStart: 7 };
+    saveMoveProgress(env.cleanupDb, p);
+
+    // A new-arrivals run of the library: the pass waits, nothing is selected.
+    const now = Date.now();
+    const run = Number(
+      env.cleanupDb
+        .prepare(
+          `INSERT INTO calibre_arrival_runs (trigger, mode, state, phase, started_at, progress_json, library_id)
+           VALUES ('now', 'on', 'running', 'add', ?, '{}', ?)`,
+        )
+        .run(now, lib).lastInsertRowid,
+    );
+    env.cleanupDb
+      .prepare('UPDATE calibre_arrivals_state SET current_run = ? WHERE library_id = ?')
+      .run(run, lib);
+    expect(await runPass()).toBe('idle');
+    let st = getMoveState(env.cleanupDb).progress;
+    expect(st.phase).toBe('done');
+    expect(st.write.waiting).toBe(ARRIVALS_WAIT);
+
+    // The run ends: the round is selected, counted on its own (T once, not added to the last).
+    env.cleanupDb
+      .prepare('UPDATE calibre_arrivals_state SET current_run = NULL WHERE library_id = ?')
+      .run(lib);
+    env.cleanupDb
+      .prepare(`UPDATE calibre_arrival_runs SET state = 'done', finished_at = ? WHERE id = ?`)
+      .run(now, run);
+    await runPass();
+    st = getMoveState(env.cleanupDb).progress;
+    expect(st.phase).toBe('spot');
+    expect(st.run).toBe(first.run);
+    expect(st.write.waiting).toBeNull();
+    expect(st.write.movedAtStart).toBeNull();
+    expect(st.write.startedAt).toBeNull();
+    expect(st.counts.auto).toBe(2);
+    expect(st.counts.held).toEqual({ real_text: 1, no_epub: 1 });
+    expect(st.counts.withData).toBe(1);
+    expect(env.service.move.heldList(lib, st.run).total).toBe(2);
   });
 
   it('a field batch written before the move is not undone on a moved book', async () => {

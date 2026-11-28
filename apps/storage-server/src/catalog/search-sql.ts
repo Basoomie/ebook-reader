@@ -8,6 +8,9 @@
  * - chars: books.char_count; books without a count never match (also when negated).
  * - rating/ratings/readers: the store ratings' columns (migration 33), myrating: books.rating;
  *   books without a value never match (also when negated).
+ * - kept: (any tab) and, on the Series tab, rating:/ratings:/readers: test the series' figures
+ *   (series-figures.ts): the matching series as one JSON list. Without figures, kept: matches
+ *   nothing.
  * - level: books.natively_level (the Natively level, migration 32); books without one never
  *   match (also when negated).
  * - status/favorite: the user's own book-state records (sync_records primary key
@@ -59,6 +62,14 @@ export function setPrefix(count: number): '' | '+' {
 export interface SqlCondition {
   sql: string;
   params: unknown[];
+}
+
+/**
+ * Terms on series and author figures (series-figures.ts `figureTerms`): the condition for such a
+ * term, or null for any other term.
+ */
+export interface FigureTermSql {
+  termSql(term: QueryTerm): SqlCondition | null;
 }
 
 /** A LIKE pattern (escape character "!") matching `term` anywhere, with %, _ and ! taken literally. */
@@ -245,7 +256,12 @@ export function termSql(
   userId: string,
   db?: Database.Database,
   deviceId: string | null = null,
+  figures?: FigureTermSql,
 ): SqlCondition {
+  const figure = figures?.termSql(term);
+  if (figure) return figure;
+  // kept: needs the figures; a caller without them lists nothing for it.
+  if (term.type === 'kept') return { sql: '0', params: [] };
   if (term.type === 'chars') {
     const range = charsSql(term.min, term.max);
     // A book without a count is never included, negated or not.
@@ -308,8 +324,9 @@ export function querySql(
   userId: string,
   db?: Database.Database,
   deviceId: string | null = null,
+  figures?: FigureTermSql,
 ): SqlCondition[] {
-  return query.terms.map((t) => termSql(t, userId, db, deviceId));
+  return query.terms.map((t) => termSql(t, userId, db, deviceId, figures));
 }
 
 /**

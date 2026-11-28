@@ -262,9 +262,22 @@ export function parseBookSort(key: unknown, dir: unknown): BookSort | null | und
   return { key: k as BookSortKey, dir: d as SortDir };
 }
 
-/** Group tabs (series, authors, tags): sorted in memory (groups.ts). */
-export type GroupSortKey = 'newest' | 'name' | 'count';
-export const GROUP_SORT_KEYS: GroupSortKey[] = ['newest', 'name', 'count'];
+/**
+ * Group tabs (series, authors, tags): sorted in memory (groups.ts). The figure sorts
+ * (series-figures.ts): a series' volume 1 and "Went on to vol 2", an author's works; groups
+ * without the figure (and tags, which have none) come last, by name.
+ */
+export type GroupSortKey = 'newest' | 'name' | 'count' | 'rating' | 'ratings' | 'readers' | 'kept';
+export const GROUP_SORT_KEYS: GroupSortKey[] = [
+  'newest',
+  'name',
+  'count',
+  'rating',
+  'ratings',
+  'readers',
+  'kept',
+];
+export const GROUP_FIGURE_KEYS: readonly GroupSortKey[] = ['rating', 'ratings', 'readers', 'kept'];
 
 export interface GroupSort {
   key: GroupSortKey;

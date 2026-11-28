@@ -6,6 +6,8 @@
 
 /** Shapes of the storage server's /api/v1 catalog responses (WP2, WP6, WP3b). */
 
+import type { SeriesFigure } from './series-figures';
+
 /** Character counts of a library's books (servers before WP3b don't send them). */
 export interface CatalogCountTotals {
   counted: number;
@@ -180,6 +182,11 @@ export interface CatalogGroup {
   bookIds?: string[];
   /** Authors, tags and "No series": up to four collage tiles. */
   tiles?: GroupTile[];
+  /**
+   * Series: volume 1's stars and readers and "Went on to vol 2"; authors: over their works
+   * (series-figures.ts). Missing for tags, without any figure, and from older servers.
+   */
+  figures?: SeriesFigure;
 }
 
 /** A card of the Collections page (WP8b, GET /collections/cards). */

@@ -29,7 +29,7 @@ import {
   syncDiscoveredLibraries,
   updateIndexState,
 } from './libraries';
-import { hasJournal, snapshotMetadataDb, SnapshotSkipped } from './snapshot';
+import { describeLock, hasJournal, snapshotMetadataDb, SnapshotSkipped } from './snapshot';
 import { isWritable, listSubfolders, METADATA_DB, resolveInside, statFile } from './source-fs';
 
 export const SNAPSHOT_DIRNAME = 'calibre';
@@ -82,6 +82,14 @@ export async function coverSigOf(libDir: string, bookPath: string): Promise<stri
 
 /** Covers read per poll by the background pass that records each cover's size and mtime. */
 export const COVER_SIGS_PER_POLL = 300;
+
+/** An up-to-date library's checked_at is written again after this long (not every poll). */
+const CHECKED_REFRESH_MS = 5 * 60_000;
+
+/** "22:20Z" (UTC, as the logs). */
+function clockUtc(ms: number): string {
+  return new Date(ms).toISOString().slice(11, 16) + 'Z';
+}
 
 export function snapshotFile(cacheDir: string, libraryId: string): string {
   return path.join(cacheDir, SNAPSHOT_DIRNAME, `${libraryId}.db`);
@@ -274,13 +282,28 @@ export class CalibreIndexer {
       if (!stat) return; // Discovery marks it unavailable on the next poll.
 
       const unchanged = state.sourceMtimeMs === stat.mtimeMs && state.sourceSize === stat.size;
-      if (unchanged && state.reindexRequestedAt === null) return;
+      if (unchanged && state.reindexRequestedAt === null) {
+        // Up to date: say so (2026-11-26: indexed_at alone can't tell this from a stuck index).
+        if (
+          state.behindSince !== null ||
+          state.lastProblem !== null ||
+          state.checkedAt === null ||
+          startedAt - state.checkedAt > CHECKED_REFRESH_MS
+        )
+          updateIndexState(this.db, lib.id, {
+            checkedAt: startedAt,
+            behindSince: null,
+            failures: 0,
+            lastProblem: null,
+          });
+        return;
+      }
+      // A change not taken in yet: behind since the first poll that saw it.
+      if (state.behindSince === null) updateIndexState(this.db, lib.id, { behindSince: startedAt });
       if (this.opts.holdIngest?.(lib.id)) {
-        this.noteProblem(
-          lib.id,
-          `${label}: waiting for the library cleanup's batch to finish`,
-          false,
-        );
+        const why = "waiting for the library cleanup's batch to finish";
+        if (state.lastProblem !== why) updateIndexState(this.db, lib.id, { lastProblem: why });
+        this.noteProblem(lib.id, `${label}: ${why}`, false);
         return;
       }
 
@@ -294,8 +317,9 @@ export class CalibreIndexer {
         const maxWait = this.config.maxSettleWaitSeconds * 1000;
         const wanted = this.opts.wantsIngest?.(lib.id) ?? false;
         if (!wanted && (maxWait <= 0 || Date.now() - since < maxWait)) {
-          if (state.status !== 'settling')
-            updateIndexState(this.db, lib.id, { status: 'settling' });
+          const why = `waiting for metadata.db to stay unchanged for ${this.config.settleSeconds} s (Calibre is writing)`;
+          if (state.status !== 'settling' || state.lastProblem !== why)
+            updateIndexState(this.db, lib.id, { status: 'settling', lastProblem: why });
           return;
         }
         forced = true;
@@ -332,6 +356,7 @@ export class CalibreIndexer {
         maxMissingPercent: this.config.maxMissingPercent,
         allowMassMissing: before.allowMassMissing || state.allowMassMissing,
         coverSig: (bookPath) => coverSigOf(libDir, bookPath),
+        coverReadsAtOnce: this.config.coverReadsAtOnce,
       });
 
       const now = Date.now();
@@ -348,6 +373,10 @@ export class CalibreIndexer {
         booksMissing: result.missing,
         booksSkipped: result.skippedNoUuid,
         allowMassMissing: false,
+        checkedAt: now,
+        behindSince: null,
+        failures: 0,
+        lastProblem: null,
       });
       // A reindex requested while this run was going keeps its request.
       this.db
@@ -359,8 +388,9 @@ export class CalibreIndexer {
       this.lastProblem.delete(lib.id);
 
       const secs = ((now - startedAt) / 1000).toFixed(1);
+      const copySecs = ((snap.copyMs + snap.checkMs) / 1000).toFixed(1);
       this.log(
-        `Calibre: indexed ${label} in ${secs} s: ${result.total} EPUB books ` +
+        `Calibre: indexed ${label} in ${secs} s (copy ${copySecs} s, ${describeLock(snap)}): ${result.total} EPUB books ` +
           `(${result.added} new, ${result.updated} updated, ${result.unchanged} unchanged, ` +
           `${result.missingMarked} newly missing, ${result.skippedNoUuid} without UUID skipped)`,
       );
@@ -372,18 +402,45 @@ export class CalibreIndexer {
       }
     } catch (err) {
       const message = (err as Error).message ?? String(err);
+      const failed = safeFailure(this.db, lib.id);
+      const behind = failed?.behindSince ? `, behind since ${clockUtc(failed.behindSince)}` : '';
       if (err instanceof SnapshotSkipped) {
-        safeUpdate(this.db, lib.id, { status: 'settling' });
-        this.noteProblem(lib.id, `${label}: snapshot postponed: ${message}`, false);
+        safeUpdate(this.db, lib.id, {
+          status: 'settling',
+          lastProblem: `the copy of metadata.db was postponed: ${message}`,
+        });
+        // Every failed copy is logged with its count (2026-11-26: logged once, a day of failed
+        // copies showed as one line).
+        this.log(
+          `Calibre: ${label}: snapshot postponed (${failed?.failures ?? 1} in a row${behind}): ${message}`,
+        );
+        this.lastProblem.delete(lib.id);
       } else {
         safeUpdate(this.db, lib.id, {
           status: 'error',
           lastError: message,
           lastErrorAt: Date.now(),
+          lastProblem: message,
         });
         this.noteProblem(lib.id, `${label}: ${message}`, true);
       }
     }
+  }
+}
+
+/** Counts one more failure in a row; the state after it (null when the record is gone). */
+function safeFailure(
+  db: Database.Database,
+  libraryId: string,
+): { failures: number; behindSince: number | null } | null {
+  try {
+    db.prepare('UPDATE library_index_state SET failures = failures + 1 WHERE library_id = ?').run(
+      libraryId,
+    );
+    const s = getIndexState(db, libraryId);
+    return { failures: s.failures, behindSince: s.behindSince };
+  } catch {
+    return null;
   }
 }
 

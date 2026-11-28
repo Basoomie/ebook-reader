@@ -438,7 +438,19 @@ export class MoveWorker {
         });
         return;
       }
-      const copy = await this.addOnce(target, dir, str(before.title), `${item.calibreId}.add.json`);
+      // A copy an earlier batch added and left in the new library (its old copy could not be
+      // removed: live 2026-11-28, Calibre locked by a reader of metadata.db) is used instead of
+      // adding a second one; it is checked like a new copy. Not listed: added afresh.
+      const left = item.move?.leftover ?? null;
+      const there = left ? await ctx.calibredb.book(target, left.calibreId) : null;
+      const reuse = !!left && !!there && there.uuid === left.uuid;
+      if (reuse)
+        ctx.log.info(
+          `Item ${item.calibreId}: using the copy ${left.calibreId} an earlier batch left in ${target.libraryId}`
+        );
+      const copy = reuse
+        ? { id: left.calibreId, uuid: left.uuid }
+        : await this.addOnce(target, dir, str(before.title), `${item.calibreId}.add.json`);
       let why: string | null;
       try {
         why = await this.arrived(batch, item, target, dir, before, copy);
@@ -475,7 +487,9 @@ export class MoveWorker {
         return;
       }
       if (!(await this.removeCopy(source, item.calibreId, item.uuid)))
-        throw new Error('Calibre still lists the book after remove');
+        throw new Error(
+          `Calibre still lists the book after remove. The copy in ${target.libraryId} (id ${added.calibreId}) stays: the move's next round finishes with it, nothing is added twice`
+        );
       await ctx.report(batch, item, { step: 'removed' });
       ctx.log.info(
         `Moved ${item.calibreId} to ${target.libraryId} as ${added.calibreId}: ${item.title}`

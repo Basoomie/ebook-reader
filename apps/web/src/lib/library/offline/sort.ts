@@ -133,11 +133,20 @@ export interface GroupSortRow {
   newestAddedAt: number;
 }
 
-/** groups.ts groupComparator: "No series" last; ties by name ascending. */
-export function groupComparator(
-  sort: ServerSort<GroupSortKey> = { key: 'newest', dir: 'desc' }
-): (a: GroupSortRow, b: GroupSortRow) => number {
+/**
+ * groups.ts groupComparator: "No series" last; ties by name ascending. The figure sorts
+ * (series-figures.ts) read `figure`; groups without one come last, by name.
+ */
+export function groupComparator<R extends GroupSortRow>(
+  sort: ServerSort<GroupSortKey> = { key: 'newest', dir: 'desc' },
+  figure: (r: R) => number | null = () => null
+): (a: R, b: R) => number {
   const sign = sort.dir === 'asc' ? 1 : -1;
+  const byFigure =
+    sort.key === 'rating' ||
+    sort.key === 'ratings' ||
+    sort.key === 'readers' ||
+    sort.key === 'kept';
   const names = (a: GroupSortRow, b: GroupSortRow) => {
     const an = a.name ?? '';
     const bn = b.name ?? '';
@@ -146,6 +155,13 @@ export function groupComparator(
   return (a, b) => {
     if ((a.name === null) !== (b.name === null)) return a.name === null ? 1 : -1;
     if (sort.key === 'name') return sign * names(a, b);
+    if (byFigure) {
+      const fa = figure(a);
+      const fb = figure(b);
+      if ((fa === null) !== (fb === null)) return fa === null ? 1 : -1;
+      if (fa !== null && fb !== null && fa !== fb) return sign * (fa - fb);
+      return names(a, b);
+    }
     const diff =
       sort.key === 'count' ? a.bookCount - b.bookCount : a.newestAddedAt - b.newestAddedAt;
     if (diff !== 0) return sign * diff;

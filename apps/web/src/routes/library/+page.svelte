@@ -18,7 +18,12 @@
   import BookStateDialog from '$lib/components/library/book-state-dialog.svelte';
   import BulkEditDialog, { type BulkChange } from '$lib/components/library/bulk-edit-dialog.svelte';
   import LibraryBookCard from '$lib/components/library/library-book-card.svelte';
-  import { loadRatingFeatures, ratingFeatures$, volumeOneText } from '$lib/library/store-ratings';
+  import {
+    groupFigureText,
+    loadRatingFeatures,
+    ratingFeatures$,
+    volumeOneText
+  } from '$lib/library/store-ratings';
   import LibraryBookRow from '$lib/components/library/library-book-row.svelte';
   import LibraryConnect from '$lib/components/library/library-connect.svelte';
   import LibraryGroupCard from '$lib/components/library/library-group-card.svelte';
@@ -95,6 +100,7 @@
   import {
     defaultSort,
     formatSort,
+    isGroupContext,
     parseSort,
     serverSort,
     type SortContext,
@@ -1305,7 +1311,10 @@
    */
   function contextNow(): SortContext {
     const by = TABS.find((t) => t.id === tab)?.by ?? null;
-    if (by && group === null) return 'groups';
+    // The Series and Authors tabs also sort by their figures (series-figures.ts); Tags does not.
+    if (by && group === null) {
+      return by === 'series' ? 'series-groups' : by === 'author' ? 'author-groups' : 'groups';
+    }
     if (group?.by === 'series' && group.name !== null) return 'series';
     // Every list of Completed books (the collection, the chip, a typed search, a saved search)
     // opens newest completed first; a series keeps its own order.
@@ -1336,7 +1345,7 @@
 
   /** WP19a: a new sort from the Sort menu (remembered per device outside a series or list). */
   function onSort(value: SortValue) {
-    if (sortContext === 'groups') $libraryGroupSort$ = formatSort(value, 'groups');
+    if (isGroupContext(sortContext)) $libraryGroupSort$ = formatSort(value, sortContext);
     else if (sortContext === 'books') $librarySort$ = formatSort(value, 'books');
     goto(
       urlFor({
@@ -1353,7 +1362,7 @@
 
   /** The word after the count: "books", "series", "authors", "tags". */
   function countNoun(n: number): string {
-    if (sortContext !== 'groups') return n === 1 ? 'book' : 'books';
+    if (!isGroupContext(sortContext)) return n === 1 ? 'book' : 'books';
     const by = TABS.find((t) => t.id === tab)?.by;
     if (by === 'series') return 'series';
     if (by === 'author') return n === 1 ? 'author' : 'authors';
@@ -1495,7 +1504,7 @@
     countController?.abort();
     resultCount = null;
     const a = source();
-    if (!a || sortContext === 'groups') return;
+    if (!a || isGroupContext(sortContext)) return;
     const controller = new AbortController();
     countController = controller;
     counting = true;
@@ -1584,7 +1593,7 @@
       const options = { signal: controller.signal };
       if (by && group === null) {
         const result = await a.groups(
-          { by, ...common, sort: serverSort(sortValue, 'groups') },
+          { by, ...common, sort: serverSort(sortValue, sortContext) },
           options
         );
         groups = reset ? result.groups : [...groups, ...result.groups];
@@ -2809,6 +2818,7 @@
               layout={grid ? 'grid' : 'list'}
               {infoLine}
               menu={g.name !== null}
+              figureText={groupFigureText(g, sortValue.key)}
               on:reveal={(ev) => reveal(groupKey(ev.detail))}
               on:menu={(ev) =>
                 ev.detail.name !== null && editCoverRule(ev.detail.by, ev.detail.name)}

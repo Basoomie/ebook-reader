@@ -117,6 +117,7 @@ export class NotificationWatcher {
     this.part('merges', () => this.merges(settings));
     this.part('the PC', () => this.pc(settings, now));
     const index = this.part('the Calibre index', () => this.index());
+    this.part('the Calibre index behind', () => this.indexBehind(settings, now));
     this.part('cleanup stages', () => this.stages(index ?? null));
     this.part('audiobook cleanup stages', () => this.audioStages());
     this.part('the cleanup helpers', () => this.helpers(settings, now));
@@ -356,6 +357,56 @@ export class NotificationWatcher {
     return alert;
   }
 
+  /**
+   * A library whose index is behind Calibre for longer than the wait time (2026-11-26: copies of
+   * metadata.db failed for hours without a word). One alert per library; resolved once caught
+   * up. Only enabled libraries count.
+   */
+  private indexBehind(settings: NotificationSettings, now: number): void {
+    const waitMs = settings.waits.indexBehindMinutes * 60_000;
+    const rows = this.s.db
+      .prepare(
+        `SELECT s.library_id AS id, s.behind_since AS since, s.failures, s.last_problem AS problem,
+                l.name
+         FROM library_index_state s JOIN libraries l ON l.id = s.library_id
+         WHERE s.behind_since IS NOT NULL AND l.enabled = 1 AND l.available = 1`,
+      )
+      .all() as {
+      id: string;
+      since: number;
+      failures: number;
+      problem: string | null;
+      name: string;
+    }[];
+    const active = new Set<string>();
+    for (const r of rows) {
+      if (now - r.since < waitMs) continue;
+      const key = `index_behind:${r.id}`;
+      active.add(key);
+      const summary = `Calibre changes in "${r.name}" haven't reached the reader for ${hoursText(now - r.since)}`;
+      // Two lines and the link (render keeps two when there is a link).
+      const tries =
+        r.failures > 0
+          ? ` (${r.failures} ${plural(r.failures, 'try', 'tries')} in a row failed)`
+          : '';
+      const why = `Why: ${r.problem ? clip(r.problem, 200) : 'not known yet'}${tries}`;
+      if (
+        this.service.observe(key, 'index_behind', {
+          startAt: r.since,
+          waitMs,
+          summary,
+          detail: why,
+        })
+      )
+        this.messages.push({
+          event: 'index_behind',
+          lines: [summary, why],
+          link: LINKS.diagnostics,
+        });
+    }
+    this.service.clearOthers('index_behind', active);
+  }
+
   // ---- the AI layer ----
 
   /**
@@ -518,6 +569,24 @@ export class NotificationWatcher {
       }
     } catch {
       // cleanup.db before manga part A
+    }
+    // Books without an EPUB (a row per library), one alert per pause.
+    try {
+      for (const f of db
+        .prepare(
+          'SELECT library_id, paused_reason, paused_detail FROM calibre_formats_state WHERE paused_reason IS NOT NULL',
+        )
+        .all() as { library_id: string; paused_reason: string; paused_detail: string | null }[]) {
+        const key = this.libKey(db, 'stage_paused:formats', f.library_id);
+        active.add(key);
+        const summary = `Books without an EPUB${this.libraryLabel(db, f.library_id)} paused: ${f.paused_detail ?? stagePauseText(f.paused_reason)}`;
+        if (
+          this.service.observe(key, 'stage_paused', { waitMs: 0, summary, detail: f.paused_detail })
+        )
+          this.messages.push({ event: 'stage_paused', lines: [summary], link: LINKS.cleanup });
+      }
+    } catch {
+      // cleanup.db before the books-without-an-EPUB pass
     }
     this.service.clearOthers('stage_paused', active);
 

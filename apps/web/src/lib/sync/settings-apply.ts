@@ -55,6 +55,12 @@ import {
 } from '$lib/recently-viewed/settings';
 import { libraryThemes$ } from '$lib/library/settings';
 import { nextInSeriesBonus$, nextInSeriesOn$ } from '$lib/library/next-in-series-settings';
+import {
+  seriesKeptMaxPercent$,
+  seriesKeptMinMonths$,
+  seriesKeptMinReaders$,
+  seriesKeptNeighbourPercent$
+} from '$lib/library/series-figures-settings';
 import { parseStoredValue, SETTINGS_REGISTRY } from '$lib/sync/settings-registry';
 
 /**
@@ -100,7 +106,11 @@ export const GLOBAL_SETTING_SUBJECTS: Record<string, { next(value: never): void 
   recentlyViewedKeepBooks: recentlyViewedKeepBooks$,
   recentlyViewedKeepDays: recentlyViewedKeepDays$,
   nextInSeriesOn: nextInSeriesOn$,
-  nextInSeriesBonus: nextInSeriesBonus$
+  nextInSeriesBonus: nextInSeriesBonus$,
+  seriesKeptMinReaders: seriesKeptMinReaders$,
+  seriesKeptNeighbourPercent: seriesKeptNeighbourPercent$,
+  seriesKeptMaxPercent: seriesKeptMaxPercent$,
+  seriesKeptMinMonths: seriesKeptMinMonths$
 };
 
 /** Applies one global setting. null (never set on the source device) leaves this device's value. */

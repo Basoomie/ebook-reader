@@ -32,6 +32,16 @@ import type { LocalRecord } from '$lib/sync/sync-db';
 import { summaryOf } from './copies';
 import { fieldNames, groupNameMatches, matchesQuery, type MatchContext } from './match';
 import { hideRecordId, nextInSeries, nextStateOf, type NextEntry } from '../next-in-series';
+import { figureSortValue, figureTermValue, type SeriesFigure } from '../series-figures';
+import { keptRulesNow } from '../series-figures-settings';
+import { scoreParamsNow } from '../store-ratings';
+import {
+  authorFiguresOf,
+  bookSeriesFigure,
+  groupFigureOf,
+  offlineFigures,
+  type OfflineFigures
+} from './figures';
 import {
   bookComparator,
   DEFAULT_SORT,
@@ -154,7 +164,16 @@ const BOOK_SORTS: BookSortKey[] = [
   'finished',
   'wish'
 ];
-const GROUP_SORTS: GroupSortKey[] = ['newest', 'name', 'count'];
+const GROUP_SORTS: GroupSortKey[] = [
+  'newest',
+  'name',
+  'count',
+  'rating',
+  'ratings',
+  'readers',
+  'kept'
+];
+const FIGURE_SORTS: readonly GroupSortKey[] = ['rating', 'ratings', 'readers', 'kept'];
 
 const FIELD: Record<GroupBy, TextField> = { series: 'series', author: 'author', tag: 'tag' };
 
@@ -297,7 +316,28 @@ export class OfflineCatalog {
     return url;
   }
 
-  private context(data: OfflineData): MatchContext {
+  /** Series figures of the stored books (series-figures.ts), kept until they or the day change. */
+  private figureCache: { data: OfflineData; key: string; figures: OfflineFigures } | null = null;
+
+  private figures(data: OfflineData): OfflineFigures {
+    const now = Date.now();
+    const rules = keptRulesNow();
+    const key = `${JSON.stringify(rules)}|${Math.floor(now / 86400000)}`;
+    const hit = this.figureCache;
+    if (hit && hit.data === data && hit.key === key) return hit.figures;
+    const figures = offlineFigures(data.books, rules, now);
+    this.figureCache = { data, key, figures };
+    return figures;
+  }
+
+  /**
+   * `seriesTab`: rating:/ratings:/readers: read the series' figures (the Series tab, as the
+   * server's figureTerms); kept: always reads the book's series.
+   */
+  private context(
+    data: OfflineData,
+    tab: { seriesTab?: boolean; library?: string } = {}
+  ): MatchContext {
     const ids = new Set(data.books.map((b) => b.id));
     const audio = data.audioOnDevice ?? new Set<string>();
     let next: Set<string> | undefined;
@@ -309,7 +349,15 @@ export class OfflineCatalog {
         next ??= new Set(offlineNext(data).map((e) => e.bookId));
         return next.has(id);
       },
-      bookmeterLists: (id) => data.bookmeterLists?.get(id) ?? NO_LISTS
+      bookmeterLists: (id) => data.bookmeterLists?.get(id) ?? NO_LISTS,
+      seriesTab: tab.seriesTab ?? false,
+      figure: (book, key) => {
+        const figures = this.figures(data);
+        const f = tab.seriesTab
+          ? groupFigureOf(figures, book.series?.name ?? null, tab.library)
+          : bookSeriesFigure(figures, book);
+        return figureTermValue(f, key);
+      }
     };
   }
 
@@ -451,6 +499,11 @@ export class OfflineCatalog {
     const data = await this.data();
     const parsed = parseOrThrow(query.q);
     const ctx = this.context(data);
+    // The typed search on the Series tab tests the series' figures (series-figures.ts).
+    const tabCtx = this.context(data, {
+      seriesTab: query.by === 'series',
+      library: query.library
+    });
     const field = FIELD[query.by];
     // A collection's books only (2026-11-24): every number counts only those books.
     const scoped = query.scope ? parseOrThrow(query.scope) : null;
@@ -473,7 +526,7 @@ export class OfflineCatalog {
     const hits = new Set<string | null>();
     if (filtered) {
       for (const b of visible) {
-        if (!matchesQuery(b, parsed, ctx)) continue;
+        if (!matchesQuery(b, parsed, tabCtx)) continue;
         for (const key of groupKeys(b, query.by)) {
           if (key === null || groupNameMatches(key, parsed, field)) hits.add(key);
         }
@@ -491,7 +544,24 @@ export class OfflineCatalog {
       query.sort && GROUP_SORTS.includes(query.sort.key as GroupSortKey)
         ? (query.sort as ServerSort<GroupSortKey>)
         : undefined;
-    rows.sort(groupComparator(sort));
+    // The figures (series-figures.ts): a series' own, an author's over their works here.
+    let authorFigures: Map<string, SeriesFigure> | null = null;
+    const figureOf = (name: string | null): SeriesFigure | null => {
+      if (name === null || query.by === 'tag') return null;
+      const figures = this.figures(data);
+      if (query.by === 'series') return groupFigureOf(figures, name, query.library);
+      authorFigures ??= authorFiguresOf(visible, figures, scoreParamsNow(), (b) =>
+        groupKeys(b, 'author').filter((k): k is string => k !== null)
+      );
+      return authorFigures.get(name) ?? null;
+    };
+    const values = new Map<string | null, number | null>();
+    if (sort && FIGURE_SORTS.includes(sort.key)) {
+      for (const r of rows) {
+        values.set(r.name, figureSortValue(figureOf(r.name), sort.key as 'rating'));
+      }
+    }
+    rows.sort(groupComparator(sort, (r) => values.get(r.name) ?? null));
     const { items, nextCursor } = page(rows, query.cursor, query.limit);
     const opened = openedOrder(data.positions);
     const groups: CatalogGroup[] = items.map((r) => {
@@ -515,6 +585,9 @@ export class OfflineCatalog {
         const byId = new Map(r.books.map((b) => [b.id, b]));
         card.tiles = collage(r.books, opened).map((id) => tileOf(byId.get(id) as CatalogBook));
       }
+      // Under a figure sort only, as the server (the only time the cards show them).
+      const f = values.size ? figureOf(r.name) : null;
+      if (f && (f.rating || f.readers !== null || f.kept !== null)) card.figures = f;
       return card;
     });
     checkAborted(options);

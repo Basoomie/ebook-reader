@@ -1019,7 +1019,10 @@ describe('stage 2: metadata and covers from the files', () => {
     expect(second).toEqual({ batch: null, wait: 'metadata.db snapshot is being made' });
     expect(calls).toBe(1);
     release();
-    await new Promise((r) => setTimeout(r, 200));
+    // The copy runs on a worker thread (2026-11-26), whose start alone can take longer than a
+    // fixed wait: wait for the copy itself.
+    for (let i = 0; i < 200 && !env.service.batches.get(planned.id)!.snapshotSha256; i++)
+      await new Promise((r) => setTimeout(r, 50));
     // Once made, the next claim hands the batch out (the copy is reused, not made again).
     const sha = env.service.batches.get(planned.id)!.snapshotSha256;
     expect(sha).toMatch(/^[0-9a-f]{64}$/);
@@ -1028,6 +1031,41 @@ describe('stage 2: metadata and covers from the files', () => {
     expect(third.batch?.snapshotSha256).toBe(sha);
     const madeAt = fs.statSync(env.service.batches.snapshotFileFor(planned.id)).mtimeMs;
     expect(madeAt).toBeLessThan(Date.now());
+  });
+
+  it('a metadata.db copy that never settles is dropped and made again', async () => {
+    await setMode('on');
+    await worker().cycle(); // heartbeat and safety checks
+    await env.service.tick();
+    const planned = env.service.batches.open()!;
+    const svc = env.service.batches as unknown as {
+      makeSnapshot: (b: unknown) => Promise<void>;
+      snapshotAnswerMs: number;
+      snapshotStuckMs: number;
+    };
+    const real = svc.makeSnapshot.bind(env.service.batches);
+    let calls = 0;
+    // The first copy hangs for ever (the stalled read seen on the NAS); the second is real.
+    svc.makeSnapshot = (b) => (++calls === 1 ? new Promise<void>(() => {}) : real(b));
+    svc.snapshotAnswerMs = 50;
+    svc.snapshotStuckMs = 100;
+    expect(await env.service.batches.claim()).toEqual({
+      batch: null,
+      wait: 'metadata.db snapshot is being made',
+    });
+    await new Promise((r) => setTimeout(r, 150));
+    // The second copy is real and runs on a worker thread, which takes longer than this test's
+    // 100 ms limit just to start: the limit goes back to a real one once the hung copy is gone.
+    // Claims answer "being made" until it is done, and it is never started a third time.
+    let next = await env.service.batches.claim();
+    svc.snapshotStuckMs = 60_000;
+    for (let i = 0; i < 200 && !next.batch; i++) {
+      expect(next.wait).toBe('metadata.db snapshot is being made');
+      next = await env.service.batches.claim();
+    }
+    expect(calls).toBe(2);
+    expect(next.batch?.id).toBe(planned.id);
+    expect(next.batch?.snapshotSha256).toMatch(/^[0-9a-f]{64}$/);
   });
 
   it('a sidecar stopped after a write resumes without writing again', async () => {

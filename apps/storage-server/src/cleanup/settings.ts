@@ -452,6 +452,8 @@ export interface CleanupSettings {
   arrivals: BookArrivalSettings;
   /** Manga part A: moving books to another Calibre library (manga-library.md). */
   move: MoveSettings;
+  /** Books without an EPUB (non-epub-books.md): their conversion and the copies folded in. */
+  formats: FormatSettings;
   backup: BackupRecord;
 }
 
@@ -481,6 +483,50 @@ export interface MoveSettings {
   batchSize: number;
   /** A move batch stops after this many books failed in a row (sidecar 1.6.1; 0 = never). */
   stopAfterFailures: number;
+}
+
+/** Books without an EPUB (non-epub-books.md, decided with the user 2026-11-26). */
+export interface FormatSettings {
+  /**
+   * A converted text book keeps its text when calibre's text of the EPUB has at least this share
+   * of calibre's text of the source (both counted by the reader's rule). Stop 1: a converted AZW3
+   * came within 0.1 % of the library's own EPUB of the same book.
+   */
+  textKeptMin: number;
+  /** A source with fewer counted characters than this is a picture book (its pages are checked). */
+  pictureMaxChars: number;
+  /**
+   * A converted book with fewer characters than this (the reader's count) and no pictures on its
+   * pages beyond a cover is no book: listed and left (the spot check, 2026-11-27: an 86-character
+   * note and a download advert in TXT files).
+   */
+  minBookChars: number;
+  /**
+   * A mokuro archive is converted only when it holds at least this share of the pictures its page
+   * lists (the spot check: archives with 3 or 8 of a volume's pictures); else listed and left.
+   */
+  mokuroPagesMin: number;
+  /** One conversion may take this long (s) before the sidecar stops it. */
+  convertTimeoutSeconds: number;
+  /** A conversion job not heard of for this long (minutes) is handed out again. */
+  jobLeaseMinutes: number;
+  /** A job that failed this many times is listed as failed (a timeout or an error each time). */
+  maxAttempts: number;
+  /** EPUB books with the same title compared with a copy, at most. */
+  maxTwins: number;
+  /**
+   * A copy is the same text as its EPUB twin (folded) at this share both ways or more (stop 1's
+   * line, 95 %; below it, but still sharing text: review).
+   */
+  sameMin: number;
+  /**
+   * A copy folds only when its text that the twin lacks is at most this share of it (stage 3's
+   * review principle: the book kept has everything the copy has; its file stays in the twin's
+   * record either way).
+   */
+  copyExtraMax: number;
+  /** Books per write batch. */
+  batchSize: number;
 }
 
 export const MODEL_TASKS = [
@@ -634,6 +680,19 @@ export const DEFAULT_SETTINGS: CleanupSettings = {
     handCheckMinutes: 60,
     addBatchSize: 50,
     addLeaseSeconds: 300,
+  },
+  formats: {
+    textKeptMin: 0.97,
+    pictureMaxChars: 1000,
+    minBookChars: 2000,
+    mokuroPagesMin: 0.9,
+    convertTimeoutSeconds: 1800,
+    jobLeaseMinutes: 45,
+    maxAttempts: 2,
+    maxTwins: 5,
+    sameMin: 0.95,
+    copyExtraMax: 0.001,
+    batchSize: 100,
   },
   move: {
     targetFolder: 'manga-library',
@@ -1189,6 +1248,62 @@ function validate(key: Key, value: unknown, current: CleanupSettings): unknown {
         addBatchSize: num('Books added per batch', v.addBatchSize, 1, 500, true),
         addLeaseSeconds: num('Seconds per add batch', v.addLeaseSeconds, 30, 3600, true),
       } satisfies BookArrivalSettings;
+    }
+    case 'formats': {
+      const v = group('Books without an EPUB', value, current.formats);
+      return {
+        textKeptMin: num('Text kept: at least this share (0-1)', v.textKeptMin, 0.5, 1),
+        pictureMaxChars: num(
+          'A source with fewer characters is a picture book',
+          v.pictureMaxChars,
+          0,
+          1_000_000,
+          true,
+        ),
+        minBookChars: num(
+          'A book with fewer characters and no pictures is no book',
+          v.minBookChars,
+          0,
+          1_000_000,
+          true,
+        ),
+        mokuroPagesMin: num(
+          'A mokuro archive needs at least this share of its pages’ pictures (0-1)',
+          v.mokuroPagesMin,
+          0,
+          1,
+        ),
+        convertTimeoutSeconds: num(
+          'One conversion may take at most (s)',
+          v.convertTimeoutSeconds,
+          60,
+          86_400,
+          true,
+        ),
+        jobLeaseMinutes: num(
+          'A conversion not heard of for this long is handed out again (min)',
+          v.jobLeaseMinutes,
+          5,
+          1440,
+          true,
+        ),
+        maxAttempts: num(
+          'A conversion is tried at most this many times',
+          v.maxAttempts,
+          1,
+          10,
+          true,
+        ),
+        maxTwins: num('EPUB books with the same title compared, at most', v.maxTwins, 1, 50, true),
+        sameMin: num('Same text: at least this share both ways (0-1)', v.sameMin, 0.8, 1),
+        copyExtraMax: num(
+          "A copy's own text its EPUB book lacks: at most this share (0-1)",
+          v.copyExtraMax,
+          0,
+          0.2,
+        ),
+        batchSize: num('Books per write batch', v.batchSize, 1, 2000, true),
+      } satisfies FormatSettings;
     }
     case 'move': {
       const v = group('Moving manga', value, current.move);
