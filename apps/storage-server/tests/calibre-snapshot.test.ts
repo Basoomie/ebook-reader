@@ -3,7 +3,13 @@ import { createHash } from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { describe, expect, it, vi } from 'vitest';
-import { snapshotMetadataDb, SnapshotFailed, SnapshotSkipped } from '../src/calibre/snapshot';
+import {
+  configureSnapshotLockWarning,
+  snapshotMetadataDb,
+  SnapshotFailed,
+  SnapshotSkipped,
+} from '../src/calibre/snapshot';
+import { copyWithoutLock } from '../src/calibre/snapshot-worker';
 import { CalibreRoot, fingerprint } from './helpers/calibre-fixture';
 import { makeTempDir } from './helpers/spawn-server';
 
@@ -120,6 +126,7 @@ describe('a metadata.db Calibre writes every few milliseconds (NAS 2026-11-15)',
       const stepped = await snapshotMetadataDb(lib.dbFile, dest, {
         timeoutMs: 10_000,
         allowChanging: true,
+        lockFreeTries: 0,
       });
       // How often the writer lands between two steps depends on timing; never more than 3.
       expect(stepped.restarts).toBeLessThanOrEqual(3);
@@ -128,6 +135,7 @@ describe('a metadata.db Calibre writes every few milliseconds (NAS 2026-11-15)',
         timeoutMs: 10_000,
         allowChanging: true,
         oneStep: true,
+        lockFreeTries: 0,
       });
       const copy = new Database(res.file, { readonly: true });
       expect(copy.pragma('quick_check', { simple: true })).toBe('ok');
@@ -195,7 +203,7 @@ describe('a busy server (NAS 2026-11-26: the copy took longer than 600 s)', () =
 
       // The fix: the same copy on a worker thread, while the main thread is just as busy.
       const dest = path.join(makeTempDir('cache'), 'snap.db');
-      const res = await snapshotMetadataDb(source, dest, { timeoutMs: 15_000 });
+      const res = await snapshotMetadataDb(source, dest, { timeoutMs: 15_000, lockFreeTries: 0 });
       expect(res.libraryUuid).toBe('u-1');
       expect(res.steps).toBeGreaterThanOrEqual(50);
       expect(res.copyMs).toBeLessThan(1500);
@@ -232,5 +240,135 @@ describe('a busy server (NAS 2026-11-26: the copy took longer than 600 s)', () =
     fs.writeFileSync(`${dest}.tmp`, 'left behind');
     await snapshotMetadataDb(source, dest, { timeoutMs: 15_000 });
     expect(fs.readdirSync(dir)).toEqual(['snap.db']);
+  });
+});
+
+describe("Calibre's lock (2026-11-27: Calibre's start failed with 'database is locked')", () => {
+  it('copies a metadata.db nobody writes without taking any lock', async () => {
+    const source = bigDatabase(2);
+    const dest = path.join(makeTempDir('cache'), 'snap.db');
+    const res = await snapshotMetadataDb(source, dest, { timeoutMs: 15_000 });
+    expect(res.lockFree).toBe(true);
+    expect(res.lockMs).toBe(0);
+    expect(res.steps).toBe(0);
+    expect(res.libraryUuid).toBe('u-1');
+    expect(fs.readFileSync(dest).equals(fs.readFileSync(source))).toBe(true);
+  });
+
+  it('never keeps a lock-free read while a journal file is there', () => {
+    const source = bigDatabase(1);
+    fs.writeFileSync(`${source}-journal`, '');
+    const tmp = path.join(makeTempDir('cache'), 'x.tmp');
+    expect(copyWithoutLock(source, tmp)).toBe(false);
+  });
+
+  it('every copy is a committed state while a writer keeps rewriting pages across the file', async () => {
+    // Each commit sets every row (pages all over the file) to the same version, so a copy read
+    // part-way through a commit would hold two versions.
+    const file = path.join(makeTempDir('calibre'), 'metadata.db');
+    const db = new Database(file);
+    db.exec(
+      "CREATE TABLE library_id (id INTEGER PRIMARY KEY, uuid TEXT); INSERT INTO library_id (uuid) VALUES ('u-1');" +
+        'CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER, pad BLOB)',
+    );
+    const ins = db.prepare('INSERT INTO t (v, pad) VALUES (0, ?)');
+    db.transaction(() => {
+      for (let i = 0; i < 300; i++) ins.run(Buffer.alloc(3000, i % 255));
+    })();
+    // Commits without waiting for the disk, so some reads fall between two of them.
+    db.pragma('synchronous = OFF');
+    const bump = db.prepare('UPDATE t SET v = ?');
+    let v = 0;
+    const writer = setInterval(() => bump.run(++v), 15);
+    const dest = path.join(makeTempDir('cache'), 'snap.db');
+    let lockFree = 0;
+    let locked = 0;
+    try {
+      for (let i = 0; i < 30; i++) {
+        const res = await snapshotMetadataDb(file, dest, {
+          timeoutMs: 15_000,
+          allowChanging: true,
+          oneStep: true,
+        });
+        if (res.lockFree) lockFree += 1;
+        else locked += 1;
+        const copy = new Database(dest, { readonly: true });
+        try {
+          expect(copy.pragma('quick_check', { simple: true })).toBe('ok');
+          const n = copy.prepare('SELECT COUNT(DISTINCT v) n FROM t').get() as { n: number };
+          expect(n.n).toBe(1);
+        } finally {
+          copy.close();
+        }
+      }
+    } finally {
+      clearInterval(writer);
+      db.close();
+    }
+    expect(v).toBeGreaterThan(30);
+    expect(lockFree).toBeGreaterThan(0);
+    expect(lockFree + locked).toBe(30);
+  }, 120_000);
+
+  it('a lock-free copy never makes Calibre wait; the one-step backup did', async () => {
+    const source = bigDatabase(40);
+    const dest = path.join(makeTempDir('cache'), 'snap.db');
+    // Stands in for Calibre: takes its exclusive lock every millisecond and does not wait.
+    const calibre = new Database(source);
+    calibre.pragma('busy_timeout = 0');
+    let refused = 0;
+    let tries = 0;
+    const takeLock = () => {
+      tries += 1;
+      try {
+        calibre.exec('BEGIN EXCLUSIVE');
+        calibre.exec('COMMIT');
+      } catch (err) {
+        if (/locked|busy/i.test(String(err))) refused += 1;
+        else throw err;
+      }
+    };
+    const run = async (lockFreeTries?: number) => {
+      refused = 0;
+      tries = 0;
+      const timer = setInterval(takeLock, 1);
+      try {
+        return await snapshotMetadataDb(source, dest, {
+          timeoutMs: 30_000,
+          oneStep: true,
+          lockFreeTries,
+        });
+      } finally {
+        clearInterval(timer);
+      }
+    };
+    try {
+      const before = await run(0);
+      const refusedBefore = refused;
+      const now = await run();
+      expect(now.lockFree).toBe(true);
+      expect(tries).toBeGreaterThan(0);
+      expect(refused).toBe(0);
+      expect(before.lockFree).toBe(false);
+      expect(before.lockMs).toBeGreaterThan(0);
+      expect(refusedBefore).toBeGreaterThan(0);
+    } finally {
+      calibre.close();
+    }
+  }, 60_000);
+
+  it('warns when a copy held the lock longer than CALIBRE_LOCK_WARN_SECONDS', async () => {
+    const source = bigDatabase(4);
+    const dest = path.join(makeTempDir('cache'), 'snap.db');
+    const lines: string[] = [];
+    configureSnapshotLockWarning(0, (m) => lines.push(m));
+    try {
+      await snapshotMetadataDb(source, dest, { timeoutMs: 15_000, lockFreeTries: 0 });
+      await snapshotMetadataDb(source, dest, { timeoutMs: 15_000 });
+    } finally {
+      configureSnapshotLockWarning(5, (m) => console.warn(m));
+    }
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatch(/held its database lock for .* s \(Calibre gives up after 10 s/);
   });
 });

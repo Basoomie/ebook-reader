@@ -5,6 +5,7 @@ import { startSummaries } from './summaries/start';
 import { createApp } from './app';
 import { CalibreIndexer, snapshotFile } from './calibre/indexer';
 import { getLibrary } from './calibre/libraries';
+import { configureSnapshotLockWarning } from './calibre/snapshot';
 import path from 'path';
 import { SearchRunner } from './catalog/search-runner';
 import { CharCountService } from './counts/count-service';
@@ -82,6 +83,8 @@ serverLogs.configure({
   secrets: config.authToken ? [config.authToken] : [],
 });
 for (const warning of warnings) console.warn(`Warning: ${warning}`);
+// A metadata.db copy (index or cleanup batch) that kept Calibre waiting is logged (2026-11-27).
+configureSnapshotLockWarning(config.calibre.lockWarnSeconds);
 
 // If the database can't be opened, the server still starts and /api/v1 reports the
 // reason (health answers 503).

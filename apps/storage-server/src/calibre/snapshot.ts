@@ -11,6 +11,11 @@
  * runs one backup step per turn of the calling thread's event loop, so on the server's busy
  * main thread a 165 MB copy took over 600 s while it takes about 2 s on a thread of its own.
  * The time limit stops the thread, not only the next step.
+ *
+ * Calibre's lock (2026-11-27): a copy first reads the file with plain reads, which take no
+ * lock, and keeps that copy when Calibre committed nothing meanwhile; only otherwise does the
+ * backup run, from pages now in memory, so Calibre (which waits at most 10 s for its
+ * database) is never kept waiting by a slow disk. See snapshot-worker.ts.
  */
 import fs from 'fs/promises';
 import path from 'path';
@@ -22,6 +27,32 @@ import type { SnapshotJob, SnapshotJobResult } from './snapshot-worker';
 const BACKUP_STEP_PAGES = 100;
 /** Restarts (the source changed between steps) after which the rest is copied in one step. */
 const MAX_STEP_RESTARTS = 3;
+/**
+ * Lock-free reads tried before SQLite's backup (2026-11-27, snapshot-worker.ts): the first
+ * brings the file into memory (17-39 s cold on the busy NAS), the next ones take well under a
+ * second and often fall between two of Calibre's commits.
+ */
+const LOCK_FREE_TRIES = 3;
+/** Calibre waits this long for its database before giving up (BUSY_TIMEOUT, calibre 9.18). */
+export const CALIBRE_BUSY_TIMEOUT_MS = 10_000;
+
+/** A copy that held metadata.db's lock longer than this is logged as a warning. */
+let lockWarnMs = 5_000;
+let warn: (message: string) => void = (m) => console.warn(m);
+
+/** At start-up: CALIBRE_LOCK_WARN_SECONDS and where the warning goes. */
+export function configureSnapshotLockWarning(
+  seconds: number,
+  log?: (message: string) => void,
+): void {
+  lockWarnMs = Math.round(seconds * 1000);
+  if (log) warn = log;
+}
+
+/** How a copy went, for the callers' log lines: "no lock" or "lock held 0.4 s". */
+export function describeLock(result: { lockFree: boolean; lockMs: number }): string {
+  return result.lockFree ? 'no lock' : `lock held ${(result.lockMs / 1000).toFixed(1)} s`;
+}
 
 // Under ts-node (dev, tests) the worker is TypeScript too.
 const RUNNING_TS = path.extname(__filename) === '.ts';
@@ -64,6 +95,10 @@ export interface SnapshotResult {
   restarts: number;
   copyMs: number;
   checkMs: number;
+  /** The copy came from a plain read; metadata.db was never locked. */
+  lockFree: boolean;
+  /** Longest time one backup step held metadata.db's read lock (ms); 0 when lock-free. */
+  lockMs: number;
 }
 
 export interface SnapshotOptions {
@@ -82,6 +117,8 @@ export interface SnapshotOptions {
   oneStep?: boolean;
   /** Also compute the copy's SHA-256 on the worker thread (a cleanup batch's copy). */
   hash?: boolean;
+  /** Lock-free reads tried before SQLite's backup (default 3; 0 = the backup only). */
+  lockFreeTries?: number;
 }
 
 async function removeQuietly(file: string): Promise<void> {
@@ -165,7 +202,13 @@ function runInWorker(job: SnapshotJob, timeoutMs: number): Promise<SnapshotJobRe
 export async function snapshotMetadataDb(
   source: string,
   dest: string,
-  { timeoutMs, allowChanging = false, oneStep = false, hash = false }: SnapshotOptions,
+  {
+    timeoutMs,
+    allowChanging = false,
+    oneStep = false,
+    hash = false,
+    lockFreeTries = LOCK_FREE_TRIES,
+  }: SnapshotOptions,
 ): Promise<SnapshotResult> {
   const before = await statFile(source);
   if (!before) throw new SnapshotSkipped(`${METADATA_DB} is not there`);
@@ -194,6 +237,7 @@ export async function snapshotMetadataDb(
         stepPages: BACKUP_STEP_PAGES,
         maxRestarts: MAX_STEP_RESTARTS,
         hash,
+        lockFreeTries,
       },
       timeoutMs,
     );
@@ -201,6 +245,14 @@ export async function snapshotMetadataDb(
       if (result.kind === 'skipped') throw new SnapshotSkipped(result.message);
       if (result.kind === 'failed') throw new SnapshotFailed(result.message);
       throw new Error(result.message);
+    }
+    if (!result.lockFree && result.lockMs > lockWarnMs) {
+      warn(
+        `Calibre: copying ${source} held its database lock for ${(result.lockMs / 1000).toFixed(1)} s ` +
+          `(Calibre gives up after ${CALIBRE_BUSY_TIMEOUT_MS / 1000} s; warning above ` +
+          `${lockWarnMs / 1000} s, CALIBRE_LOCK_WARN_SECONDS); ${result.lockFreeTries} lock-free ` +
+          `read(s) found Calibre writing`,
+      );
     }
 
     const after = await statFile(source);
@@ -218,6 +270,8 @@ export async function snapshotMetadataDb(
       restarts: result.restarts,
       copyMs: result.copyMs,
       checkMs: result.checkMs,
+      lockFree: result.lockFree,
+      lockMs: result.lockMs,
     };
   } catch (err) {
     await removeQuietly(tmp);

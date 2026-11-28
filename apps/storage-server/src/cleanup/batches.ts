@@ -47,7 +47,7 @@ import path from 'path';
 import { sha256File } from './file-hash';
 import { snapshotFile } from '../calibre/indexer';
 import { getIndexState, getLibrary } from '../calibre/libraries';
-import { snapshotMetadataDb } from '../calibre/snapshot';
+import { describeLock, snapshotMetadataDb } from '../calibre/snapshot';
 import { folderExists, METADATA_DB, resolveInside, statFile } from '../calibre/source-fs';
 import {
   applyHandoff,
@@ -1060,6 +1060,9 @@ export class BatchService {
       path.join(this.deps.calibreDir, lib.folder, METADATA_DB),
       dest,
       { timeoutMs: 600_000, allowChanging: true, oneStep: true, hash: true },
+    );
+    this.deps.log?.(
+      `Cleanup: batch ${batch.id}: metadata.db copied in ${((snap.copyMs + snap.checkMs) / 1000).toFixed(1)} s (${describeLock(snap)})`,
     );
     const sha = snap.sha256 ?? (await sha256File(dest));
     this.db

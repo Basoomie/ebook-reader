@@ -1,38 +1,33 @@
 /**
  * Where a Calibre book's EPUB is right now, read from the library's live metadata.db
- * (read-only, one query by UUID). Used when the indexed path no longer exists: Calibre moves
+ * (read-only; by the Calibre id first, see live-book.ts). Used when the indexed path no longer exists: Calibre moves
  * a book's folder when its title or first author changes, and the reader's index only takes
  * that in on its next run, so the book stays readable in between.
  */
 import path from 'path';
-import { METADATA_DB, openSourceDatabase, resolveInside, statFile } from './source-fs';
+import { lookupLiveBook, lookupLiveBookSync } from './live-book';
+import { METADATA_DB, resolveInside, statFile } from './source-fs';
 
-/** The EPUB's current path relative to the library folder, or null when it can't be found. */
+/**
+ * The EPUB's current path relative to the library folder, or null when it can't be found. Read
+ * on the live lookup's thread (live-book.ts), by the Calibre id first when it is known.
+ */
 export async function currentCalibreEpub(
   libraryDir: string,
   calibreUuid: string,
+  calibreId?: number | null,
 ): Promise<string | null> {
-  let row: { path: string; name: string } | undefined;
+  let rel: string | null = null;
   try {
-    const db = openSourceDatabase(path.join(libraryDir, METADATA_DB));
-    try {
-      // Calibre holds its write lock for milliseconds; wait for it rather than fail.
-      db.pragma('busy_timeout = 3000');
-      row = db
-        .prepare(
-          `SELECT b.path AS path, d.name AS name FROM books b
-             JOIN data d ON d.book = b.id AND d.format = 'EPUB'
-            WHERE b.uuid = ? LIMIT 1`,
-        )
-        .get(calibreUuid) as { path: string; name: string } | undefined;
-    } finally {
-      db.close();
-    }
+    const book = await lookupLiveBook(path.join(libraryDir, METADATA_DB), {
+      uuid: calibreUuid,
+      calibreId,
+    });
+    rel = book?.formats.get('EPUB') ?? null;
   } catch {
     return null;
   }
-  if (!row) return null;
-  const rel = `${row.path}/${row.name}.epub`;
+  if (!rel) return null;
   try {
     const file = resolveInside(libraryDir, rel);
     return (await statFile(file)) ? rel : null;
@@ -43,23 +38,24 @@ export async function currentCalibreEpub(
 }
 
 /**
- * A book's title sort as Calibre holds it now (read-only, one query by UUID; null when it can't
+ * A book's title sort as Calibre holds it now (read-only, by its Calibre id; null when it can't
  * be read). calibredb can't list the sort through the content server (its --template is
  * refused for remote libraries, calibre 9.18), so the user's edit of the sort is checked here.
+ * Synchronous (the batch report's check is): give the Calibre id, so it is one indexed read.
  */
-export function liveTitleSort(libraryDir: string, calibreUuid: string): string | null {
+export function liveTitleSort(
+  libraryDir: string,
+  calibreUuid: string,
+  calibreId?: number | null,
+): string | null {
   try {
-    const db = openSourceDatabase(path.join(libraryDir, METADATA_DB));
-    try {
-      // A short wait for Calibre's write lock (milliseconds), never a long block.
-      db.pragma('busy_timeout = 1000');
-      const r = db.prepare('SELECT sort FROM books WHERE uuid = ?').get(calibreUuid) as
-        | { sort: string | null }
-        | undefined;
-      return r ? (r.sort ?? '') : null;
-    } finally {
-      db.close();
-    }
+    // A short wait for Calibre's write lock (milliseconds), never a long block.
+    const b = lookupLiveBookSync(
+      path.join(libraryDir, METADATA_DB),
+      { uuid: calibreUuid, calibreId },
+      1000,
+    );
+    return b ? b.sort : null;
   } catch {
     return null;
   }

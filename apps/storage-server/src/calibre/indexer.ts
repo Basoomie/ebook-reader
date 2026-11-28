@@ -29,7 +29,7 @@ import {
   syncDiscoveredLibraries,
   updateIndexState,
 } from './libraries';
-import { hasJournal, snapshotMetadataDb, SnapshotSkipped } from './snapshot';
+import { describeLock, hasJournal, snapshotMetadataDb, SnapshotSkipped } from './snapshot';
 import { isWritable, listSubfolders, METADATA_DB, resolveInside, statFile } from './source-fs';
 
 export const SNAPSHOT_DIRNAME = 'calibre';
@@ -390,7 +390,7 @@ export class CalibreIndexer {
       const secs = ((now - startedAt) / 1000).toFixed(1);
       const copySecs = ((snap.copyMs + snap.checkMs) / 1000).toFixed(1);
       this.log(
-        `Calibre: indexed ${label} in ${secs} s (copy ${copySecs} s): ${result.total} EPUB books ` +
+        `Calibre: indexed ${label} in ${secs} s (copy ${copySecs} s, ${describeLock(snap)}): ${result.total} EPUB books ` +
           `(${result.added} new, ${result.updated} updated, ${result.unchanged} unchanged, ` +
           `${result.missingMarked} newly missing, ${result.skippedNoUuid} without UUID skipped)`,
       );

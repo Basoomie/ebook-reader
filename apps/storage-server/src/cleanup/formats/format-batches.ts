@@ -21,13 +21,8 @@ import type Database from 'better-sqlite3';
 import fs from 'fs/promises';
 import path from 'path';
 import { getLibrary } from '../../calibre/libraries';
-import {
-  METADATA_DB,
-  openSourceDatabase,
-  openSourceFile,
-  resolveInside,
-  statFileSync,
-} from '../../calibre/source-fs';
+import { lookupLiveBook, lookupLiveBookSync } from '../../calibre/live-book';
+import { METADATA_DB, openSourceFile, resolveInside, statFileSync } from '../../calibre/source-fs';
 import type {
   BatchDeps,
   BatchRow,
@@ -129,30 +124,30 @@ export class FormatBatches {
     return lib && this.deps.calibreDir ? path.join(this.deps.calibreDir, lib.folder) : null;
   }
 
-  /** A book as Calibre's live metadata.db holds it now (read only), by UUID. */
+  /**
+   * A book as Calibre's live metadata.db holds it now (read only), by its Calibre id first
+   * (calibre/live-book.ts: the UUID search reads the whole table). On the calling thread: only
+   * for Undo, which must stay synchronous; everything else uses `liveBookNow`.
+   */
   liveBook(
     libraryId: string,
     uuid: string,
+    calibreId: number | null,
   ): { id: number; path: string; formats: Map<string, string> } | null {
     const dir = this.libraryDir(libraryId);
     if (!dir) return null;
-    const db = openSourceDatabase(path.join(dir, METADATA_DB));
-    try {
-      db.pragma('busy_timeout = 3000');
-      const b = db.prepare('SELECT id, path FROM books WHERE uuid = ?').get(uuid) as
-        | { id: number; path: string }
-        | undefined;
-      if (!b) return null;
-      const formats = new Map<string, string>();
-      for (const d of db.prepare('SELECT format, name FROM data WHERE book = ?').all(b.id) as {
-        format: string;
-        name: string;
-      }[])
-        formats.set(d.format.toUpperCase(), `${b.path}/${d.name}.${d.format.toLowerCase()}`);
-      return { id: b.id, path: b.path, formats };
-    } finally {
-      db.close();
-    }
+    return lookupLiveBookSync(path.join(dir, METADATA_DB), { uuid, calibreId });
+  }
+
+  /** The same, read on the live lookup's thread, so a slow disk never holds the server. */
+  async liveBookNow(
+    libraryId: string,
+    uuid: string,
+    calibreId: number | null,
+  ): Promise<{ id: number; path: string; formats: Map<string, string> } | null> {
+    const dir = this.libraryDir(libraryId);
+    if (!dir) return null;
+    return lookupLiveBook(path.join(dir, METADATA_DB), { uuid, calibreId });
   }
 
   // ------------------------------------------------------------------- planning
@@ -161,12 +156,31 @@ export class FormatBatches {
    * The next write batch of the run's automatic proposals, each checked against Calibre's live
    * metadata.db first (the book as selected, still without an EPUB; a fold's twin still with its
    * EPUB). A proposal that no longer fits is set aside with its reason (never written).
+   *
+   * The live reads run on the lookup thread (2026-11-28), so planning waits between them: one
+   * plan at a time, and the batch is made only if no other batch was opened meanwhile.
    */
-  plan(
+  async plan(
     libraryId: string,
     analysisId: string,
     now = Date.now(),
-  ): { batch: BatchRow | null; reason: string | null } {
+  ): Promise<{ batch: BatchRow | null; reason: string | null }> {
+    if (this.planning) return { batch: null, reason: 'A batch is being planned' };
+    this.planning = true;
+    try {
+      return await this.planNow(libraryId, analysisId, now);
+    } finally {
+      this.planning = false;
+    }
+  }
+
+  private planning = false;
+
+  private async planNow(
+    libraryId: string,
+    analysisId: string,
+    now: number,
+  ): Promise<{ batch: BatchRow | null; reason: string | null }> {
     if (this.batches.open()) return { batch: null, reason: 'A batch is being applied' };
     const size = getSettings(this.db).formats.batchSize;
     const rows = this.db
@@ -189,13 +203,13 @@ export class FormatBatches {
       let problem: string | null = null;
       let addFormat: string | null = null;
       try {
-        const book = this.liveBook(libraryId, r.calibre_uuid);
+        const book = await this.liveBookNow(libraryId, r.calibre_uuid, r.calibre_id);
         if (!book) problem = 'No longer in Calibre';
         else if (book.formats.has('EPUB')) problem = 'Has an EPUB in Calibre now';
         else if (!book.formats.has(ev.sourceFormat))
           problem = `Has no ${ev.sourceFormat} in Calibre any more`;
         if (!problem && ev.kind === 'fold' && ev.twin) {
-          const twin = this.liveBook(libraryId, ev.twin.uuid);
+          const twin = await this.liveBookNow(libraryId, ev.twin.uuid, ev.twin.calibreId);
           if (!twin) problem = 'The EPUB book to keep is no longer in Calibre';
           else if (!twin.formats.has('EPUB')) problem = 'The book to keep has no EPUB any more';
           else addFormat = twin.formats.has(ev.sourceFormat) ? null : ev.sourceFormat;
@@ -214,6 +228,8 @@ export class FormatBatches {
       notes.set(r.id, { addFormat });
     }
     if (ok.length === 0) return { batch: null, reason: null };
+    // Another writer (the user's edits, another stage) may have opened a batch meanwhile.
+    if (this.batches.open()) return { batch: null, reason: 'A batch is being applied' };
     const batch = this.batches.createBatch(FORMATS_STAGE, libraryId, 'apply', null, ok, now);
     const note = this.db.prepare(
       'UPDATE batch_items SET format_json = ? WHERE batch_id = ? AND change_id = ?',
@@ -505,12 +521,13 @@ export class FormatBatches {
   undo(batch: BatchRow, now: number): BatchRow {
     const writes = this.db
       .prepare(
-        `SELECT change_id, kind, calibre_uuid, twin_uuid FROM calibre_format_writes
+        `SELECT change_id, kind, calibre_id, calibre_uuid, twin_uuid FROM calibre_format_writes
          WHERE batch_id = ? AND state = 'written'`,
       )
       .all(batch.id) as {
       change_id: number;
       kind: 'convert' | 'fold';
+      calibre_id: number;
       calibre_uuid: string;
       twin_uuid: string | null;
     }[];
@@ -536,7 +553,7 @@ export class FormatBatches {
     const ids: number[] = [];
     for (const w of writes) {
       if (w.kind === 'convert') {
-        const live = this.liveBook(batch.libraryId, w.calibre_uuid);
+        const live = this.liveBook(batch.libraryId, w.calibre_uuid, w.calibre_id);
         const epub = live?.formats.get('EPUB');
         if (!live || !epub) continue;
         const stored = this.db
@@ -600,7 +617,7 @@ export class FormatBatches {
       | undefined;
     if (!w) return false;
     const dir = this.libraryDir(w.library_id);
-    const live = this.liveBook(w.library_id, w.calibre_uuid);
+    const live = await this.liveBookNow(w.library_id, w.calibre_uuid, w.calibre_id);
     const epub = live?.formats.get('EPUB');
     const record = (
       state: 'same' | 'repacked' | 'different' | 'missing',

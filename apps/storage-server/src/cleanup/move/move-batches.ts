@@ -27,6 +27,7 @@ import path from 'path';
 import { sha256File } from '../file-hash';
 import { snapshotFile } from '../../calibre/indexer';
 import { getIndexState, getLibrary } from '../../calibre/libraries';
+import { lookupLiveBook } from '../../calibre/live-book';
 import {
   METADATA_DB,
   openSourceDatabase,
@@ -101,34 +102,32 @@ const APPLY_STEPS: Record<string, ItemState[]> = {
   tagged: ['removed', 'skipped', 'failed'],
 };
 
-/** A book as Calibre's live metadata.db holds it now (read-only, one query by UUID). */
-function liveBook(
+/**
+ * A book as Calibre's live metadata.db holds it now (read-only), by its Calibre id first and on
+ * the live lookup's thread (calibre/live-book.ts): the UUID search read the whole table on the
+ * server's main thread, 6-10 s per book on the NAS (the Library showed offline, 2026-11-28).
+ */
+async function liveBook(
   libraryDir: string,
   uuid: string,
-): { id: number; path: string; epub: string | null; hasCover: boolean; sort: string } | null {
+  calibreId: number | null,
+): Promise<{
+  id: number;
+  path: string;
+  epub: string | null;
+  hasCover: boolean;
+  sort: string;
+} | null> {
   try {
-    const db = openSourceDatabase(path.join(libraryDir, METADATA_DB));
-    try {
-      db.pragma('busy_timeout = 3000');
-      const b = db
-        .prepare('SELECT id, path, has_cover, sort FROM books WHERE uuid = ?')
-        .get(uuid) as
-        | { id: number; path: string; has_cover: number; sort: string | null }
-        | undefined;
-      if (!b) return null;
-      const d = db
-        .prepare(`SELECT name FROM data WHERE book = ? AND format = 'EPUB' LIMIT 1`)
-        .get(b.id) as { name: string } | undefined;
-      return {
-        id: b.id,
-        path: b.path,
-        epub: d ? `${b.path}/${d.name}.epub` : null,
-        hasCover: b.has_cover === 1,
-        sort: b.sort ?? '',
-      };
-    } finally {
-      db.close();
-    }
+    const b = await lookupLiveBook(path.join(libraryDir, METADATA_DB), { uuid, calibreId });
+    if (!b) return null;
+    return {
+      id: b.id,
+      path: b.path,
+      epub: b.formats.get('EPUB') ?? null,
+      hasCover: b.hasCover,
+      sort: b.sort,
+    };
   } catch {
     return null;
   }
@@ -423,16 +422,18 @@ export class MoveBatches {
       throw new BatchError(409, 'bad_batch', 'Not a move batch');
     const item = this.db
       .prepare(
-        `SELECT i.export_sha256, c.calibre_uuid FROM batch_items i JOIN proposed_changes c ON c.id = i.change_id
+        `SELECT i.export_sha256, c.calibre_uuid, c.calibre_id FROM batch_items i JOIN proposed_changes c ON c.id = i.change_id
          WHERE i.id = ? AND i.batch_id = ?`,
       )
-      .get(itemId, batchId) as { export_sha256: string | null; calibre_uuid: string } | undefined;
+      .get(itemId, batchId) as
+      | { export_sha256: string | null; calibre_uuid: string; calibre_id: number | null }
+      | undefined;
     if (!item) throw new BatchError(404, 'not_found', 'No such item in this batch');
     const problems: string[] = [];
     const fromDir = this.libraryDir(batch.libraryId);
     const toDir = this.libraryDir(batch.targetLibraryId);
-    const from = liveBook(fromDir, item.calibre_uuid);
-    const to = liveBook(toDir, copy.uuid);
+    const to = await liveBook(toDir, copy.uuid, copy.calibreId);
+    const from = await liveBook(fromDir, item.calibre_uuid, item.calibre_id);
     if (!to || to.id !== copy.calibreId) {
       problems.push('The new library does not show the added copy yet');
       return { ok: false, problems };
