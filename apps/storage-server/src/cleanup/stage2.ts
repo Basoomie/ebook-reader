@@ -408,7 +408,7 @@ export class Stage2Analysis {
     let epub = resolveInside(libDir, filePath);
     let st = await statFile(epub);
     if (!st) {
-      const now = await currentCalibreEpub(libDir, book.uuid);
+      const now = await currentCalibreEpub(libDir, book.uuid, book.calibreId);
       if (now && now !== filePath) {
         filePath = now;
         epub = resolveInside(libDir, filePath);

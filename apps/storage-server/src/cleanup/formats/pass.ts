@@ -784,7 +784,9 @@ export class FormatsPass {
         // Calibre renames folders on every write: the twin's EPUB is looked up by UUID now.
         let rel: string | null = null;
         try {
-          rel = this.deps.writes.liveBook(lib, t.uuid)?.formats.get('EPUB') ?? null;
+          rel =
+            (await this.deps.writes.liveBookNow(lib, t.uuid, t.calibreId))?.formats.get('EPUB') ??
+            null;
         } catch {
           rel = t.epubPath;
         }
@@ -1100,7 +1102,7 @@ export class FormatsPass {
       this.next(p, 'done');
       return 'idle';
     }
-    const { batch, reason } = this.deps.writes.plan(lib, formatsAnalysisId(p.run));
+    const { batch, reason } = await this.deps.writes.plan(lib, formatsAnalysisId(p.run));
     p.write.waiting = reason;
     if (batch) {
       p.write.startedAt ??= Date.now();

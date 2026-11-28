@@ -412,6 +412,10 @@ export class CleanupService {
       sourceLibrary: () => this.targetLibrary(),
       writeWait: (lib, target) => this.moveWriteWait(lib, target),
       withData: (ids) => booksWithReaderData(opts.main, ids),
+      arrivalsRunning: (lib) => {
+        const run = this.arrivals.currentRun();
+        return !!run && this.arrivals.runLibrary(run) === lib;
+      },
       log: this.log,
     });
     // Stage 4's covers are the stores' pictures, read from the fetch cache.

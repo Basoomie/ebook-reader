@@ -205,7 +205,7 @@
           : MOVE_PHASES[status.progress.phase]}
       </p>
     {/if}
-    {#if status.progress.write.waiting && status.mode === 'on' && status.progress.phase === 'write'}
+    {#if status.progress.write.waiting && (status.mode === 'on' ? status.progress.phase !== 'spot' : status.progress.phase === 'select' || status.progress.phase === 'done')}
       <p class="text-sm text-c-muted" data-testid="move-waiting">{status.progress.write.waiting}</p>
     {/if}
     {#each lines as line}<p class="text-sm" data-testid="move-line">{line}</p>{/each}

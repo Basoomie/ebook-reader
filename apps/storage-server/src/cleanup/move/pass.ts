@@ -8,7 +8,12 @@
  *           Preview the pass stops here; On is refused until every book is marked and none is
  *           wrong (the user, 2026-11-24);
  *   write   (On) move batches one at a time (move-batches.ts), each after the last one's index;
- *   done    until the library's snapshot changes: then books newly tagged are selected again.
+ *   done    until the library's snapshot changes: then books newly tagged are selected again, a
+ *           new round of the same run (the spot check stands): the card's counts and bar start
+ *           again from that round, never adding to the last round's.
+ *
+ * While a new-arrivals run of the library is going the pass waits (the user, 2026-11-27): the
+ * run moves its own manga in its phase `move`, and the pass picks up what is left after it.
  *
  * Proposals are stage 11 rows of proposed_changes (field 'book', old: the library folder, new:
  * the target folder) under `move:<run>`; a held book is a review row, "Move it anyway" makes it
@@ -51,6 +56,9 @@ export const MOVE_SPOT_SIZE = 30;
 const SELECT_CHUNK = 200;
 /** The spot check passes with every book marked and at most this many wrong (the user: none). */
 export const MOVE_SPOT_MAX_WRONG = 0;
+/** The card's line while a new-arrivals run of the library is going. */
+export const ARRIVALS_WAIT =
+  'Waiting for the new-arrivals run to finish: it moves its own manga, and this picks up the rest after it';
 
 export type MoveStep = 'more' | 'wait' | 'idle';
 
@@ -65,6 +73,8 @@ export interface MovePassDeps {
   writeWait: (lib: string, target: string) => string | null;
   /** The reader books (of these) that hold the user's data (handoff.ts). */
   withData: (bookIds: string[]) => Set<string>;
+  /** A new-arrivals run of this library is going (the pass waits for it to end). */
+  arrivalsRunning?: (lib: string) => boolean;
   log?: (m: string) => void;
 }
 
@@ -157,10 +167,21 @@ export class MovePass {
       saveMoveProgress(this.db, p);
     }
     if (st.pausedReason) return 'idle';
+    if (this.deps.arrivalsRunning?.(lib)) {
+      if (p.write.waiting !== ARRIVALS_WAIT) {
+        p.write.waiting = ARRIVALS_WAIT;
+        saveMoveProgress(this.db, p);
+      }
+      return 'idle';
+    }
+    if (p.write.waiting === ARRIVALS_WAIT) p.write.waiting = null;
     if (p.phase === 'done') {
-      // Books tagged since (by hand in Calibre) are selected when the library's snapshot changes.
+      // Books tagged since (by hand in Calibre, or by a new-arrivals run) are selected when the
+      // library's snapshot changes: a new round, counted on its own.
       const mtime = this.snapshotMtime(lib);
       if (mtime === null || mtime === p.snapshotMtimeMs) return 'idle';
+      p.counts = { ...emptyMoveProgress().counts, alreadyMoved: p.counts.alreadyMoved };
+      p.write = { ...p.write, waiting: null, startedAt: null, movedAtStart: null };
       this.next(p, 'select');
     }
     p.startedAt ??= Date.now();
@@ -321,6 +342,9 @@ export class MovePass {
     for (const [k, n] of Object.entries(r.held)) p.counts.held[k] = (p.counts.held[k] ?? 0) + n;
     p.counts.withData += r.withData;
     if (s.at < s.decisions.length) return 'more';
+    // The counts are the run's books still open, read once the round is in: a book proposed
+    // again in a later round (skipped because Calibre changed it, or failed) is counted once.
+    p.counts = { ...p.counts, ...this.openCounts(lib, p.run) };
     p.snapshotMtimeMs = s.mtime;
     p.counts.alreadyMoved = this.movedCount(lib);
     this.selecting = null;
@@ -406,6 +430,39 @@ export class MovePass {
       this.deps.log?.(`Move to the manga library: batch ${batch.id} (${batch.itemCount} books)`);
     }
     return 'wait';
+  }
+
+  /** The run's open proposals: to move, held (by reason, as the held list) and with reader data. */
+  private openCounts(
+    lib: string,
+    run: number,
+  ): { auto: number; held: Record<string, number>; withData: number } {
+    const rows = this.db
+      .prepare(
+        `SELECT class, json_extract(evidence_json, '$.hold') AS hold,
+           json_extract(evidence_json, '$.readerHasData') AS data, COUNT(*) AS n
+         FROM proposed_changes INDEXED BY proposed_changes_move
+         WHERE stage = ${MOVE_STAGE} AND library_id = ? AND analysis_id = ?
+           AND ((class = 'auto' AND state IN ('proposed', 'queued'))
+             OR (class = 'review' AND state IN ('proposed', 'kept')))
+         GROUP BY 1, 2, 3`,
+      )
+      .all(lib, moveAnalysisId(run)) as {
+      class: string;
+      hold: string | null;
+      data: number | null;
+      n: number;
+    }[];
+    const out = { auto: 0, held: {} as Record<string, number>, withData: 0 };
+    for (const r of rows) {
+      if (r.class === 'auto') out.auto += r.n;
+      else {
+        const k = r.hold ?? 'other';
+        out.held[k] = (out.held[k] ?? 0) + r.n;
+      }
+      if (r.data) out.withData += r.n;
+    }
+    return out;
   }
 
   /** Books of this library moved and not brought back. */

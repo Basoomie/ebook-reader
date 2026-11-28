@@ -15,7 +15,11 @@
  *   (fix-count-file-identity). Such a confirmation only stats the file.
  * - A book that fails (bad EPUB, missing file, timeout, crash) is recorded as an
  *   error and tried again only when its source or the spec changes, or on
- *   `cli counts retry`.
+ *   `cli counts retry`. A failure keeps only by the identity of the file it was made from;
+ *   a "file missing" failure was made from no file, so a file found later is always counted.
+ * - A Calibre source a cleanup re-bound (stage 1's swap or restore, the manga move) has no
+ *   meta_hash until its library's index rewrites it; its path may still be the old copy's,
+ *   so it waits for that index instead of being recorded as missing.
  * - EPUBs are read through calibre/source-fs (read-only); images are never read.
  *   Nothing is written outside the database.
  */
@@ -71,6 +75,7 @@ export class CharCountService {
   private nextStartAt = 0;
   private workers: CountWorker[] = [];
   private lastProblem: string | null = null;
+  private repaired = false;
   /** Books the background pass recorded since start (for logs and tests). */
   processed = 0;
 
@@ -103,6 +108,7 @@ export class CharCountService {
              JOIN libraries l ON l.id = s.library_id AND l.enabled = 1 AND l.available = 1
              LEFT JOIN char_counts c ON c.book_id = b.id
             WHERE s.file_path IS NOT NULL
+              AND (s.kind = 'upload' OR s.meta_hash IS NOT NULL)
               AND (b.added_at < @addedAt OR (b.added_at = @addedAt AND b.id < @bookId))
               AND NOT ${SQL_CURRENT}
             ORDER BY b.added_at DESC, b.id DESC LIMIT @limit`,
@@ -178,8 +184,32 @@ export class CharCountService {
     this.logError(`Character counts: ${message}`);
   }
 
+  /**
+   * Once per process: forgets the "file missing" failures that carry a file's identity. Only
+   * versions before 2026-11-28 made them (record() stores no identity for a missing file): a
+   * file found later was taken for the one the failure was made from, so those books were
+   * never tried again (the manga move's books: their new copy's path came with the index).
+   */
+  private repairMissingFailures(): void {
+    if (this.repaired) return;
+    this.repaired = true;
+    const n = this.db
+      .prepare(
+        `DELETE FROM char_counts WHERE status = 'error' AND error_code = 'file_missing'
+           AND file_bytes IS NOT NULL`,
+      )
+      .run().changes;
+    if (n > 0) {
+      noteFiguresWrite(this.db);
+      this.log(
+        `Character counts: ${n} "file missing" failures for files that are there will be counted again`,
+      );
+    }
+  }
+
   private async runBackground(): Promise<void> {
     const config = this.opts.config;
+    this.repairMissingFailures();
     const options = countImportOptions(config);
     this.workers = Array.from(
       { length: config.concurrency },
@@ -310,6 +340,12 @@ export class CharCountService {
     const previous = getCountRecord(this.db, src.bookId);
     if (!previous || previous.spec !== this.spec) return false;
     const stored = { bytes: previous.fileBytes, mtimeNs: previous.fileMtimeNs };
+    if (previous.status === 'error') {
+      // A failure was made from the file it names, never from one found there later: "older
+      // than the result" (sameFile without an identity) proves nothing for it.
+      if (previous.errorCode === 'file_missing') return false;
+      if (stored.bytes === null || stored.mtimeNs === null) return false;
+    }
     if (!sameFile(identity, stored, previous.countedAt)) return false;
     this.db
       .prepare(
@@ -355,6 +391,7 @@ export class CharCountService {
           ? previous.attempts
           : 0) + 1;
     const characters = outcome.ok ? outcome.characters : null;
+    const missing = !outcome.ok && outcome.code === 'file_missing';
     this.db.transaction(() => {
       this.db
         .prepare(
@@ -384,8 +421,9 @@ export class CharCountService {
           durationMs: outcome.durationMs,
           bytesRead: outcome.ok ? outcome.bytesRead : null,
           now: Date.now(),
-          fileBytes: identity?.bytes ?? null,
-          fileMtimeNs: identity?.mtimeNs ?? null,
+          // A missing file's failure was made from no file (see keepIfUnchanged).
+          fileBytes: missing ? null : (identity?.bytes ?? null),
+          fileMtimeNs: missing ? null : (identity?.mtimeNs ?? null),
         });
       this.db.prepare('UPDATE books SET char_count = ? WHERE id = ?').run(characters, src.bookId);
     })();

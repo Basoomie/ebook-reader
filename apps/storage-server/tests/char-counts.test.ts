@@ -265,6 +265,103 @@ describe('character counts', () => {
     expect(await apiBook(e, 'Bad')).toMatchObject({ charCount: 77, charCountStatus: 'counted' });
   });
 
+  // 2026-11-28 live: the manga move re-binds a book's source to manga-library before that
+  // library's index has its new folder, so the counter found no file at the old path; when the
+  // index then gave the new path, the moved copy (made before the failure) was taken for "the
+  // file that failure was made from" and the failure was kept. 5,211 books stayed uncounted.
+  it('never takes a file found later for the file a "file missing" failure was made from', async () => {
+    const { e, lib, ids } = await indexed(
+      [{ title: 'Gone', epub: Buffer.from('3') }],
+      {},
+      fakeCounter(),
+    );
+    const id = ids.get('Gone')!;
+    const file = lib.epubFile(id);
+    fs.unlinkSync(file);
+    await poll(e);
+    expect(getCountRecord(e.db, bookId(e, 'Gone'))).toMatchObject({
+      errorCode: 'file_missing',
+      fileBytes: null,
+    });
+
+    // The file is there now, older than the failure, and Calibre's key moved on.
+    fs.writeFileSync(file, '45');
+    const past = new Date(Date.now() - 3_600_000);
+    fs.utimesSync(file, past, past);
+    lib.setTitle(id, 'Gone');
+    lib.age();
+    await poll(e);
+    expect(await apiBook(e, 'Gone')).toMatchObject({ charCount: 45, charCountStatus: 'counted' });
+  });
+
+  it('waits for the index of a source a cleanup re-bound, instead of failing on its old path', async () => {
+    const { e, lib, ids } = await indexed(
+      [{ title: 'Moved', epub: Buffer.from('12') }],
+      {},
+      fakeCounter(),
+    );
+    await poll(e);
+    expect(await apiBook(e, 'Moved')).toMatchObject({ charCount: 12 });
+
+    // As the manga move leaves it (move-handoff.ts): the old library's path, no hashes, no
+    // last_modified, until the new library's index rewrites the row. The new copy is older.
+    const id = ids.get('Moved')!;
+    lib.replaceEpub(id, Buffer.from('345'));
+    const past = new Date(Date.now() - 3_600_000);
+    fs.utimesSync(lib.epubFile(id), past, past);
+    lib.age();
+    e.db
+      .prepare(
+        `UPDATE book_sources SET file_path = 'Old/Moved (77028)/Moved - Old.epub', meta_hash = NULL,
+           meta2_hash = NULL, calibre_last_modified = NULL WHERE book_id = ?`,
+      )
+      .run(bookId(e, 'Moved'));
+    const processed = e.counts.processed;
+    e.counts.wake();
+    await e.counts.idle();
+    expect(e.counts.processed).toBe(processed);
+    expect(getCountRecord(e.db, bookId(e, 'Moved'))).toMatchObject({
+      status: 'ok',
+      characters: 12,
+    });
+
+    await poll(e);
+    expect(await apiBook(e, 'Moved')).toMatchObject({ charCount: 345, charCountStatus: 'counted' });
+  });
+
+  it('counts again the "file missing" failures an earlier version kept for a file that is there', async () => {
+    const { e, root } = await indexed(
+      [{ title: 'Stuck', epub: Buffer.from('12') }],
+      {},
+      fakeCounter(),
+    );
+    await poll(e);
+    // What the earlier version left: the current key and the file's identity on a failure.
+    e.db
+      .prepare(
+        `UPDATE char_counts SET status = 'error', error_code = 'file_missing', characters = NULL,
+           error = 'ENOENT', attempts = 1 WHERE book_id = ?`,
+      )
+      .run(bookId(e, 'Stuck'));
+    e.db.prepare('UPDATE books SET char_count = NULL WHERE id = ?').run(bookId(e, 'Stuck'));
+    expect((await apiBook(e, 'Stuck')).charCountStatus).toBe('error');
+
+    const restarted = new CharCountService({
+      db: e.db,
+      calibreDir: root.dir,
+      config: { ...e.counts['opts'].config, background: true },
+      counterFile: e.counts.counter.file,
+      log: () => {},
+    });
+    try {
+      restarted.wake();
+      await restarted.idle();
+    } finally {
+      await restarted.stop();
+    }
+    expect(await apiBook(e, 'Stuck')).toMatchObject({ charCount: 12, charCountStatus: 'counted' });
+  });
+
   it('replaces a counter that hangs or crashes and carries on with the next book', async () => {
     const { e } = await indexed(
       [
