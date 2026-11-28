@@ -47,7 +47,12 @@ import path from 'path';
 import { sha256File } from './file-hash';
 import { snapshotFile } from '../calibre/indexer';
 import { getIndexState, getLibrary } from '../calibre/libraries';
-import { describeLock, snapshotMetadataDb } from '../calibre/snapshot';
+import {
+  describeLock,
+  postponedWaitMs,
+  snapshotMetadataDb,
+  SnapshotPostponed,
+} from '../calibre/snapshot';
 import { folderExists, METADATA_DB, resolveInside, statFile } from '../calibre/source-fs';
 import {
   applyHandoff,
@@ -314,6 +319,13 @@ export class BatchService {
    * after 10 minutes, so one past this is stuck (a stalled read, 2026-11-26).
    */
   snapshotStuckMs = 15 * 60_000;
+  /**
+   * Copies postponed in a row per batch (Calibre kept writing, 2026-11-28) and when the next may
+   * start: repeated reads of a busy metadata.db would slow Calibre's own writes.
+   */
+  private readonly snapshotPostponed = new Map<string, { count: number; until: number }>();
+  /** The wait after a postponed copy (tests replace it). */
+  snapshotPostponeWait: (postponedInARow: number) => number = postponedWaitMs;
   /** How long a claim waits for a copy before answering "being made" (under the sidecar's 60 s). */
   snapshotAnswerMs = 30_000;
   /** Stage 2's batches (WP20b): writing fields instead of removing copies. */
@@ -969,12 +981,39 @@ export class BatchService {
         this.snapshotting.delete(batch.id);
         entry = undefined;
       }
+      const postponed = this.snapshotPostponed.get(batch.id);
+      if (!entry && postponed && postponed.until > Date.now()) {
+        const at = new Date(postponed.until).toISOString().slice(11, 16);
+        return {
+          batch: null,
+          wait: `metadata.db snapshot postponed (Calibre kept writing); next try at ${at}Z`,
+        };
+      }
       if (!entry) {
-        const promise: Promise<void> = this.makeSnapshot(batch).finally(() => {
-          // Only this copy's own entry (a dropped stuck copy never removes its successor).
-          if (this.snapshotting.get(batch.id)?.promise === promise)
-            this.snapshotting.delete(batch.id);
-        });
+        const promise: Promise<void> = this.makeSnapshot(batch)
+          .then(
+            () => {
+              this.snapshotPostponed.delete(batch.id);
+            },
+            (err: unknown) => {
+              if (err instanceof SnapshotPostponed) {
+                const count = (this.snapshotPostponed.get(batch.id)?.count ?? 0) + 1;
+                this.snapshotPostponed.set(batch.id, {
+                  count,
+                  until: Date.now() + this.snapshotPostponeWait(count),
+                });
+                this.deps.log?.(
+                  `Cleanup: batch ${batch.id}: metadata.db copy postponed: ${err.message}`,
+                );
+              }
+              throw err;
+            },
+          )
+          .finally(() => {
+            // Only this copy's own entry (a dropped stuck copy never removes its successor).
+            if (this.snapshotting.get(batch.id)?.promise === promise)
+              this.snapshotting.delete(batch.id);
+          });
         promise.catch(() => {});
         entry = { promise, startedAt: Date.now() };
         this.snapshotting.set(batch.id, entry);
@@ -1053,13 +1092,14 @@ export class BatchService {
     if (!lib || !this.deps.calibreDir) throw new Error('the library is not available');
     await fs.mkdir(path.dirname(dest), { recursive: true });
     // Calibre keeps writing metadata.db during a run (its own background writes): a consistent
-    // copy in one step (SQLite's backup), not one that must find metadata.db unchanged.
+    // copy (a lock-free read Calibre did not write during, else SQLite's backup in short-lock
+    // steps), not one that must find metadata.db unchanged before and after.
     // The copy and its checksum run on a worker thread (2026-11-26): on the busy main thread the
     // checksum's reads each waited for a turn of the event loop.
     const snap = await snapshotMetadataDb(
       path.join(this.deps.calibreDir, lib.folder, METADATA_DB),
       dest,
-      { timeoutMs: 600_000, allowChanging: true, oneStep: true, hash: true },
+      { timeoutMs: 600_000, allowChanging: true, hash: true },
     );
     this.deps.log?.(
       `Cleanup: batch ${batch.id}: metadata.db copied in ${((snap.copyMs + snap.checkMs) / 1000).toFixed(1)} s (${describeLock(snap)})`,

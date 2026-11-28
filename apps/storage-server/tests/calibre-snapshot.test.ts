@@ -7,9 +7,10 @@ import {
   configureSnapshotLockWarning,
   snapshotMetadataDb,
   SnapshotFailed,
+  SnapshotPostponed,
   SnapshotSkipped,
 } from '../src/calibre/snapshot';
-import { copyWithoutLock } from '../src/calibre/snapshot-worker';
+import { copyWithoutLock, nextStepPages } from '../src/calibre/snapshot-worker';
 import { CalibreRoot, fingerprint } from './helpers/calibre-fixture';
 import { makeTempDir } from './helpers/spawn-server';
 
@@ -113,30 +114,26 @@ describe('a metadata.db Calibre writes every few milliseconds (NAS 2026-11-15)',
     return { root, lib, db };
   }
 
-  it('copies it in one step even while it keeps changing; step by step switches to one step after 3 restarts', async () => {
+  it('copies it in steps sized to the disk while it keeps changing', async () => {
     statHook.bumpAfter = -1;
     const { lib, db } = await busyLibrary();
     const touch = db.prepare('UPDATE books SET title = ? WHERE id = 1');
     let n = 0;
-    const writer = setInterval(() => touch.run(`t${n++}`), 2);
+    // 50 commits a second (Calibre's backlog commits about once a second). Every 2 ms, Windows'
+    // disk syncs keep the writer's lock taken nearly all the time and a copy that never waits
+    // long for it is postponed: the next test.
+    const writer = setInterval(() => touch.run(`t${n++}`), 20);
     try {
       const dest = path.join(makeTempDir('cache'), 'snap.db');
-      // 100 pages at a time is restarted by every write; after 3 restarts the rest goes in one
-      // step (before 2026-11-26 it never got through).
-      const stepped = await snapshotMetadataDb(lib.dbFile, dest, {
-        timeoutMs: 10_000,
-        allowChanging: true,
-        lockFreeTries: 0,
-      });
-      // How often the writer lands between two steps depends on timing; never more than 3.
-      expect(stepped.restarts).toBeLessThanOrEqual(3);
-      expect(stepped.libraryUuid).toBe(lib.uuid);
+      // From memory a step grows to the whole file within a few steps, so the copy gets
+      // through between two writes (before 2026-11-26 100-page steps never did).
       const res = await snapshotMetadataDb(lib.dbFile, dest, {
         timeoutMs: 10_000,
         allowChanging: true,
-        oneStep: true,
         lockFreeTries: 0,
       });
+      expect(res.libraryUuid).toBe(lib.uuid);
+      expect(res.lockMs).toBeLessThan(2_000);
       const copy = new Database(res.file, { readonly: true });
       expect(copy.pragma('quick_check', { simple: true })).toBe('ok');
       expect((copy.prepare('SELECT COUNT(*) n FROM filler').get() as { n: number }).n).toBe(2000);
@@ -145,6 +142,49 @@ describe('a metadata.db Calibre writes every few milliseconds (NAS 2026-11-15)',
       clearInterval(writer);
       db.close();
     }
+  });
+
+  it('is postponed, never copied in one long step, when Calibre writes between every few steps (2026-11-28)', async () => {
+    statHook.bumpAfter = -1;
+    const { lib, db } = await busyLibrary();
+    const touch = db.prepare('UPDATE books SET title = ? WHERE id = 1');
+    let n = 0;
+    const writer = setInterval(() => touch.run(`t${n++}`), 2);
+    const dir = makeTempDir('cache');
+    const dest = path.join(dir, 'snap.db');
+    try {
+      // Steps held to about 1 ms stand in for a slow disk: the copy needs many steps, Calibre
+      // writes between them, and it is given up rather than finished under one long lock.
+      const err = await snapshotMetadataDb(lib.dbFile, dest, {
+        timeoutMs: 10_000,
+        allowChanging: true,
+        lockFreeTries: 0,
+        maxLockMs: 1,
+        budgetMs: 300,
+      }).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(SnapshotPostponed);
+      expect(err).toBeInstanceOf(SnapshotSkipped); // the callers' "try later"
+      expect((err as Error).message).toMatch(
+        /^Calibre kept writing metadata.db: 0 lock-free read\(s\) and \d+ short-lock backup\(s\) in \d+ s found it changed \(last: (Calibre wrote between two steps 3 times|out of time)\)$/,
+      );
+    } finally {
+      clearInterval(writer);
+      db.close();
+    }
+    expect(fs.readdirSync(dir)).toEqual([]);
+  });
+});
+
+describe('step sizes (2026-11-28)', () => {
+  it('sizes each step to half the longest lock at the last step pace, at most double the last', () => {
+    // From memory: 256 pages in 2 ms → double (512), not the 128,000 the pace allows.
+    expect(nextStepPages(256, 2, 2_000)).toBe(512);
+    // A cold disk (the NAS: 1 MiB in about 200 ms): 1,280 pages fit in 1 s; it grows there.
+    expect(nextStepPages(256, 200, 2_000)).toBe(512);
+    expect(nextStepPages(2_048, 1_600, 2_000)).toBe(1_280);
+    // A disk that stalls: 256 pages took 5 s → 51 pages, never below 16.
+    expect(nextStepPages(256, 5_000, 2_000)).toBe(51);
+    expect(nextStepPages(256, 60_000, 2_000)).toBe(16);
   });
 });
 
@@ -205,7 +245,7 @@ describe('a busy server (NAS 2026-11-26: the copy took longer than 600 s)', () =
       const dest = path.join(makeTempDir('cache'), 'snap.db');
       const res = await snapshotMetadataDb(source, dest, { timeoutMs: 15_000, lockFreeTries: 0 });
       expect(res.libraryUuid).toBe('u-1');
-      expect(res.steps).toBeGreaterThanOrEqual(50);
+      expect(res.steps).toBeGreaterThan(1);
       expect(res.copyMs).toBeLessThan(1500);
     } finally {
       stop();
@@ -288,7 +328,6 @@ describe("Calibre's lock (2026-11-27: Calibre's start failed with 'database is l
         const res = await snapshotMetadataDb(file, dest, {
           timeoutMs: 15_000,
           allowChanging: true,
-          oneStep: true,
         });
         if (res.lockFree) lockFree += 1;
         else locked += 1;
@@ -310,16 +349,28 @@ describe("Calibre's lock (2026-11-27: Calibre's start failed with 'database is l
     expect(lockFree + locked).toBe(30);
   }, 120_000);
 
-  it('a lock-free copy never makes Calibre wait; the one-step backup did', async () => {
-    const source = bigDatabase(40);
+  it('a lock-free copy never makes Calibre wait; a backup holds the lock in short steps', async () => {
+    const source = bigDatabase(80);
     const dest = path.join(makeTempDir('cache'), 'snap.db');
-    // Stands in for Calibre: takes its exclusive lock every millisecond and does not wait.
+    // The old one-step copy, for scale: how long one step over the whole file holds the lock.
+    const direct = new Database(source, { readonly: true });
+    const from = Date.now();
+    await direct.backup(path.join(makeTempDir('cache'), 'one-step.db'), {
+      progress: () => 0x7fffffff,
+    });
+    const oneStepMs = Date.now() - from;
+    direct.close();
+
+    // Stands in for Calibre: takes its exclusive lock every millisecond, waiting for it as
+    // Calibre does (Calibre waits up to 10 s; here 2 s), and notes the longest wait.
     const calibre = new Database(source);
-    calibre.pragma('busy_timeout = 0');
+    calibre.pragma('busy_timeout = 2000');
     let refused = 0;
     let tries = 0;
+    let longestWait = 0;
     const takeLock = () => {
       tries += 1;
+      const t = Date.now();
       try {
         calibre.exec('BEGIN EXCLUSIVE');
         calibre.exec('COMMIT');
@@ -327,35 +378,65 @@ describe("Calibre's lock (2026-11-27: Calibre's start failed with 'database is l
         if (/locked|busy/i.test(String(err))) refused += 1;
         else throw err;
       }
+      longestWait = Math.max(longestWait, Date.now() - t);
     };
-    const run = async (lockFreeTries?: number) => {
+    const run = async (opts: { lockFreeTries?: number; maxLockMs?: number }) => {
       refused = 0;
       tries = 0;
+      longestWait = 0;
       const timer = setInterval(takeLock, 1);
       try {
-        return await snapshotMetadataDb(source, dest, {
-          timeoutMs: 30_000,
-          oneStep: true,
-          lockFreeTries,
-        });
+        return await snapshotMetadataDb(source, dest, { timeoutMs: 30_000, ...opts });
       } finally {
         clearInterval(timer);
       }
     };
     try {
-      const before = await run(0);
-      const refusedBefore = refused;
-      const now = await run();
-      expect(now.lockFree).toBe(true);
+      const lockFree = await run({});
+      expect(lockFree.lockFree).toBe(true);
+      expect(lockFree.lockMs).toBe(0);
       expect(tries).toBeGreaterThan(0);
       expect(refused).toBe(0);
-      expect(before.lockFree).toBe(false);
-      expect(before.lockMs).toBeGreaterThan(0);
-      expect(refusedBefore).toBeGreaterThan(0);
+
+      // Steps sized for 4 ms: many short steps, each far shorter than one step over the file.
+      const stepped = await run({ lockFreeTries: 0, maxLockMs: 4 });
+      expect(stepped.lockFree).toBe(false);
+      expect(stepped.steps).toBeGreaterThan(10);
+      expect(stepped.lockMs).toBeLessThan(oneStepMs);
+      expect(refused).toBe(0);
+      // Its waits are mostly SQLite's own pauses between tries (up to 100 ms each), far under
+      // Calibre's 10 s.
+      expect(longestWait).toBeLessThan(1_000);
+      const copy = new Database(dest, { readonly: true });
+      expect(copy.pragma('quick_check', { simple: true })).toBe('ok');
+      copy.close();
     } finally {
       calibre.close();
     }
   }, 60_000);
+
+  it('a backup begun while Calibre holds its write lock waits for it, never ends with no copy', async () => {
+    // SQLite reports 0 pages remaining for a refused first step, and better-sqlite3 then ended
+    // the backup as done and deleted the copy ("unable to open database file" on Linux).
+    const source = bigDatabase(4);
+    const dest = path.join(makeTempDir('cache'), 'snap.db');
+    const calibre = new Database(source);
+    calibre.pragma('busy_timeout = 2000');
+    calibre.exec('BEGIN EXCLUSIVE');
+    const release = setTimeout(() => calibre.exec('COMMIT'), 300);
+    try {
+      const res = await snapshotMetadataDb(source, dest, { timeoutMs: 15_000, lockFreeTries: 0 });
+      expect(res.libraryUuid).toBe('u-1');
+      expect(res.lockFree).toBe(false);
+      const copy = new Database(dest, { readonly: true });
+      expect(copy.pragma('quick_check', { simple: true })).toBe('ok');
+      copy.close();
+    } finally {
+      clearTimeout(release);
+      if (calibre.inTransaction) calibre.exec('COMMIT');
+      calibre.close();
+    }
+  });
 
   it('warns when a copy held the lock longer than CALIBRE_LOCK_WARN_SECONDS', async () => {
     const source = bigDatabase(4);
@@ -369,6 +450,8 @@ describe("Calibre's lock (2026-11-27: Calibre's start failed with 'database is l
       configureSnapshotLockWarning(5, (m) => console.warn(m));
     }
     expect(lines).toHaveLength(1);
-    expect(lines[0]).toMatch(/held its database lock for .* s \(Calibre gives up after 10 s/);
+    expect(lines[0]).toMatch(
+      /held its database lock for .* s in one step \(Calibre gives up after 10 s/,
+    );
   });
 });

@@ -29,7 +29,14 @@ import {
   syncDiscoveredLibraries,
   updateIndexState,
 } from './libraries';
-import { describeLock, hasJournal, snapshotMetadataDb, SnapshotSkipped } from './snapshot';
+import {
+  describeLock,
+  hasJournal,
+  postponedWaitMs,
+  snapshotMetadataDb,
+  SnapshotPostponed,
+  SnapshotSkipped,
+} from './snapshot';
 import { isWritable, listSubfolders, METADATA_DB, resolveInside, statFile } from './source-fs';
 
 export const SNAPSHOT_DIRNAME = 'calibre';
@@ -147,6 +154,13 @@ export class CalibreIndexer {
   private readonly lastProblem = new Map<string, string>();
   /** Since when each library's metadata.db has kept changing (the settle wait). */
   private readonly unsettledSince = new Map<string, number>();
+  /**
+   * Copies postponed in a row per library (Calibre kept writing, 2026-11-28) and when the next
+   * may start: repeated reads of a busy metadata.db would slow Calibre's own writes.
+   */
+  private readonly postponed = new Map<string, { count: number; until: number }>();
+  /** The wait after a postponed copy (tests replace it). */
+  postponeWait: (postponedInARow: number) => number = postponedWaitMs;
 
   constructor(opts: IndexerOptions) {
     this.opts = opts;
@@ -306,6 +320,9 @@ export class CalibreIndexer {
         this.noteProblem(lib.id, `${label}: ${why}`, false);
         return;
       }
+      // A copy postponed because Calibre kept writing: wait before reading metadata.db again
+      // (its last_problem still says why).
+      if ((this.postponed.get(lib.id)?.until ?? 0) > Date.now()) return;
 
       const settled = Date.now() - stat.mtimeMs >= this.config.settleSeconds * 1000;
       let forced = false;
@@ -337,9 +354,9 @@ export class CalibreIndexer {
       const snap = await snapshotMetadataDb(source, dest, {
         timeoutMs: this.config.snapshotTimeoutSeconds * 1000,
         allowChanging: forced,
-        oneStep: forced,
       });
       this.unsettledSince.delete(lib.id);
+      this.postponed.delete(lib.id);
 
       const target = adoptLibraryUuid(this.db, lib.id, snap.libraryUuid);
       if (target.id !== lib.id) {
@@ -405,14 +422,21 @@ export class CalibreIndexer {
       const failed = safeFailure(this.db, lib.id);
       const behind = failed?.behindSince ? `, behind since ${clockUtc(failed.behindSince)}` : '';
       if (err instanceof SnapshotSkipped) {
+        let next = '';
+        if (err instanceof SnapshotPostponed) {
+          const count = (this.postponed.get(lib.id)?.count ?? 0) + 1;
+          const until = Date.now() + this.postponeWait(count);
+          this.postponed.set(lib.id, { count, until });
+          if (until > Date.now()) next = `; next try at ${clockUtc(until)}`;
+        }
         safeUpdate(this.db, lib.id, {
           status: 'settling',
-          lastProblem: `the copy of metadata.db was postponed: ${message}`,
+          lastProblem: `the copy of metadata.db was postponed: ${message}${next}`,
         });
         // Every failed copy is logged with its count (2026-11-26: logged once, a day of failed
         // copies showed as one line).
         this.log(
-          `Calibre: ${label}: snapshot postponed (${failed?.failures ?? 1} in a row${behind}): ${message}`,
+          `Calibre: ${label}: snapshot postponed (${failed?.failures ?? 1} in a row${behind}): ${message}${next}`,
         );
         this.lastProblem.delete(lib.id);
       } else {

@@ -12,10 +12,12 @@
  * main thread a 165 MB copy took over 600 s while it takes about 2 s on a thread of its own.
  * The time limit stops the thread, not only the next step.
  *
- * Calibre's lock (2026-11-27): a copy first reads the file with plain reads, which take no
- * lock, and keeps that copy when Calibre committed nothing meanwhile; only otherwise does the
- * backup run, from pages now in memory, so Calibre (which waits at most 10 s for its
- * database) is never kept waiting by a slow disk. See snapshot-worker.ts.
+ * Calibre's lock (2026-11-27, 2026-11-28): a copy first reads the file with plain reads, which
+ * take no lock, and keeps that copy when Calibre committed nothing meanwhile; otherwise the
+ * backup runs in steps that each hold the lock at most about CALIBRE_LOCK_MAX_SECONDS, and
+ * when Calibre keeps writing for CALIBRE_COPY_TRY_SECONDS the copy is postponed
+ * (SnapshotPostponed). Calibre waits at most 10 s for its database: a copy never makes it wait
+ * long, whatever the disk does. See snapshot-worker.ts.
  */
 import fs from 'fs/promises';
 import path from 'path';
@@ -23,14 +25,14 @@ import { Worker } from 'worker_threads';
 import { METADATA_DB, readHeader, SourceStat, statFile } from './source-fs';
 import type { SnapshotJob, SnapshotJobResult } from './snapshot-worker';
 
-/** Pages copied per backup step (4 KiB pages: 400 KiB per read lock). */
-const BACKUP_STEP_PAGES = 100;
-/** Restarts (the source changed between steps) after which the rest is copied in one step. */
+/** Pages of a backup's first step (4 KiB pages: 1 MiB); later steps are sized from its pace. */
+const FIRST_STEP_PAGES = 256;
+/** A backup Calibre restarted this often (it wrote between two steps) is given up. */
 const MAX_STEP_RESTARTS = 3;
 /**
- * Lock-free reads tried before SQLite's backup (2026-11-27, snapshot-worker.ts): the first
- * brings the file into memory (17-39 s cold on the busy NAS), the next ones take well under a
- * second and often fall between two of Calibre's commits.
+ * Lock-free reads tried before each backup (2026-11-27, snapshot-worker.ts): the first brings
+ * the file into memory (17-39 s cold on the busy NAS), the next ones often take well under a
+ * second and fall between two of Calibre's commits.
  */
 const LOCK_FREE_TRIES = 3;
 /** Calibre waits this long for its database before giving up (BUSY_TIMEOUT, calibre 9.18). */
@@ -38,6 +40,10 @@ export const CALIBRE_BUSY_TIMEOUT_MS = 10_000;
 
 /** A copy that held metadata.db's lock longer than this is logged as a warning. */
 let lockWarnMs = 5_000;
+/** A backup step is sized to hold the lock at most about this long (CALIBRE_LOCK_MAX_SECONDS). */
+let maxLockMs = 2_000;
+/** How long one copy tries before it is postponed (CALIBRE_COPY_TRY_SECONDS). */
+let tryBudgetMs = 120_000;
 let warn: (message: string) => void = (m) => console.warn(m);
 
 /** At start-up: CALIBRE_LOCK_WARN_SECONDS and where the warning goes. */
@@ -49,9 +55,16 @@ export function configureSnapshotLockWarning(
   if (log) warn = log;
 }
 
-/** How a copy went, for the callers' log lines: "no lock" or "lock held 0.4 s". */
+/** At start-up: CALIBRE_LOCK_MAX_SECONDS and CALIBRE_COPY_TRY_SECONDS. */
+export function configureSnapshotCopy(opts: { maxLockSeconds: number; trySeconds: number }): void {
+  maxLockMs = Math.round(opts.maxLockSeconds * 1000);
+  tryBudgetMs = Math.round(opts.trySeconds * 1000);
+}
+
+/** How a copy went, for the callers' log lines: "no lock" or "lock held 0.4 s at most". */
 export function describeLock(result: { lockFree: boolean; lockMs: number }): string {
-  return result.lockFree ? 'no lock' : `lock held ${(result.lockMs / 1000).toFixed(1)} s`;
+  if (result.lockMs === 0) return 'no lock';
+  return `lock held ${(result.lockMs / 1000).toFixed(1)} s at most`;
 }
 
 // Under ts-node (dev, tests) the worker is TypeScript too.
@@ -60,6 +73,17 @@ const WORKER_FILE = path.join(__dirname, `snapshot-worker${RUNNING_TS ? '.ts' : 
 
 /** A temporary reason not to snapshot now; the next poll retries. */
 export class SnapshotSkipped extends Error {}
+
+/**
+ * Calibre kept writing for the whole try (or the copy ran out of time): the callers wait before
+ * the next try, so repeated reads of a busy metadata.db don't slow Calibre's writes.
+ */
+export class SnapshotPostponed extends SnapshotSkipped {}
+
+/** The wait before the next try after `postponed` copies in a row: 1, 2, 4, 8, then 10 min. */
+export function postponedWaitMs(postponed: number): number {
+  return Math.min(2 ** Math.max(postponed - 1, 0), 10) * 60_000;
+}
 
 /** The source can't be snapshotted as it is (e.g. WAL mode); reported as a library error. */
 export class SnapshotFailed extends Error {}
@@ -95,9 +119,9 @@ export interface SnapshotResult {
   restarts: number;
   copyMs: number;
   checkMs: number;
-  /** The copy came from a plain read; metadata.db was never locked. */
+  /** The copy kept came from a plain read. */
   lockFree: boolean;
-  /** Longest time one backup step held metadata.db's read lock (ms); 0 when lock-free. */
+  /** Longest time one backup step held metadata.db's read lock (ms); 0 when none ran. */
   lockMs: number;
 }
 
@@ -108,17 +132,17 @@ export interface SnapshotOptions {
    * source changes, so the copy is still consistent; only use when the source never settles.
    */
   allowChanging?: boolean;
-  /**
-   * Copy everything after the first step in one go: one read lock for the whole copy, so a
-   * source Calibre writes every second can't make SQLite restart it again and again (seen on
-   * the NAS 2026-11-15). Calibre waits up to 10 s for a lock (BUSY_TIMEOUT in calibre 9.18).
-   * A step-by-step copy also switches to one step after a few restarts.
-   */
-  oneStep?: boolean;
   /** Also compute the copy's SHA-256 on the worker thread (a cleanup batch's copy). */
   hash?: boolean;
-  /** Lock-free reads tried before SQLite's backup (default 3; 0 = the backup only). */
+  /** Lock-free reads tried before each backup (default 3; 0 = the backup only). */
   lockFreeTries?: number;
+  /**
+   * The longest a backup step should hold the lock (default CALIBRE_LOCK_MAX_SECONDS). There
+   * is no one-step copy any more (2026-11-28): it held the lock for as long as the disk took.
+   */
+  maxLockMs?: number;
+  /** How long to try before SnapshotPostponed (default CALIBRE_COPY_TRY_SECONDS). */
+  budgetMs?: number;
 }
 
 async function removeQuietly(file: string): Promise<void> {
@@ -181,7 +205,7 @@ function runInWorker(job: SnapshotJob, timeoutMs: number): Promise<SnapshotJobRe
       () => {
         finish(() =>
           reject(
-            new SnapshotSkipped(`the copy took longer than ${Math.round(timeoutMs / 1000)} s`),
+            new SnapshotPostponed(`the copy took longer than ${Math.round(timeoutMs / 1000)} s`),
           ),
         );
         void worker
@@ -205,9 +229,10 @@ export async function snapshotMetadataDb(
   {
     timeoutMs,
     allowChanging = false,
-    oneStep = false,
     hash = false,
     lockFreeTries = LOCK_FREE_TRIES,
+    maxLockMs: stepLockMs = maxLockMs,
+    budgetMs = tryBudgetMs,
   }: SnapshotOptions,
 ): Promise<SnapshotResult> {
   const before = await statFile(source);
@@ -233,26 +258,29 @@ export async function snapshotMetadataDb(
       {
         source,
         tmp,
-        oneStep,
-        stepPages: BACKUP_STEP_PAGES,
+        maxLockMs: stepLockMs,
+        firstStepPages: FIRST_STEP_PAGES,
         maxRestarts: MAX_STEP_RESTARTS,
+        // Room left for quick_check and the checksum inside the time limit.
+        budgetMs: Math.max(0, Math.min(budgetMs, timeoutMs * 0.75)),
         hash,
         lockFreeTries,
       },
       timeoutMs,
     );
+    if ((result.ok || result.kind === 'postponed') && result.lockMs > lockWarnMs) {
+      warn(
+        `Calibre: copying ${source} held its database lock for ${(result.lockMs / 1000).toFixed(1)} s ` +
+          `in one step (Calibre gives up after ${CALIBRE_BUSY_TIMEOUT_MS / 1000} s; steps are sized ` +
+          `for ${stepLockMs / 1000} s, CALIBRE_LOCK_MAX_SECONDS; warning above ${lockWarnMs / 1000} s, ` +
+          `CALIBRE_LOCK_WARN_SECONDS)`,
+      );
+    }
     if (!result.ok) {
+      if (result.kind === 'postponed') throw new SnapshotPostponed(result.message);
       if (result.kind === 'skipped') throw new SnapshotSkipped(result.message);
       if (result.kind === 'failed') throw new SnapshotFailed(result.message);
       throw new Error(result.message);
-    }
-    if (!result.lockFree && result.lockMs > lockWarnMs) {
-      warn(
-        `Calibre: copying ${source} held its database lock for ${(result.lockMs / 1000).toFixed(1)} s ` +
-          `(Calibre gives up after ${CALIBRE_BUSY_TIMEOUT_MS / 1000} s; warning above ` +
-          `${lockWarnMs / 1000} s, CALIBRE_LOCK_WARN_SECONDS); ${result.lockFreeTries} lock-free ` +
-          `read(s) found Calibre writing`,
-      );
     }
 
     const after = await statFile(source);

@@ -15,6 +15,7 @@ import { Calibredb, buildArgs } from '../../cleanup-apply/src/calibredb';
 import { CalibredbHelper } from '../../cleanup-apply/src/calibredb-helper';
 import type { SidecarConfig } from '../../cleanup-apply/src/config';
 import { mayStillHappen, StepTimes, Worker, writeKind } from '../../cleanup-apply/src/worker';
+import { SnapshotPostponed } from '../src/calibre/snapshot';
 import {
   PROPOSED_TWICE_REASON,
   SPLIT_WORD_REASON,
@@ -1066,6 +1067,48 @@ describe('stage 2: metadata and covers from the files', () => {
     expect(calls).toBe(2);
     expect(next.batch?.id).toBe(planned.id);
     expect(next.batch?.snapshotSha256).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('a copy postponed because Calibre kept writing waits before the next try (2026-11-28)', async () => {
+    await setMode('on');
+    await worker().cycle(); // heartbeat and safety checks
+    await env.service.tick();
+    const planned = env.service.batches.open()!;
+    const svc = env.service.batches as unknown as {
+      makeSnapshot: (b: unknown) => Promise<void>;
+      snapshotAnswerMs: number;
+      snapshotPostponeWait: (n: number) => number;
+    };
+    const real = svc.makeSnapshot.bind(env.service.batches);
+    let calls = 0;
+    const waits: number[] = [];
+    svc.makeSnapshot = (b) =>
+      ++calls <= 2
+        ? Promise.reject(new SnapshotPostponed('Calibre kept writing metadata.db'))
+        : real(b);
+    svc.snapshotAnswerMs = 5_000;
+    svc.snapshotPostponeWait = (n) => {
+      waits.push(n);
+      return n === 1 ? 60_000 : 0;
+    };
+    const first = await env.service.batches.claim();
+    expect(first.wait).toMatch(/postponed: Calibre kept writing/);
+    // Within the wait no copy is started: metadata.db is not read again.
+    const second = await env.service.batches.claim();
+    expect(second.wait).toMatch(
+      /^metadata.db snapshot postponed \(Calibre kept writing\); next try at \d\d:\d\dZ$/,
+    );
+    expect(calls).toBe(1);
+    // After the wait it tries again; the count of postponed copies in a row goes on.
+    (svc as unknown as { snapshotPostponed: Map<string, { until: number }> }).snapshotPostponed.get(
+      planned.id,
+    )!.until = 0;
+    expect((await env.service.batches.claim()).wait).toMatch(/postponed: Calibre kept writing/);
+    expect(waits).toEqual([1, 2]);
+    let next = await env.service.batches.claim();
+    for (let i = 0; i < 200 && !next.batch; i++) next = await env.service.batches.claim();
+    expect(calls).toBe(3);
+    expect(next.batch?.id).toBe(planned.id);
   });
 
   it('a sidecar stopped after a write resumes without writing again', async () => {

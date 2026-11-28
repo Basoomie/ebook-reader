@@ -261,6 +261,11 @@ describe('change detection and snapshots', () => {
     // Copies that fail: counted, each one logged with its count, still behind since the start.
     lib.age(3600);
     e.calibre.snapshotTimeoutSeconds = 0.001;
+    const waits: number[] = [];
+    e.indexer.postponeWait = (n) => {
+      waits.push(n);
+      return 0;
+    };
     await e.indexer.tick();
     await e.indexer.tick();
     s = getIndexState(e.db, id);
@@ -270,6 +275,21 @@ describe('change detection and snapshots', () => {
     const postponed = e.logs.filter((l) => l.includes('snapshot postponed'));
     expect(postponed).toHaveLength(2);
     expect(postponed[1]).toMatch(/\(2 in a row, behind since \d\d:\d\dZ\)/);
+
+    // A postponed copy waits before metadata.db is read again (2026-11-28): no try meanwhile.
+    e.indexer.postponeWait = (n) => {
+      waits.push(n);
+      return 60_000;
+    };
+    await e.indexer.tick();
+    await e.indexer.tick();
+    s = getIndexState(e.db, id);
+    expect(s.failures).toBe(3);
+    expect(s.lastProblem).toMatch(/; next try at \d\d:\d\dZ$/);
+    expect(waits).toEqual([1, 2, 3]);
+    (e.indexer as unknown as { postponed: Map<string, { until: number }> }).postponed.get(
+      id,
+    )!.until = 0;
 
     // Indexed: caught up.
     e.calibre.snapshotTimeoutSeconds = 600;
