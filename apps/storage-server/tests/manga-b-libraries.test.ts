@@ -526,6 +526,25 @@ describe('two libraries: the service, the checks and the new arrivals', () => {
     env.service.arrivals.decide(id, 'keep_both');
   }, 120_000);
 
+  it('a run with no new file reads nothing of the other library (run 11)', async () => {
+    // A book manga-library got since (a move): stages 1 and 3 never read it.
+    const E = makeTextEpub({ title: 'E', chapters: chaptersOf(15) });
+    M.E = await manga.addBook({ title: 'E', authors: ['作者'], epub: E });
+    manga.age();
+    await env.indexer.checkLibrary(listLibraries(env.db).find((l) => l.id === mangaId())!);
+    const facts = () =>
+      env.cleanupDb
+        .prepare('SELECT COUNT(*) AS n FROM text_facts WHERE library_id = ? AND calibre_id = ?')
+        .get(mangaId(), M.E) as { n: number };
+    env.service.arrivals.requestRun(env.libraryId());
+    await steps();
+    const run = env.cleanupDb
+      .prepare('SELECT library_id, state, error FROM calibre_arrival_runs ORDER BY id DESC LIMIT 1')
+      .get() as { library_id: string; state: string; error: string | null };
+    expect(run).toMatchObject({ library_id: env.libraryId(), state: 'done' });
+    expect(facts()).toEqual({ n: 0 });
+  }, 120_000);
+
   it('an add batch names its library; an older sidecar never gets another library’s', async () => {
     const run = Number(
       env.cleanupDb

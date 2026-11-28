@@ -2549,6 +2549,27 @@ export class BookArrivals {
     const slice = async <T>(fn: () => Promise<T>) => this.withDisk(p, fn, shouldStop);
 
     if (x.stage === 'library') {
+      // No file of this run left to check against it: nothing to read (run 11, 2026-11-28: a
+      // run with no new files read every unread book of manga-library before moving on).
+      const anyLeft = () => {
+        let after = 0;
+        for (;;) {
+          const page = this.db
+            .prepare(
+              `SELECT id, facts_json FROM calibre_arrival_files INDEXED BY calibre_arrival_files_outcome
+               WHERE outcome = 'new' AND pair_key IN (${ph}) AND gone_at IS NULL AND id > ?
+                 AND json_extract(facts_json, '$.compared') = 1 ORDER BY id LIMIT 500`,
+            )
+            .all(...keys, after) as { id: number; facts_json: string | null }[];
+          if (!page.length) return false;
+          if (page.some((r) => !(facts(r).crossChecked ?? []).includes(lib))) return true;
+          after = page[page.length - 1].id;
+        }
+      };
+      if (!anyLeft()) {
+        nextLibrary();
+        return 'more';
+      }
       p.waiting = `Reading the books of ${name} that stages 1 and 3 have not read yet`;
       const ok = await slice(() => this.ensureLibraryFacts(cd, pd, books, srcPacer, shouldStop));
       if (ok === null || ok === false) return 'wait';
