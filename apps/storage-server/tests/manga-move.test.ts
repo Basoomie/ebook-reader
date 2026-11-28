@@ -164,7 +164,7 @@ describe('moving books to the manga library', () => {
          VALUES (?, 'ok', 'k', 'v1', ?, 0, ?, ?)`,
       )
       .run(bookId, chars, Date.now(), fileBytes);
-  const heartbeat = (version = '1.6.0') =>
+  const heartbeat = (version = '1.8.2') =>
     request(env.app)
       .post('/api/v1/cleanup-apply/heartbeat')
       .set('Authorization', apply)
@@ -401,7 +401,7 @@ describe('moving books to the manga library', () => {
     // An older sidecar never gets a move batch.
     await heartbeat('1.5.0');
     await runPass();
-    expect(getMoveState(env.cleanupDb).progress.write.waiting).toMatch(/older than 1\.6\.0/);
+    expect(getMoveState(env.cleanupDb).progress.write.waiting).toMatch(/older than 1\.8\.2/);
     await heartbeat();
     await runPass();
     const { batch } = await claimAndSave();
@@ -715,6 +715,61 @@ describe('moving books to the manga library', () => {
     p = env.service.arrivals.currentRun()!.p;
     expect(p.move).toMatchObject({ tagged: 1, auto: 0, held: { no_count: 1 } });
     expect(proposed(run2)).toHaveLength(1);
+  });
+
+  it('a book whose old copy could not be removed is moved again with the copy it left, never a second one', async () => {
+    const { A, B, epubA } = await addBooks();
+    env.service.move.setMode('analyse');
+    await runPass();
+    env.service.move.setVerdict(A.uuid, 'right');
+    env.service.move.setVerdict(B.uuid, 'right');
+    env.service.move.choose(
+      env.service.move.spotList().find((b) => b.uuid === B.uuid)!.changeId,
+      'keep',
+    );
+    env.service.move.setMode('on');
+    // A 1.8.1 sidecar would add a second copy: it gets no move batch.
+    await heartbeat('1.8.1');
+    await runPass();
+    expect(getMoveState(env.cleanupDb).progress.write.waiting).toMatch(/older than 1\.8\.2/);
+    await heartbeat();
+    await runPass();
+    const first = (await claimAndSave()).batch;
+    const item = first.items[0];
+    expect(item.uuid).toBe(A.uuid);
+    expect(item.move.leftover).toBeNull();
+    await report(first.id, item.itemId, { step: 'verified' });
+    await report(first.id, item.itemId, {
+      step: 'exported',
+      quarantineDir: '/quarantine/x/1',
+      exportSha256: sha(epubA),
+    });
+    const copy = await addToManga(A.id, epubA);
+    await report(first.id, item.itemId, { step: 'tagged', calibreId: copy.id, uuid: copy.uuid });
+    // Live 2026-11-28: Calibre was locked, the remove refused; the copy stays in manga-library.
+    await report(first.id, item.itemId, {
+      step: 'failed',
+      detail: 'Calibre still lists the book after remove',
+    });
+    await request(env.app)
+      .post(`/api/v1/cleanup-apply/batches/${first.id}/finish`)
+      .set('Authorization', apply)
+      .send({})
+      .expect(200);
+
+    // (Its only book failed: the move pauses; resumed.) The next round proposes A again; its
+    // item carries the copy it left.
+    expect(getMoveState(env.cleanupDb).pausedReason).toBe('batch_failed');
+    env.service.move.resume();
+    const p = getMoveState(env.cleanupDb).progress;
+    saveMoveProgress(env.cleanupDb, { ...p, phase: 'done', snapshotMtimeMs: 1 });
+    await runPass();
+    const claimed = await claimAndSave();
+    const second = claimed.batch;
+    expect(second).not.toBeNull();
+    expect(second.id).not.toBe(first.id);
+    expect(second.items.map((i: { uuid: string }) => i.uuid)).toEqual([A.uuid]);
+    expect(second.items[0].move.leftover).toEqual({ calibreId: copy.id, uuid: copy.uuid });
   });
 
   it('a new round after done counts only its own books, and waits while a new-arrivals run is going', async () => {

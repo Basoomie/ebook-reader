@@ -72,8 +72,11 @@ import { FORMATS_STAGE, FormatWorker, type FormatPrograms } from './formats';
  * its own work folder, upload) when no batch waits, and stage-12 batches: add_format of a checked
  * EPUB to its own book, or a proven copy folded into its EPUB twin (its file added there, the
  * copy removed the stage-1 way); Undo by remove_format (only a format the pass added).
+ * 1.8.2 (manga move): a move item's `leftover`, the copy an earlier batch added to the new
+ * library and left there when Calibre would not remove the old copy, is used instead of adding a
+ * second one.
  */
-export const SIDECAR_VERSION = '1.8.1';
+export const SIDECAR_VERSION = '1.8.2';
 
 /** The wait after a batch before asking for the next one (WP20g: the full poll after every batch cost ~1 h of run 7). */
 export const AFTER_BATCH_MS = 1000;

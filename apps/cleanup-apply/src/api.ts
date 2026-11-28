@@ -64,6 +64,11 @@ export interface BatchItem {
   /** 1.6.0, a move item: the copy added to the new library (undo: the moved copy there). */
   move?: {
     added: { calibreId: number; uuid: string } | null;
+    /**
+     * 1.8.2, apply: the copy an earlier batch added to the new library for this book and left
+     * there (its old copy could not be removed). Used instead of adding a second copy.
+     */
+    leftover?: { calibreId: number; uuid: string } | null;
     movedCopy?: { calibreId: number; uuid: string } | null;
     fieldsAtMove?: Record<string, unknown> | null;
   };

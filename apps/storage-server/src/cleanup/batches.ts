@@ -32,6 +32,7 @@ import {
   FORMATS_STAGE,
   isFieldStage,
   MOVE_SIDECAR_VERSION,
+  MOVE_LEFTOVER_SIDECAR_VERSION,
   MOVE_STAGE,
 } from './field-stages';
 import { FormatBatches } from './formats/format-batches';
@@ -937,6 +938,13 @@ export class BatchService {
         wait: `The cleanup sidecar is older than ${MOVE_SIDECAR_VERSION}: rebuild ttsu-cleanup-apply before batches of ${batch.stage === MOVE_STAGE ? 'the move' : 'another library'} are written`,
       };
     }
+    // 1.8.2: a move item may carry a copy an earlier batch left in the new library; an older
+    // sidecar would add a second copy.
+    if (batch.stage === MOVE_STAGE && !this.sidecarAtLeast(MOVE_LEFTOVER_SIDECAR_VERSION))
+      return {
+        batch: null,
+        wait: `The cleanup sidecar is older than ${MOVE_LEFTOVER_SIDECAR_VERSION}: rebuild ttsu-cleanup-apply before batches of the move are written`,
+      };
     if (this.deps.calibreLibraryOf && calibreLibrary === null)
       return {
         batch: null,

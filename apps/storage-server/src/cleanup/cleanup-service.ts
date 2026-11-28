@@ -62,7 +62,7 @@ import {
   FORMATS_CONVERT_SIDECAR_VERSION,
   FORMATS_SIDECAR_VERSION,
   FORMATS_STAGE,
-  MOVE_SIDECAR_VERSION,
+  MOVE_LEFTOVER_SIDECAR_VERSION,
   MOVE_STAGE,
 } from './field-stages';
 import { FormatsError, FormatsPass, type FormatJobView } from './formats/pass';
@@ -1538,8 +1538,8 @@ export class CleanupService {
     }
     const checks = this.checksPass(lib);
     if (!checks.ok) return `Waiting for the safety checks: ${checks.failing.join('; ')}`;
-    if (!this.batches.sidecarAtLeast(MOVE_SIDECAR_VERSION))
-      return `The cleanup sidecar is older than ${MOVE_SIDECAR_VERSION}: rebuild ttsu-cleanup-apply`;
+    if (!this.batches.sidecarAtLeast(MOVE_LEFTOVER_SIDECAR_VERSION))
+      return `The cleanup sidecar is older than ${MOVE_LEFTOVER_SIDECAR_VERSION}: rebuild ttsu-cleanup-apply`;
     const t = getLibrary(this.opts.main, target);
     if (!t || !t.enabled || !t.language)
       return `Switch the library "${t?.folder ?? target}" on in the reader, with its language, first`;

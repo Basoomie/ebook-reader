@@ -76,6 +76,8 @@ export interface MoveEvidence {
 /** What the sidecar keeps on an item (batch_items.move_json). */
 export interface MoveItemNote {
   added?: { calibreId: number; uuid: string };
+  /** apply: the copy an earlier batch left in the new library for this book (noteLeftovers). */
+  leftover?: { calibreId: number; uuid: string };
   /** The fields the sidecar listed on the old copy (written back on Undo when changed). */
   fields?: Record<string, unknown>;
   fixed?: string[];
@@ -85,6 +87,7 @@ export interface MoveItemNote {
 export interface SidecarMoveItem extends SidecarItem {
   move: {
     added: { calibreId: number; uuid: string } | null;
+    leftover?: { calibreId: number; uuid: string } | null;
     /** undo: the moved copy in the new library, and the fields it had when it arrived. */
     movedCopy?: { calibreId: number; uuid: string } | null;
     fieldsAtMove?: Record<string, unknown> | null;
@@ -270,7 +273,49 @@ export class MoveBatches {
     this.db
       .prepare('UPDATE batches SET target_library_id = ? WHERE id = ?')
       .run(targetId, batch.id);
+    this.noteLeftovers(batch.id, libraryId, targetId);
     return { batch: this.batches.get(batch.id), reason: null };
+  }
+
+  /**
+   * A book whose earlier move failed after its copy was added and checked in the new library
+   * (the old copy could not be removed: live 2026-11-28, Calibre locked by a reader of
+   * metadata.db) still has that copy there. Its item in the new batch carries it
+   * (`move_json.leftover`) and the sidecar uses it, checked again, instead of adding a second
+   * copy. Only failed items count: a copy taken out again after a failure is never reported as
+   * added; one that is gone by now is added afresh (the sidecar looks).
+   */
+  private noteLeftovers(batchId: string, libraryId: string, targetId: string): void {
+    const left = this.db
+      .prepare(
+        `SELECT c.calibre_uuid AS uuid, i.move_json FROM batch_items i
+         JOIN batches b ON b.id = i.batch_id
+         JOIN proposed_changes c ON c.id = i.change_id
+         WHERE b.stage = ${MOVE_STAGE} AND b.kind = 'apply' AND b.id <> ? AND b.library_id = ?
+           AND b.target_library_id = ? AND i.state = 'failed'
+           AND json_extract(i.move_json, '$.added') IS NOT NULL
+         ORDER BY i.id`,
+      )
+      .all(batchId, libraryId, targetId) as { uuid: string; move_json: string }[];
+    if (left.length === 0) return;
+    const byUuid = new Map<string, { calibreId: number; uuid: string }>();
+    for (const r of left) {
+      const added = (JSON.parse(r.move_json) as MoveItemNote).added;
+      if (added) byUuid.set(r.uuid, added); // the latest failed item wins
+    }
+    const items = this.db
+      .prepare(
+        `SELECT i.id, c.calibre_uuid AS uuid FROM batch_items i
+         JOIN proposed_changes c ON c.id = i.change_id WHERE i.batch_id = ?`,
+      )
+      .all(batchId) as { id: number; uuid: string }[];
+    const set = this.db.prepare('UPDATE batch_items SET move_json = ? WHERE id = ?');
+    this.db.transaction(() => {
+      for (const it of items) {
+        const leftover = byUuid.get(it.uuid);
+        if (leftover) set.run(JSON.stringify({ leftover }), it.id);
+      }
+    })();
   }
 
   /** The batch as the sidecar gets it (its two libraries are added by BatchService). */
@@ -310,7 +355,7 @@ export class MoveBatches {
           sha256: r.export_sha256 ?? '',
           kept: { calibreId: 0, uuid: '' },
           addTags: [],
-          move: { added: note.added ?? null },
+          move: { added: note.added ?? null, leftover: note.leftover ?? null },
         };
       });
       return { ...base, items, stopAfterFailures: getSettings(this.db).move.stopAfterFailures };
