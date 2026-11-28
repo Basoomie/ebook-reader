@@ -1277,6 +1277,20 @@ export function moveOnCopy(books: number, withData: number, target: string): Con
   };
 }
 
+/** Replaced books: switching the pass On (it writes to Calibre). */
+export function inheritOnCopy(values: number, books: number): ConfirmCopy {
+  return {
+    title: `Write ${values.toLocaleString()} ${values === 1 ? 'value' : 'values'} to Calibre?`,
+    message: [
+      `${books.toLocaleString()} new ${books === 1 ? 'copy gets' : 'copies get'} the values the library ${books === 1 ? 'book' : 'books'} they replaced had and they lack (series, store ids, publisher, languages, illustrators, your tags). A value a copy has is never replaced; a store id is only added.`,
+      'Each On new-arrivals run then does the same for its own replacements before its stages read the new copies.',
+      'Each batch can be undone from the batches list.'
+    ],
+    confirmLabel: 'Switch it On',
+    irreversible: false
+  };
+}
+
 /** Books without an EPUB: switching the pass On (it writes to Calibre). */
 export function formatsOnCopy(convert: number, fold: number): ConfirmCopy {
   return {

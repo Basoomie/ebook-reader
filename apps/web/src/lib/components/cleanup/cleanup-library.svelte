@@ -32,6 +32,7 @@
   import SeriesPairsCard from '$lib/components/cleanup/cleanup-series-pairs.svelte';
   import MoveCard from '$lib/components/cleanup/cleanup-move.svelte';
   import FormatsCard from '$lib/components/cleanup/cleanup-formats.svelte';
+  import InheritCard from '$lib/components/cleanup/cleanup-inherit.svelte';
   import TitleFits from '$lib/components/cleanup/cleanup-title-fits.svelte';
   import CleanupDetails from '$lib/components/cleanup/cleanup-details.svelte';
   import {
@@ -726,6 +727,10 @@
     {/if}
     {#if api}
       <ArrivalsCard {api} />
+    {/if}
+    <!-- Replaced books: what a new arrival kept over a library book takes over from it. -->
+    {#if api}
+      <InheritCard {api} />
     {/if}
   </section>
 

@@ -17,6 +17,7 @@ import type { SeriesPairs } from './series-pairs/pass';
 import type { LinkDiscovery } from './stage4/link-discovery';
 import type { BookmeterListings } from './stage4/bookmeter-listing';
 import type { FormatsPass } from './formats/pass';
+import type { InheritPass } from './inherit/pass';
 
 type Cache = { at: number; value: unknown } | null;
 
@@ -39,6 +40,9 @@ export class LibraryParts {
   /** Books without an EPUB: this library's pass (set once made) and its running loop. */
   formats: FormatsPass | null = null;
   formatsRunning: Promise<void> | null = null;
+  /** Replaced books (inherit/pass.ts): this library's pass and its running loop. */
+  inherit: InheritPass | null = null;
+  inheritRunning: Promise<void> | null = null;
   status4Cache: Cache = null;
   status5Cache: Cache = null;
   bookmeterCache: Cache = null;

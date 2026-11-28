@@ -55,6 +55,7 @@ import {
   stage4Finished,
 } from './stage4/bookmeter-more';
 import { SeriesPairs, seriesPairsAnalysisId } from './series-pairs/pass';
+import { InheritPass } from './inherit/pass';
 import { MovePass } from './move/pass';
 import { recentPaceLeftMs } from './move/pace';
 import { moveAnalysisId } from './move/state';
@@ -383,6 +384,7 @@ export class CleanupService {
       stage2Batches: this.batches.stage2,
       stage4Batches: this.batches.stage4,
       stage5Batches: this.batches.stage5,
+      inherit: (lib) => this.lp(lib).inherit,
       analysis4: (lib) => this.lp(lib).analysis4,
       runner: this.aiRunner,
       reader: () => this.stage3Reader(),
@@ -648,6 +650,17 @@ export class CleanupService {
       seriesPairs,
       links,
       listings,
+    );
+    // Replaced books: this library's pass (inherit/pass.ts).
+    parts.inherit = new InheritPass(
+      {
+        db: opts.cleanup,
+        main: opts.main,
+        batches: this.batches,
+        writeWait: (lib) => this.bookmeterWriteWait(lib),
+        log: this.log,
+      },
+      libraryId,
     );
     // Books without an EPUB: this library's pass (non-epub-books.md).
     parts.formats = new FormatsPass({
@@ -1331,6 +1344,7 @@ export class CleanupService {
     this.runSeriesPairs();
     this.runMove();
     this.runFormats();
+    this.runInherit();
     this.runLinks();
     this.runListings();
   }
@@ -1390,6 +1404,79 @@ export class CleanupService {
         P.formatsRunning = null;
       }
     })();
+  }
+
+  /**
+   * Replaced books: each library's pass in its own loop (a step looks at 200 replacements or
+   * plans one batch). Woken by the 5 s round and by the card.
+   */
+  runInherit(): void {
+    for (const lib of this.cleanupLibraries()) this.runInheritOf(lib);
+  }
+
+  private runInheritOf(target: string): void {
+    const P = this.lp(target);
+    const pass = P.inherit;
+    if (P.inheritRunning || this.stopped || !pass) return;
+    // A new-arrivals run writes its own replacements (run.ts phase inherit): one writer.
+    if (this.arrivals.currentRun()) return;
+    P.inheritRunning = (async () => {
+      try {
+        for (let i = 0; i < 1000; i++) {
+          if (this.stopped) break;
+          const r = await pass.step();
+          if (r === 'idle' || r === 'wait') break;
+          await new Promise((res) => setImmediate(res));
+        }
+      } catch (err) {
+        this.logError('Cleanup: replaced books failed:', err);
+      } finally {
+        P.inheritRunning = null;
+      }
+    })();
+  }
+
+  /** Replaced books: a library's pass (null: no such cleanup library). */
+  inheritOf(target: string | null): InheritPass | null {
+    if (!target) return null;
+    return this.lp(target).inherit;
+  }
+
+  /** The card's status: mode, counts, the bar of the write with its time left, a page of items. */
+  inheritStatus(target: string | null, offset = 0, now = Date.now()): unknown {
+    const pass = this.inheritOf(target);
+    if (!pass) return null;
+    const st = pass.state();
+    const counts = pass.counts();
+    const written = (counts.applied ?? 0) + (counts.skipped ?? 0);
+    const toWrite = (counts.proposed ?? 0) + (counts.queued ?? 0);
+    const w = st.progress.write;
+    const bar =
+      st.mode === 'on' && written + toWrite > 0
+        ? {
+            label: 'values',
+            done: written,
+            total: written + toWrite,
+            startedAt: w?.startedAt ?? null,
+            base: w?.writtenAtStart ?? 0,
+          }
+        : null;
+    const left =
+      bar && bar.startedAt && bar.done - bar.base > 0 && bar.done < bar.total
+        ? Math.round(((now - bar.startedAt) / (bar.done - bar.base)) * (bar.total - bar.done))
+        : null;
+    return {
+      mode: st.mode,
+      waiting: st.progress.waiting ?? null,
+      counts,
+      bar: bar ? { ...bar, leftMs: left } : null,
+      ...pass.view(offset),
+    };
+  }
+
+  /** After the user's change on the page: work at once. */
+  inheritChanged(target: string | null): void {
+    if (target) this.runInheritOf(target);
   }
 
   /** A library's pass (null: no such cleanup library, or none set up). */

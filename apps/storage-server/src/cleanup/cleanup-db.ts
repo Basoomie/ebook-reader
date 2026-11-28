@@ -3168,6 +3168,40 @@ export const CLEANUP_MIGRATIONS: { version: number; name: string; sql: string }[
       CREATE INDEX calibre_known_books_waiting ON calibre_known_books (library_id, origin, run_id);
     `,
   },
+  {
+    version: 42,
+    name: 'Replaced books: what a better copy takes over from the library book it replaced',
+    // A new arrival kept over a library book (stage 1/3 of a run) lost every value the cleanup
+    // had written on the old record (run 7, 2026-11-25: 330 series, 701 books' store ids). The
+    // pass (inherit/pass.ts) gives the kept copy the old record's values it lacks, through the
+    // stages' own field batches under the analysis 'inherit'. calibre_inherit_state: its own
+    // Off/Preview/On per Calibre library. calibre_inherits: one row per replaced book, what was
+    // proposed for its kept copy (or why nothing).
+    sql: `
+      CREATE TABLE calibre_inherit_state (
+        library_id    TEXT PRIMARY KEY,
+        mode          TEXT NOT NULL DEFAULT 'analyse' CHECK (mode IN ('off', 'analyse', 'on')),
+        progress_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(progress_json)),
+        updated_at    INTEGER NOT NULL
+      );
+      CREATE TABLE calibre_inherits (
+        library_id         TEXT NOT NULL,
+        removed_uuid       TEXT NOT NULL,
+        removed_calibre_id INTEGER NOT NULL,
+        kept_uuid          TEXT NOT NULL,
+        kept_calibre_id    INTEGER NOT NULL,
+        removal_change_id  INTEGER NOT NULL,
+        state              TEXT NOT NULL CHECK (state IN ('nothing', 'proposed', 'gone')),
+        fields_json        TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(fields_json)),
+        decided_at         INTEGER NOT NULL,
+        PRIMARY KEY (library_id, removed_uuid)
+      ) WITHOUT ROWID;
+      CREATE INDEX calibre_inherits_kept ON calibre_inherits (library_id, kept_uuid);
+      -- The card's counts and the pass's own reads (polled: WP20 lessons 3).
+      CREATE INDEX proposed_changes_inherit
+        ON proposed_changes (library_id, analysis_id, state, field, class) WHERE source = 'inherit';
+    `,
+  },
 ];
 
 export const CLEANUP_SCHEMA_VERSION = CLEANUP_MIGRATIONS[CLEANUP_MIGRATIONS.length - 1].version;

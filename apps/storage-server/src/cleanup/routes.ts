@@ -1548,6 +1548,31 @@ export function createCleanupRouter(options: CleanupOptions): Router {
     return { service, pass, lib };
   };
 
+  // Replaced books (inherit/pass.ts): the card on the new arrivals.
+  const inheritOr503 = (req: Request) => {
+    const service = serviceOr503(options);
+    const lib = libOf(service, req);
+    const pass = service.inheritOf(lib);
+    if (!pass) throw new ApiError(503, 'no_calibre', 'No Calibre library is set up');
+    return { service, pass, lib };
+  };
+
+  router.get('/cleanup/inherit', (req, res) => {
+    const { service, lib } = inheritOr503(req);
+    const offset = Math.max(0, Number((req.query as { offset?: string }).offset ?? 0) || 0);
+    res.json(service.inheritStatus(lib, offset));
+  });
+
+  router.put('/cleanup/inherit/mode', (req, res) => {
+    const { service, pass, lib } = inheritOr503(req);
+    const mode = (req.body as { mode?: unknown } | undefined)?.mode;
+    if (mode !== 'off' && mode !== 'analyse' && mode !== 'on')
+      throw new ApiError(400, 'bad_mode', 'mode must be off, analyse or on');
+    pass.setMode(mode);
+    service.inheritChanged(lib);
+    res.json(service.inheritStatus(lib));
+  });
+
   router.get('/cleanup/series-pairs', (req, res) => {
     const { service } = seriesPairsOr503(req);
     res.json(service.seriesPairsStatus(libOf(service, req)));

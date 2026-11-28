@@ -13,6 +13,7 @@ import type {
 } from './series-pairs-text';
 import type { ArrivalsStatus } from './arrivals-text';
 import type { MoveBook, MoveHold, MoveMode, MoveStatus } from './move-text';
+import type { InheritMode, InheritStatus } from './inherit-text';
 import type { FormatsBook, FormatsList, FormatsMode, FormatsStatus } from './formats-text';
 import type {
   BookmeterMatch,
@@ -2853,6 +2854,16 @@ export class CleanupApi {
     return this.request('POST', `/cleanup/series-pairs/pairs/${id}`, {
       choice
     }) as Promise<SeriesPair>;
+  }
+
+  // ---- Replaced books: what a better copy takes over from the book it replaced ----
+
+  inherit(offset = 0): Promise<InheritStatus> {
+    return this.request('GET', `/cleanup/inherit?offset=${offset}`) as Promise<InheritStatus>;
+  }
+
+  setInheritMode(mode: InheritMode): Promise<InheritStatus> {
+    return this.request('PUT', '/cleanup/inherit/mode', { mode }) as Promise<InheritStatus>;
   }
 
   // ---- Manga part A: moving the manga and image-only books to the manga library ----

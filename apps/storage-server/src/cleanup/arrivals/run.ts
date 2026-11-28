@@ -99,6 +99,7 @@ import { ArrivalStage5, emptyStage5Pass, type Stage5PassProgress } from './stage
 import { MOVE_STAGE } from '../field-stages';
 import type { MovePass } from '../move/pass';
 import { waitsForCount } from '../move/select';
+import type { InheritPass } from '../inherit/pass';
 import { getMoveState, moveArrivalsAnalysisId } from '../move/state';
 
 export const DISK_OWNER = 'calibreArrivals';
@@ -116,6 +117,7 @@ export type RunPhase =
   | 'stage1'
   | 'stage3'
   | 'removals'
+  | 'inherit'
   | 'stage2'
   | 'write2'
   | 'stage4'
@@ -241,6 +243,7 @@ export const RUN_PHASES: readonly RunPhase[] = [
   'stage1',
   'stage3',
   'removals',
+  'inherit',
   'stage2',
   'write2',
   'stage4',
@@ -446,6 +449,8 @@ export interface ArrivalsDeps {
   stage2Batches: Stage2Batches;
   stage4Batches: Stage2Batches;
   stage5Batches: Stage2Batches;
+  /** Replaced books (inherit/pass.ts): this library's pass, or null. */
+  inherit?: (libraryId: string) => InheritPass | null;
   analysis4: (libraryId: string) => Stage4Analysis | null;
   runner: AiRunner;
   reader: () => Stage3Reader;
@@ -1472,7 +1477,7 @@ export class BookArrivals {
         return this.stage3Step(run, p, libraryId, libDir, shouldStop);
       case 'removals': {
         if (run.mode !== 'on') {
-          this.next(run.id, p, 'stage2');
+          this.next(run.id, p, 'inherit');
           return 'more';
         }
         const id = arrivalAnalysisId(run.id);
@@ -1497,6 +1502,18 @@ export class BookArrivals {
         }
         if (this.deps.batches.open()) {
           p.waiting = 'A batch is being applied';
+          return 'wait';
+        }
+        this.next(run.id, p, 'inherit');
+        return 'more';
+      }
+      case 'inherit': {
+        // Replaced books: the kept copies get the old records' values they lack (series, store
+        // ids, …) before stages 2-5 read them (run 7 lost them: inherit/pass.ts).
+        const pass = run.mode === 'on' ? (this.deps.inherit?.(libraryId) ?? null) : null;
+        const why = pass ? await pass.forRun(run.id) : null;
+        if (why) {
+          p.waiting = why;
           return 'wait';
         }
         this.next(run.id, p, 'stage2');

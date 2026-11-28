@@ -43,6 +43,7 @@ import { EDIT_STAGE } from './field-stages';
 import type { CoverArchive } from './edits/cover-archive';
 import { aiYoursAfterWrite } from './edits/yours';
 import { applyTagChange, sameTags, undoTagChange, type TagChange } from './stage5/decide';
+import type { InheritProvenance } from './inherit/pass';
 
 export const STAGE2_TERMINAL_APPLY: ItemState[] = ['written', 'failed', 'skipped'];
 
@@ -1692,6 +1693,42 @@ export class Stage2Batches {
         r.field === 'cover' ? oldCoverPath : null,
         now,
       );
+    // Replaced books (inherit/pass.ts): a value taken over from the book this copy replaced is
+    // the cleanup's write on the kept copy only when it was on the old record (that record's
+    // write, its source and batch kept, this change for Undo); Calibre's own value stays
+    // Calibre's own. Store ids and tags merge into the copy's own: the cleanup's, as usual.
+    const inherited = (ev as { inherit?: { provenance?: InheritProvenance | 'merged' } }).inherit
+      ?.provenance;
+    if (inherited && inherited !== 'merged') {
+      if (inherited.applied)
+        this.db
+          .prepare(
+            `INSERT INTO applied_values (library_id, calibre_uuid, field, value_json, source, batch_id,
+               applied_at, change_id, last_modified_after)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(library_id, calibre_uuid, field) DO UPDATE SET value_json = excluded.value_json,
+               source = excluded.source, batch_id = excluded.batch_id, applied_at = excluded.applied_at,
+               change_id = excluded.change_id, last_modified_after = excluded.last_modified_after`,
+          )
+          .run(
+            batch.libraryId,
+            r.calibre_uuid,
+            r.field,
+            inherited.applied.value_json,
+            inherited.applied.source,
+            inherited.applied.batch_id,
+            now,
+            r.change_id,
+            current.lastModified,
+          );
+      this.setItem(r.item_id, 'written', null, null, now);
+      this.db
+        .prepare(
+          `UPDATE proposed_changes SET state = 'applied', decided_at = ?, updated_at = ? WHERE id = ?`,
+        )
+        .run(now, now, r.change_id);
+      return;
+    }
     this.db
       .prepare(
         `INSERT INTO applied_values (library_id, calibre_uuid, field, value_json, source, batch_id, applied_at,
